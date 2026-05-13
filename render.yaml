@@ -3,6 +3,7 @@ services:
   - type: web
     name: impulse-analyst
     env: python
+    pythonVersion: "3.11"  # Stable version - avoid 3.14 for now
     buildCommand: |
       pip install -r backend/requirements.txt
       cd frontend && npm install && npm run build
