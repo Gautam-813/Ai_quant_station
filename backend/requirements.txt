@@ -3,7 +3,9 @@ uvicorn[standard]==0.32.1
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 python-multipart==0.0.6
-MetaTrader5==5.0.45
+# MetaTrader5 - Windows only, not available on Render/Linux
+# Only install on Windows (commented out for cross-platform)
+# MetaTrader5==5.0.45
 pandas==2.1.4
 numpy==1.26.3
 pytz==2024.1

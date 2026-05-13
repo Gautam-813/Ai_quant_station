@@ -9,8 +9,11 @@ router = APIRouter(prefix="/trade", tags=["Trading"])
 
 
 def _get_mt5():
-    import MetaTrader5 as mt5
-    return mt5
+    try:
+        import MetaTrader5 as mt5
+        return mt5
+    except ImportError:
+        return None
 
 
 def verify_mt5_token(x_mt5_token: Annotated[str, Header()]):
@@ -20,7 +23,9 @@ def verify_mt5_token(x_mt5_token: Annotated[str, Header()]):
 
 
 async def _init_mt5():
-    import MetaTrader5 as mt5
+    mt5 = _get_mt5()
+    if mt5 is None:
+        return False
     if not mt5.initialize():
         return False
     return True

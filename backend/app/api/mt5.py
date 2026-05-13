@@ -26,9 +26,12 @@ _mt5_connector_url: str | None = None
 
 
 def _get_mt5():
-    """Lazy import MT5."""
-    import MetaTrader5 as mt5
-    return mt5
+    """Lazy import MT5 (Windows only)."""
+    try:
+        import MetaTrader5 as mt5
+        return mt5
+    except ImportError:
+        return None
 
 
 def _is_using_connector() -> bool:
