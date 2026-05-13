@@ -12,6 +12,7 @@ from ..core.security import (
 )
 from ..models.user import User
 from ..models.schemas import UserLogin, Token, UserResponse, PasswordChange
+from pydantic import BaseModel
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -151,3 +152,107 @@ async def create_default_admin(db: AsyncSession):
         db.add(admin)
         await db.commit()
         print("Default admin user created: admin / admin123")
+
+
+# User Management Schemas
+class UserCreate(BaseModel):
+    username: str
+    name: str
+    password: str
+    role: str = "trader"
+
+
+class UserUpdate(BaseModel):
+    name: str | None = None
+    password: str | None = None
+    role: str | None = None
+    is_active: bool | None = None
+
+
+def require_admin(current_user: dict):
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return current_user
+
+
+@router.get("/users", response_model=list[UserResponse])
+async def list_users(
+    current_user: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """List all users - Admin only"""
+    result = await db.execute(select(User).order_by(User.created_at.desc()))
+    users = result.scalars().all()
+    return users
+
+
+@router.post("/users", response_model=UserResponse)
+async def create_user(
+    user_data: UserCreate,
+    current_user: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """Create new user - Admin only"""
+    result = await db.execute(select(User).where(User.username == user_data.username))
+    existing = result.scalar_one_or_none()
+    
+    if existing:
+        raise HTTPException(status_code=400, detail="Username already exists")
+    
+    new_user = User(
+        username=user_data.username,
+        name=user_data.name,
+        hashed_password=get_password_hash(user_data.password),
+        role=user_data.role
+    )
+    db.add(new_user)
+    await db.commit()
+    await db.refresh(new_user)
+    return new_user
+
+
+@router.put("/users/{user_id}", response_model=UserResponse)
+async def update_user(
+    user_id: int,
+    user_data: UserUpdate,
+    current_user: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """Update user - Admin only"""
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if user_data.name is not None:
+        user.name = user_data.name
+    if user_data.role is not None:
+        user.role = user_data.role
+    if user_data.password is not None:
+        user.hashed_password = get_password_hash(user_data.password)
+    
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
+@router.delete("/users/{user_id}")
+async def delete_user(
+    user_id: int,
+    current_user: dict = Depends(require_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """Delete user - Admin only"""
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if user.username == "admin":
+        raise HTTPException(status_code=400, detail="Cannot delete admin user")
+    
+    await db.delete(user)
+    await db.commit()
+    return {"message": f"User {user.username} deleted successfully"}

@@ -24,6 +24,7 @@ class UserResponse(BaseModel):
     username: str
     name: str
     role: str
+    is_active: Optional[str] = "true"
     created_at: datetime
     last_login: Optional[datetime] = None
 
