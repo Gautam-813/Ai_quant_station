@@ -53,12 +53,17 @@ async def login(user_data: UserLogin, db: AsyncSession = Depends(get_db)):
             detail="Invalid username or password"
         )
 
-    print(f"DEBUG: Verifying password for {user.username}...")
+    print(f"DEBUG: Verifying password for {user.username} (Length: {len(user_data.password)})...")
     try:
-        is_valid = verify_password(user_data.password, user.hashed_password)
+        # Bcrypt has a 72-byte limit. We truncate to ensure it doesn't crash.
+        # Most users use much shorter passwords anyway.
+        pwd_to_verify = user_data.password[:72]
+        is_valid = verify_password(pwd_to_verify, user.hashed_password)
         print(f"DEBUG: Password verification result: {is_valid}")
     except Exception as e:
         print(f"DEBUG ERROR: Password verification crashed: {str(e)}")
+        # If it still fails, let's try to see if the hash format is the problem
+        print(f"DEBUG: Hash starts with: {user.hashed_password[:10]}...")
         raise HTTPException(status_code=500, detail=f"Auth error: {str(e)}")
 
     if not is_valid:
