@@ -1,0 +1,100 @@
+1. Analyze XAUUSD and generate a high-confidence buy setup from support with minimum 1:2 RR
+2. Find a strong demand zone on XAUUSD and generate a long trade with 1:2 RR
+3. Generate a trade on XAUUSD based on support bounce with confirmation signals
+4. Identify a high-probability support level and create a buy setup with proper risk management
+5. Look for bullish reversal at support on XAUUSD and generate a trade
+6. Generate a long trade using support + RSI oversold confluence
+7. Find a clean support retest and create a buy trade setup
+8. Generate a trade based on higher low formation on XAUUSD
+9. Identify accumulation near support and generate a long trade
+10. Create a buy trade after bullish engulfing at support
+11. Generate a trade based on Fibonacci retracement support (61.8 level)
+12. Find a double bottom on XAUUSD and create a buy trade
+13. Generate a long trade using trendline support
+14. Identify strong buying pressure zones and generate a trade
+15. Create a buy setup after liquidity grab below support
+16. Generate a trade based on demand zone + volume confirmation
+17. Identify support with moving average confluence and generate a trade
+18. Generate a trade after consolidation near support
+19. Create a buy setup using price action at support
+20. Generate a trade after rejection wick at support
+21. Find a clean bullish setup near support and generate trade
+22. Identify strong support holding multiple times and create trade
+23. Generate a buy trade after fake breakdown recovery
+24. Create a trade using horizontal support + structure
+25. Generate a long setup using multi-timeframe support confluence
+26. Analyze XAUUSD and generate a high-confidence sell setup from resistance
+27. Identify strong resistance and create a short trade with 1:2 RR
+28. Generate a trade based on bearish rejection at resistance
+29. Find a supply zone and create a short trade setup
+30. Generate a sell trade after bearish engulfing at resistance
+31. Identify double top on XAUUSD and generate short trade
+32. Generate a trade using RSI overbought + resistance
+33. Create a short setup after failed breakout above resistance
+34. Generate a trade based on lower high formation
+35. Identify selling pressure at resistance and create trade
+36. Generate a short trade using trendline resistance
+37. Find liquidity sweep above resistance and generate sell trade
+38. Create a short setup using Fibonacci resistance
+39. Generate trade after rejection from previous high
+40. Identify distribution phase and generate short trade
+41. Generate a trade using EMA resistance confluence
+42. Create a sell trade after multiple rejections at resistance
+43. Generate a short setup using bearish divergence
+44. Identify supply zone and generate trade with confirmation
+45. Create a trade based on resistance breakout failure
+46. Generate a sell trade after bearish pin bar at resistance
+47. Identify exhaustion near resistance and create trade
+48. Generate a trade using structure + resistance rejection
+49. Create a short setup after breakdown confirmation
+50. Generate a high-confidence short trade using confluence signals
+51. Analyze XAUUSD trend and generate a continuation trade with 1:2 RR
+52. Generate a buy trade in uptrend after pullback
+53. Identify strong trend and create continuation setup
+54. Generate trade using moving average pullback strategy
+55. Create a long setup after higher low in uptrend
+56. Generate trade based on bullish flag breakout
+57. Identify trend continuation and generate high-confidence trade
+58. Generate trade using momentum continuation signals
+59. Create trade after breakout and retest in trend
+60. Generate trade based on strong bullish structure
+61. Identify clean uptrend and generate long trade
+62. Generate trade using trendline continuation
+63. Create trade after consolidation breakout in trend
+64. Generate trade based on higher high formation
+65. Identify strong bullish momentum and create trade
+66. Generate continuation trade using price action signals
+67. Create trade after breakout from range in trend
+68. Generate trade using EMA trend strategy
+69. Identify trend strength and generate trade accordingly
+70. Create trade using multi-timeframe trend confirmation
+71. Generate trade after impulse + pullback continuation
+72. Identify trending conditions and generate high-probability trade
+73. Create a trade using structure continuation pattern
+74. Generate trade after breakout above previous high
+75. Identify strong trend and generate optimal entry trade
+76. Analyze XAUUSD and generate trade based on liquidity grab setup
+77. Identify stop hunt and generate reversal trade
+78. Generate trade using smart money concepts on XAUUSD
+79. Create a trade after liquidity sweep and structure shift
+80. Generate high-confidence trade using order block concept
+81. Identify imbalance zone and generate trade setup
+82. Generate trade using fair value gap on XAUUSD
+83. Create trade after break of structure confirmation
+84. Generate trade using institutional price action
+85. Identify market manipulation zone and create trade
+86. Generate trade based on liquidity pool targeting
+87. Create trade using smart money + trend confluence
+88. Generate setup after displacement move
+89. Identify order flow shift and generate trade
+90. Create trade using advanced price action concepts
+91. Generate trade based on volatility expansion
+92. Identify compression breakout and generate trade
+93. Generate trade using breakout + liquidity alignment
+94. Create trade after trap move detection
+95. Generate trade using market structure shift
+96. Identify strong confluence setup and generate trade
+97. Generate trade combining trend + liquidity + structure
+98. Create high-confidence institutional trade setup
+99. Generate trade using advanced confluence signals
+100. Analyze deeply and generate best possible trade setup with ≥70% confidence

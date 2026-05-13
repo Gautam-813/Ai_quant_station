@@ -1,0 +1,205 @@
+from fastapi import APIRouter, Depends, HTTPException
+from typing import Optional
+import yfinance as yf
+from datetime import datetime, timedelta
+
+from ..core.security import get_current_user
+
+router = APIRouter(prefix="/data", tags=["Market Data"])
+
+
+@router.get("/yahoo/{symbol}")
+async def get_yahoo_data(
+    symbol: str,
+    period: str = "1mo",
+    interval: str = "1d",
+    current_user: dict = Depends(get_current_user)
+):
+    """Fetch market data from Yahoo Finance."""
+    try:
+        ticker = yf.Ticker(symbol)
+        hist = ticker.history(period=period, interval=interval)
+        
+        if hist.empty:
+            raise HTTPException(status_code=404, detail=f"No data found for {symbol}")
+        
+        data = []
+        for idx, row in hist.iterrows():
+            data.append({
+                "time": idx.strftime('%Y-%m-%d %H:%M:%S'),
+                "open": float(row['Open']),
+                "high": float(row['High']),
+                "low": float(row['Low']),
+                "close": float(row['Close']),
+                "volume": int(row['Volume'])
+            })
+        
+        return {
+            "success": True,
+            "source": "yahoo",
+            "symbol": symbol,
+            "period": period,
+            "interval": interval,
+            "count": len(data),
+            "data": data
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Yahoo Finance error: {str(e)}")
+
+
+@router.get("/yahoo/quote/{symbol}")
+async def get_yahoo_quote(
+    symbol: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get current quote from Yahoo Finance."""
+    try:
+        ticker = yf.Ticker(symbol)
+        info = ticker.info
+        
+        return {
+            "success": True,
+            "symbol": symbol,
+            "price": info.get('currentPrice') or info.get('regularMarketPrice'),
+            "bid": info.get('bid'),
+            "ask": info.get('ask'),
+            "volume": info.get('volume'),
+            "market_cap": info.get('marketCap'),
+            "name": info.get('shortName') or info.get('longName'),
+            "change": info.get('regularMarketChange'),
+            "change_percent": info.get('regularMarketChangePercent')
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Yahoo Finance error: {str(e)}")
+
+
+@router.get("/yahoo/search/{query}")
+async def search_yahoo(
+    query: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Search for symbols on Yahoo Finance."""
+    try:
+        ticker = yf.Ticker(query)
+        info = ticker.info
+        
+        results = []
+        if info.get('symbol'):
+            results.append({
+                "symbol": info['symbol'],
+                "name": info.get('shortName') or info.get('longName') or query,
+                "type": info.get('instrumentType', 'Unknown')
+            })
+        
+        return {
+            "success": True,
+            "query": query,
+            "results": results
+        }
+    except Exception as e:
+        return {
+            "success": True,
+            "query": query,
+            "results": []
+        }
+
+
+@router.get("/yahoo/symbols")
+async def get_available_symbols(
+    current_user: dict = Depends(get_current_user)
+):
+    """Get available symbols for selection (forex, crypto, indices)."""
+    forex_pairs = [
+        "EURUSD=X", "GBPUSD=X", "USDJPY=X", "USDCHF=X",
+        "AUDUSD=X", "USDCAD=X", "NZDUSD=X",
+        "EURGBP=X", "EURJPY=X", "GBPJPY=X"
+    ]
+    
+    crypto_pairs = [
+        "BTC-USD", "ETH-USD", "XRP-USD", "SOL-USD",
+        "DOGE-USD", "ADA-USD", "AVAX-USD", "DOT-USD",
+        "MATIC-USD", "LINK-USD", "UNI-USD", "ATOM-USD"
+    ]
+    
+    indices = [
+        "^GSPC", "^DJI", "^IXIC", "^RUT", "^VIX",
+        "^FTSE", "^GDAXI", "^N225", "^HSI"
+    ]
+    
+    results = []
+    
+    for pair in forex_pairs:
+        results.append({"symbol": pair, "type": "forex", "name": pair.replace("=X", "")})
+    
+    for pair in crypto_pairs:
+        results.append({"symbol": pair, "type": "crypto", "name": pair.replace("-USD", "")})
+    
+    for idx in indices:
+        results.append({"symbol": idx, "type": "index", "name": idx})
+    
+    return {
+        "success": True,
+        "symbols": results
+    }
+
+
+@router.get("/yahoo/forex")
+async def get_forex_pairs(
+    current_user: dict = Depends(get_current_user)
+):
+    """Get common forex pairs."""
+    pairs = [
+        "EURUSD=X", "GBPUSD=X", "USDJPY=X", "USDCHF=X",
+        "AUDUSD=X", "USDCAD=X", "NZDUSD=X",
+        "EURGBP=X", "EURJPY=X", "GBPJPY=X"
+    ]
+    
+    results = []
+    for pair in pairs:
+        try:
+            ticker = yf.Ticker(pair)
+            info = ticker.info
+            results.append({
+                "symbol": pair,
+                "price": info.get('currentPrice') or info.get('regularMarketPrice'),
+                "change": info.get('regularMarketChange'),
+                "change_percent": info.get('regularMarketChangePercent')
+            })
+        except:
+            pass
+    
+    return {
+        "success": True,
+        "pairs": results
+    }
+
+
+@router.get("/yahoo/crypto")
+async def get_crypto_pairs(
+    current_user: dict = Depends(get_current_user)
+):
+    """Get common crypto pairs."""
+    pairs = [
+        "BTC-USD", "ETH-USD", "XRP-USD", "SOL-USD",
+        "DOGE-USD", "ADA-USD", "AVAX-USD", "DOT-USD"
+    ]
+    
+    results = []
+    for pair in pairs:
+        try:
+            ticker = yf.Ticker(pair)
+            info = ticker.info
+            results.append({
+                "symbol": pair,
+                "name": info.get('shortName', pair),
+                "price": info.get('currentPrice') or info.get('regularMarketPrice'),
+                "change": info.get('regularMarketChange'),
+                "change_percent": info.get('regularMarketChangePercent')
+            })
+        except:
+            pass
+    
+    return {
+        "success": True,
+        "crypto": results
+    }
