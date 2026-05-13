@@ -29,8 +29,8 @@ async def test_login(user_data: UserLogin, db: AsyncSession = Depends(get_db)):
             detail="User not found"
         )
     
-    access_token = create_access_token(data={"sub": user.username, "user_id": user.id})
-    refresh_token = create_refresh_token(data={"sub": user.username, "user_id": user.id})
+    access_token = create_access_token(data={"sub": user.username, "user_id": user.id, "role": user.role})
+    refresh_token = create_refresh_token(data={"sub": user.username, "user_id": user.id, "role": user.role})
     
     return Token(access_token=access_token, refresh_token=refresh_token)
 
@@ -52,8 +52,8 @@ async def login(user_data: UserLogin, db: AsyncSession = Depends(get_db)):
     except:
         pass
 
-    access_token = create_access_token(data={"sub": user.username, "user_id": user.id})
-    refresh_token = create_refresh_token(data={"sub": user.username, "user_id": user.id})
+    access_token = create_access_token(data={"sub": user.username, "user_id": user.id, "role": user.role})
+    refresh_token = create_refresh_token(data={"sub": user.username, "user_id": user.id, "role": user.role})
 
     return Token(access_token=access_token, refresh_token=refresh_token)
 

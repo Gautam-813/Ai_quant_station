@@ -8,7 +8,8 @@ import {
   History,
   Settings,
   LogOut,
-  Zap
+  Zap,
+  Users
 } from 'lucide-react'
 import { cn } from '@/utils/utils'
 
@@ -19,6 +20,7 @@ const navItems = [
   { to: '/autopilot', icon: Zap, label: 'Autopilot' },
   { to: '/history', icon: History, label: 'History' },
   { to: '/settings', icon: Settings, label: 'Settings' },
+  { to: '/users', icon: Users, label: 'Users', adminOnly: true },
 ]
 
 export default function DashboardLayout() {
@@ -49,23 +51,26 @@ export default function DashboardLayout() {
 
         {/* Navigation */}
         <nav className="flex-1 p-4 space-y-2">
-          {navItems.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              className={({ isActive }) =>
-                cn(
-                  "flex items-center gap-3 px-4 py-3 rounded-lg transition-colors",
-                  isActive
-                    ? "bg-primary/10 text-primary"
-                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
-                )
-              }
-            >
-              <item.icon className="w-5 h-5" />
-              <span className="font-medium">{item.label}</span>
-            </NavLink>
-          ))}
+          {navItems.map((item) => {
+            if (item.adminOnly && user?.role !== 'admin') return null
+            return (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                className={({ isActive }) =>
+                  cn(
+                    "flex items-center gap-3 px-4 py-3 rounded-lg transition-colors",
+                    isActive
+                      ? "bg-primary/10 text-primary"
+                      : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                  )
+                }
+              >
+                <item.icon className="w-5 h-5" />
+                <span className="font-medium">{item.label}</span>
+              </NavLink>
+            )
+          })}
         </nav>
 
         {/* User section */}
@@ -77,6 +82,9 @@ export default function DashboardLayout() {
             <div>
               <p className="font-medium text-sm">{user?.name || 'User'}</p>
               <p className="text-xs text-muted-foreground">@{user?.username}</p>
+              {user?.role && (
+                <span className="text-xs text-blue-400">{user.role}</span>
+              )}
             </div>
           </div>
           <Button

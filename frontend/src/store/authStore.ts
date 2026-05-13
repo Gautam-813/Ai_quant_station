@@ -38,7 +38,7 @@ export const useAuthStore = create<AuthState>()(
       login: async (username: string, password: string) => {
         set({ isLoading: true, error: null })
         try {
-          const response = await axios.post(`${API_URL}/login/test`, {
+          const response = await axios.post(`${API_URL}/login`, {
             username,
             password
           })
@@ -55,7 +55,7 @@ export const useAuthStore = create<AuthState>()(
               id: payload.user_id,
               username: payload.sub,
               name: payload.sub,
-              role: 'trader'
+              role: payload.role || 'trader'
             },
             isAuthenticated: true,
             isLoading: false
