@@ -6,8 +6,10 @@ import os
 from pathlib import Path
 
 from .core.config import settings
-from .core.database import init_db
+from .core.database import init_db, AsyncSessionLocal
+from .core.security import get_password_hash
 from .api import auth, mt5, trade, ai, yahoo, execute, analytics, autopilot
+from .models.user import User
 
 # Import all models to register them with SQLAlchemy Base before database creation
 from . import models  # noqa: F401
@@ -18,9 +20,39 @@ app = FastAPI(
     version="2.0.0"
 )
 
+
+async def create_default_users():
+    """Create default admin and test users on first run."""
+    from sqlalchemy import select
+    
+    async with AsyncSessionLocal() as session:
+        try:
+            result = await session.execute(select(User).where(User.username == "admin"))
+            existing_admin = result.scalar_one_or_none()
+            
+            if existing_admin:
+                return
+            
+            default_users = [
+                User(username="admin", name="System Administrator", hashed_password=get_password_hash("admin@2026"), role="admin"),
+                User(username="keval_viradiya", name="Keval Viradiya", hashed_password=get_password_hash("Usdt@2026"), role="trader"),
+                User(username="sagar_barot", name="Sagar Barot", hashed_password=get_password_hash("Usdt@2026"), role="trader"),
+                User(username="meet_rao", name="Meet Rao", hashed_password=get_password_hash("Usdt@2026"), role="trader"),
+                User(username="guest", name="Guest Viewer", hashed_password=get_password_hash("Usdt@2026"), role="viewer"),
+            ]
+            
+            for user in default_users:
+                session.add(user)
+            
+            await session.commit()
+            print("Default users created successfully!")
+        except Exception as e:
+            print(f"Error creating default users: {e}")
+
 @app.on_event("startup")
 async def startup_event():
     await init_db()
+    await create_default_users()
 
 # CORS Middleware (still needed for development when frontend runs separately)
 app.add_middleware(
