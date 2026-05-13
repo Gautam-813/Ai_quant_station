@@ -31,7 +31,7 @@ services:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/impulse_analyst
       - SECRET_KEY=impulse-secret-key-change-in-production-use-secure-random
       - MT5_API_TOKEN=impulse_secure_2026
-      - HUGGINGFACE_API_KEY=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
+      - HUGGINGFACE_API_KEY=
       - HF_REPO_ID=TheFinanceEngineer/impulse-market-data
       - CORS_ORIGINS=http://localhost:3000,http://frontend:3000
     ports:
