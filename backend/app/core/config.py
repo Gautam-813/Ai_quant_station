@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     Bytez: str = ""
     Completions: str = ""
 
+    # Default admin credentials (change in production!)
+    DEFAULT_ADMIN_PASSWORD: str = "admin2026"
+
     class Config:
         env_file = env_file_path
         case_sensitive = True

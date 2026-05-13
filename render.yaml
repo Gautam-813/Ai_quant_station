@@ -32,6 +32,8 @@ services:
         sync: false
       - key: HF_REPO_ID
         value: "TheFinanceEngineer/impulse-market-data"
+      - key: DEFAULT_ADMIN_PASSWORD
+        value: "admin2026"
 
 databases:
   - name: impulse-db

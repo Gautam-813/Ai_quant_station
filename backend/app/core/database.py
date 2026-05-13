@@ -28,3 +28,9 @@ async def get_db():
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        
+        # Add is_active column if it doesn't exist (for PostgreSQL migration)
+        try:
+            await conn.execute("ALTER TABLE users ADD COLUMN is_active VARCHAR(20) DEFAULT 'true'")
+        except Exception:
+            pass  # Column already exists

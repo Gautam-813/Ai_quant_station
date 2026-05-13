@@ -22,7 +22,7 @@ app = FastAPI(
 
 
 async def create_default_users():
-    """Create default admin and test users on first run."""
+    """Create default admin user on first run - only admin, no passwords exposed."""
     from sqlalchemy import select
     
     async with AsyncSessionLocal() as session:
@@ -33,19 +33,17 @@ async def create_default_users():
             if existing_admin:
                 return
             
-            default_users = [
-                User(username="admin", name="System Administrator", hashed_password=get_password_hash("admin@2026"), role="admin"),
-                User(username="keval_viradiya", name="Keval Viradiya", hashed_password=get_password_hash("Usdt@2026"), role="trader"),
-                User(username="sagar_barot", name="Sagar Barot", hashed_password=get_password_hash("Usdt@2026"), role="trader"),
-                User(username="meet_rao", name="Meet Rao", hashed_password=get_password_hash("Usdt@2026"), role="trader"),
-                User(username="guest", name="Guest Viewer", hashed_password=get_password_hash("Usdt@2026"), role="viewer"),
-            ]
-            
-            for user in default_users:
-                session.add(user)
+            admin_user = User(
+                username="admin",
+                name="System Administrator",
+                hashed_password=get_password_hash(settings.DEFAULT_ADMIN_PASSWORD),
+                role="admin"
+            )
+            session.add(admin_user)
             
             await session.commit()
-            print("Default users created successfully!")
+            print("Default admin user created!")
+            print(f"Admin login - Username: admin, Password: {settings.DEFAULT_ADMIN_PASSWORD}")
         except Exception as e:
             print(f"Error creating default users: {e}")
 
