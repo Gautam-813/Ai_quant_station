@@ -39,24 +39,26 @@ def _is_using_connector() -> bool:
     return _mt5_connector_url is not None
 
 
-def verify_mt5_token(
-    x_mt5_token: Annotated[str, Header()],
+def get_mt5_connector_config(
     x_mt5_connector_url: Annotated[str | None, Header()] = None
 ):
-    """Verify MT5 API token and optionally set connector URL."""
+    """Dependency to set global connector URL from header."""
     global _mt5_connector_url
-    
-    if x_mt5_token != settings.MT5_API_TOKEN:
-        raise HTTPException(status_code=401, detail="Invalid MT5 token")
-    
-    # Store connector URL for use in MT5 calls
     if x_mt5_connector_url:
         _mt5_connector_url = x_mt5_connector_url
-        # Update the connector client base URL
         connector_client.base_url = x_mt5_connector_url
     else:
         _mt5_connector_url = None
-    
+    return _mt5_connector_url
+
+
+def verify_mt5_token(
+    x_mt5_token: Annotated[str, Header()],
+    connector_url: str | None = Depends(get_mt5_connector_config)
+):
+    """Verify MT5 API token."""
+    if x_mt5_token != settings.MT5_API_TOKEN:
+        raise HTTPException(status_code=401, detail="Invalid MT5 token")
     return x_mt5_token
 
 
@@ -222,7 +224,10 @@ async def get_all_symbols(token: str = Depends(verify_mt5_token)):
 
 
 @router.get("/symbols")
-async def get_symbols_jwt(current_user: dict = Depends(get_current_user)):
+async def get_symbols_jwt(
+    current_user: dict = Depends(get_current_user),
+    connector_url: str | None = Depends(get_mt5_connector_config)
+):
     """Get available symbols from MT5 (JWT auth)."""
     if not await _init_mt5():
         return {"success": False, "symbols": [], "error": "MT5 not available"}
