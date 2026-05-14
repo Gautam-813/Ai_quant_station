@@ -458,6 +458,16 @@ async def get_account_info(token: str = Depends(verify_mt5_token)):
     if not await _init_mt5():
         raise HTTPException(status_code=400, detail="MT5 not initialized")
 
+    if _is_using_connector():
+        try:
+            res = await connector_client.get_account_info()
+            if res.get("success"):
+                return AccountInfo(**res.get("data", {}))
+            else:
+                raise HTTPException(status_code=500, detail=res.get("error", "Failed to get account info from connector"))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
     mt5 = _get_mt5()
     acc = mt5.account_info()
     if acc is None:
@@ -485,6 +495,30 @@ async def get_positions(token: str = Depends(verify_mt5_token)):
     """Get open positions."""
     if not await _init_mt5():
         raise HTTPException(status_code=400, detail="MT5 not initialized")
+
+    if _is_using_connector():
+        try:
+            res = await connector_client.get_positions()
+            if res.get("success"):
+                data = res.get("data", {})
+                positions_raw = data.get("positions", [])
+                position_list = [Position(**p) for p in positions_raw]
+                
+                return PositionsResponse(
+                    success=True,
+                    balance=data.get("balance", 0.0),
+                    equity=data.get("equity", 0.0),
+                    margin=data.get("margin", 0.0),
+                    free_margin=data.get("free_margin", 0.0),
+                    margin_level=data.get("margin_level", 0.0),
+                    open_count=len(position_list),
+                    total_profit=data.get("total_profit", 0.0),
+                    positions=position_list
+                )
+            else:
+                raise HTTPException(status_code=500, detail=res.get("error", "Failed to get positions from connector"))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
 
     mt5 = _get_mt5()
     acc = mt5.account_info()
@@ -530,7 +564,20 @@ async def get_history(hours: int = 0, token: str = Depends(verify_mt5_token)):
     if not await _init_mt5():
         raise HTTPException(status_code=400, detail="MT5 not initialized")
 
+    if _is_using_connector():
+        try:
+            res = await connector_client.get_history(hours=hours)
+            if res.get("success"):
+                trades_raw = res.get("deals", [])
+                trade_list = [Trade(**t) for t in trades_raw]
+                return HistoryResponse(success=True, count=len(trade_list), deals=trade_list)
+            else:
+                raise HTTPException(status_code=500, detail=res.get("error", "Failed to get history from connector"))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
     mt5 = _get_mt5()
+    # ... (rest of direct MT5 logic remains the same)
 
     if hours > 0:
         from_time = datetime.now() - timedelta(hours=hours)
