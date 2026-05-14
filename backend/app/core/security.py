@@ -10,8 +10,25 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 security = HTTPBearer()
 
 
+import bcrypt
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    try:
+        # Direct bcrypt verification to avoid passlib version conflicts
+        # We encode both to bytes as required by bcrypt
+        password_bytes = plain_password.encode('utf-8')
+        # Truncate to 72 bytes (bcrypt limit) to be safe
+        password_bytes = password_bytes[:72]
+        
+        hashed_bytes = hashed_password.encode('utf-8')
+        return bcrypt.checkpw(password_bytes, hashed_bytes)
+    except Exception as e:
+        print(f"CRITICAL AUTH ERROR: {str(e)}")
+        # Fallback to passlib if direct bcrypt fails (unlikely)
+        try:
+            return pwd_context.verify(plain_password, hashed_password)
+        except:
+            return False
 
 
 def get_password_hash(password: str) -> str:
