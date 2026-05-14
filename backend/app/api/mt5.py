@@ -235,10 +235,11 @@ async def get_symbols_jwt(current_user: dict = Depends(get_current_user)):
             seen = set()
             for s in all_symbols:
                 name = s.get("name")
-                if name and name not in seen:
+                # Only include symbols that are visible in the terminal
+                if name and name not in seen and s.get("visible", True):
                     seen.add(name)
                     symbols.append({"symbol": name, "name": name, "type": "forex"})
-            return {"success": True, "symbols": symbols[:100]}
+            return {"success": True, "symbols": symbols}
         except Exception as e:
             return {"success": False, "symbols": [], "error": str(e)}
 
@@ -254,7 +255,7 @@ async def get_symbols_jwt(current_user: dict = Depends(get_current_user)):
             seen.add(s.name)
             symbols.append({"symbol": s.name, "name": s.name, "type": "forex"})
 
-    return {"success": True, "symbols": symbols[:100]}
+    return {"success": True, "symbols": symbols}
 
 
 @router.get("/symbol/{symbol}")
