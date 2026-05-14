@@ -441,7 +441,7 @@ export default function AIAnalystPage() {
                         {availableSymbols.length > 0 ? (
                           <>
                             <SelectItem value="custom">Custom...</SelectItem>
-                            {availableSymbols.slice(0, 30).map((sym) => (
+                            {availableSymbols.map((sym) => (
                               <SelectItem key={sym.symbol} value={sym.symbol}>
                                 {sym.name || sym.symbol}
                               </SelectItem>

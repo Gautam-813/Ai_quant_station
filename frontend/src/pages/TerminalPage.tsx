@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import api from '@/lib/api'
+import axios from 'axios'
 
 interface Symbol {
   name: string
@@ -43,7 +43,7 @@ export default function TerminalPage() {
 
   const fetchSymbols = async () => {
     try {
-      const res = await api.get('/mt5/symbols/all')
+      const res = await axios.get('/api/mt5/symbols/all')
       setSymbols(res.data.symbols || [])
     } catch (error) {
       console.error('Failed to fetch symbols:', error)
@@ -52,7 +52,7 @@ export default function TerminalPage() {
 
   const fetchPositions = async () => {
     try {
-      const res = await api.get('/mt5/positions')
+      const res = await axios.get('/api/mt5/positions')
       setPositions(res.data.positions || [])
     } catch (error) {
       console.error('Failed to fetch positions:', error)
@@ -67,7 +67,7 @@ export default function TerminalPage() {
         ? direction 
         : `${direction}_${orderType.toUpperCase()}`
       
-      await api.post('/trade/order', {
+      await axios.post('/api/trade/order', {
         symbol: selectedSymbol,
         action,
         volume,
@@ -90,7 +90,7 @@ export default function TerminalPage() {
 
   const handleClose = async (ticket: number) => {
     try {
-      await api.post('/trade/close', { ticket })
+      await axios.post('/api/trade/close', { ticket })
       fetchPositions()
     } catch (error) {
       console.error('Close failed:', error)
@@ -115,7 +115,7 @@ export default function TerminalPage() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {symbols.slice(0, 20).map((sym) => (
+                  {symbols.map((sym) => (
                     <SelectItem key={sym.name} value={sym.name}>
                       {sym.name}
                     </SelectItem>
