@@ -149,7 +149,9 @@ async def health_check(token: str = Depends(verify_mt5_token)):
                 "server": _mt5_connector_url
             }
         except Exception as e:
-            raise HTTPException(status_code=503, detail=f"Connector unavailable: {str(e)}")
+            error_msg = f"Connector unavailable at {_mt5_connector_url}: {str(e)}"
+            print(error_msg)
+            raise HTTPException(status_code=503, detail=error_msg)
     
     initialized = await _init_mt5()
     return {

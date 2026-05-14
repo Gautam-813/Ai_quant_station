@@ -1,9 +1,10 @@
 # MT5 Connector Service
 # This runs on Windows server with MT5 terminal installed
+# Works like your existing mt5_data_server.py
 
-import asyncio
 import sys
 import os
+import socket
 from datetime import datetime, timedelta
 from typing import Optional
 import MetaTrader5 as mt5
@@ -12,6 +13,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
+
+# Fix Windows console encoding for emoji support
+if sys.platform == 'win32':
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
 
 app = FastAPI(title="MT5 Connector Service")
 
@@ -25,6 +31,47 @@ app.add_middleware(
 # MT5 Connection State
 mt5_initialized = False
 last_error = None
+terminal_path = None
+
+
+def get_network_ip():
+    """Detect the primary network IP of this machine."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(('8.8.8.8', 1))
+        IP = s.getsockname()[0]
+    except Exception:
+        IP = '127.0.0.1'
+    finally:
+        s.close()
+    return IP
+
+
+def get_startup_config():
+    """Get configuration from env vars or interactive input."""
+    port_env = os.getenv("MT5_CONNECTOR_PORT")
+    terminal_env = os.getenv("MT5_TERMINAL_PATH")
+    
+    if port_env:
+        return int(port_env), terminal_env
+    
+    print("\n" + "=" * 60)
+    print("      MT5 Connector Service - Configuration Startup")
+    print("=" * 60 + "\n")
+    
+    default_port = os.getenv("MT5_CONNECTOR_PORT", "5001")
+    port_input = input(f"Enter Port [Default {default_port}]: ").strip() or default_port
+    port = int(port_input)
+    
+    print("\nMultiple MT5 Instances Detected?")
+    print("   (Leave empty to use your default/active MT5)")
+    terminal_path = input("Enter MT5 Terminal Path (e.g. C:\\...\\terminal64.exe): ").strip() or None
+    
+    return port, terminal_path
+
+
+PORT, STARTUP_PATH = get_startup_config()
+SERVER_IP = get_network_ip()
 
 
 class OrderRequest(BaseModel):
@@ -53,9 +100,10 @@ class ModifyRequest(BaseModel):
 async def root():
     return {
         "service": "MT5 Connector",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "mt5_initialized": mt5_initialized,
         "last_error": last_error,
+        "terminal_path": terminal_path,
         "timestamp": datetime.now().isoformat()
     }
 
@@ -64,18 +112,21 @@ async def root():
 async def health():
     return {
         "status": "healthy" if mt5_initialized else "not_initialized",
-        "mt5_connected": mt5_initialized
+        "mt5_connected": mt5_initialized,
+        "terminal_path": terminal_path
     }
 
 
 @app.post("/initialize")
-async def initialize_mt5(terminal_path: Optional[str] = None):
+async def initialize_mt5(terminal_path_input: Optional[str] = None):
     """Initialize MT5 connection."""
-    global mt5_initialized, last_error
+    global mt5_initialized, last_error, terminal_path
     
     try:
-        if terminal_path:
-            if not mt5.initialize(path=terminal_path):
+        path = terminal_path_input or STARTUP_PATH
+        
+        if path:
+            if not mt5.initialize(path=path):
                 last_error = mt5.last_error()
                 raise HTTPException(status_code=500, detail=f"MT5 init failed: {last_error}")
         else:
@@ -84,6 +135,7 @@ async def initialize_mt5(terminal_path: Optional[str] = None):
                 raise HTTPException(status_code=500, detail=f"MT5 init failed: {last_error}")
         
         mt5_initialized = True
+        terminal_path = path
         account = mt5.account_info()
         
         return {
@@ -306,7 +358,7 @@ async def place_order(order: OrderRequest):
         "sl": sl,
         "tp": tp,
         "comment": result.comment,
-        "position": result.order # Default to order if position not available immediately
+        "position": result.order
     }
 
 
@@ -547,67 +599,35 @@ async def get_latest_data(symbol: str, timeframe: str = "1h", count: int = 500):
 
 
 if __name__ == "__main__":
-    import argparse
-    
-    # Parse command line arguments
-    parser = argparse.ArgumentParser(description="MT5 Connector Service")
-    parser.add_argument(
-        "--port", 
-        type=int, 
-        default=None,
-        help="Port number for the service (default: 5001)"
-    )
-    parser.add_argument(
-        "--host",
-        type=str,
-        default="0.0.0.0",
-        help="Host address (default: 0.0.0.0)"
-    )
-    args = parser.parse_args()
-    
-    # Get port from environment variable or command line
-    port = args.port or int(os.environ.get("MT5_CONNECTOR_PORT", 0))
-    host = os.environ.get("MT5_CONNECTOR_HOST", args.host)
-    
+    print("\n" + "=" * 60)
+    print("  MT5 Connector Service - Interactive Mode")
     print("=" * 60)
-    print("MT5 Connector Service")
-    print("=" * 60)
-    print("This service connects to MetaTrader 5 and exposes")
-    print("REST API for the main backend to use.")
-    print("")
     
-    # Interactive port selection
-    if port == 0:
-        print("Available port options:")
-        print("  - Press Enter for default (5001)")
-        print("  - Enter custom port (e.g., 5002, 8080)")
-        print("")
-        user_port = input("Enter port number [default: 5001]: ").strip()
-        if user_port == "":
-            port = 5001
+    # Try to auto-connect at startup
+    try:
+        if STARTUP_PATH:
+            if mt5.initialize(path=STARTUP_PATH):
+                mt5_initialized = True
+                terminal_path = STARTUP_PATH
+                acc = mt5.account_info()
+                print(f"Auto-Connected to MT5 Terminal")
+                print(f"   Account: {acc.login} | Server: {acc.server}")
+            else:
+                print(f"Manual MT5 initialization required (Call /initialize via API)")
         else:
-            try:
-                port = int(user_port)
-                if port < 1 or port > 65535:
-                    print("Invalid port. Using default 5001")
-                    port = 5001
-            except ValueError:
-                print("Invalid number. Using default 5001")
-                port = 5001
+            if mt5.initialize():
+                mt5_initialized = True
+                acc = mt5.account_info()
+                print(f"Auto-Connected to MT5 Terminal (Default)")
+                print(f"   Account: {acc.login} | Server: {acc.server}")
+            else:
+                print(f"Manual MT5 initialization required (Call /initialize via API)")
+    except Exception as e:
+        print(f"Manual MT5 initialization required (Call /initialize via API)")
+        print(f"Error: {e}")
     
-    print("")
-    print(f"Starting service on http://{host}:{port}...")
-    print("=" * 60)
-    print("")
-    print("Service will be available at:")
-    print(f"  - Local:   http://localhost:{port}")
-    print(f"  - Network: http://{host}:{port}")
-    print("")
-    print("API Endpoints:")
-    print(f"  - GET  http://{host}:{port}/")
-    print(f"  - GET  http://{host}:{port}/health")
-    print(f"  - POST http://{host}:{port}/initialize")
-    print(f"  - POST http://{host}:{port}/order")
-    print("=" * 60)
+    print(f"\nAPI Server starting on http://{SERVER_IP}:{PORT}")
+    print(f"Docs (Swagger UI): http://{SERVER_IP}:{PORT}/docs")
+    print("=" * 60 + "\n")
     
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=PORT)

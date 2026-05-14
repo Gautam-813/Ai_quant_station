@@ -16,11 +16,24 @@ class MT5ConnectorClient:
     
     async def _request(self, method: str, endpoint: str, **kwargs) -> Dict[str, Any]:
         """Make HTTP request to connector."""
-        url = f"{self.base_url}{endpoint}"
+        # Ensure base_url doesn't have trailing slash and endpoint has leading slash
+        base = self.base_url.rstrip("/")
+        path = "/" + endpoint.lstrip("/")
+        url = f"{base}{path}"
+        
+        print(f"MT5 Connector Request: {method} {url}")
+        
         async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.request(method, url, **kwargs)
-            response.raise_for_status()
-            return response.json()
+            try:
+                response = await client.request(method, url, **kwargs)
+                response.raise_for_status()
+                return response.json()
+            except httpx.ConnectError as e:
+                print(f"MT5 Connector Connection Error: {e}")
+                raise
+            except Exception as e:
+                print(f"MT5 Connector Request Error: {e}")
+                raise
     
     async def health(self) -> Dict[str, Any]:
         """Check connector health."""

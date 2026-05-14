@@ -181,8 +181,12 @@ axios.interceptors.request.use((config) => {
       if (savedSettings) {
         const mt5Settings = JSON.parse(savedSettings)
         if (mt5Settings.useExternal === 'true' && mt5Settings.port) {
-          const serverUrl = mt5Settings.serverIp 
-            ? `http://${mt5Settings.serverIp}:${mt5Settings.port}`
+          let ip = (mt5Settings.serverIp || '').trim()
+          // Remove protocol if entered
+          ip = ip.replace(/^https?:\/\//, '').replace(/\/$/, '')
+          
+          const serverUrl = ip 
+            ? `http://${ip}:${mt5Settings.port}`
             : `http://localhost:${mt5Settings.port}`
           config.headers['x-mt5-connector-url'] = serverUrl
         }

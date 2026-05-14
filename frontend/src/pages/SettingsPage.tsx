@@ -54,8 +54,12 @@ export default function SettingsPage() {
       
       // Add connector headers if using external
       if (mt5Connector.useExternal === 'true') {
-        const serverUrl = mt5Connector.serverIp 
-          ? `http://${mt5Connector.serverIp}:${mt5Connector.port}`
+        let ip = mt5Connector.serverIp.trim()
+        // Remove protocol if entered
+        ip = ip.replace(/^https?:\/\//, '').replace(/\/$/, '')
+        
+        const serverUrl = ip 
+          ? `http://${ip}:${mt5Connector.port}`
           : `http://localhost:${mt5Connector.port}`
         headers['x-mt5-connector-url'] = serverUrl
       }
