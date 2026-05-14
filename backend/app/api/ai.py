@@ -370,19 +370,22 @@ Last 10 candles:
             "",
             "4. Always consider risk-reward ratios (1:2 or better preferred)",
             "5. Never guarantee profits - always mention risk",
-            "6. If unsure, say so rather than guessing",
-            "7. Provide clear, actionable analysis with specific entry, SL, and TP levels",
+            "6. If unsure, say so rather than guessing.",
+            "7. Provide clear, actionable analysis with specific entry, SL, and TP levels.",
             "",
-            "8. For technical indicator calculations (ATR, SMA, EMA, RSI):",
-            "   - Calculate using the provided candle data (OHLC values)",
-            "   - Show your calculation steps with formulas",
-            "   - Provide the final numeric result with period used",
-            "   - Example ATR: TR = max(H-L, |H-prevC|, |L-prevC|), ATR = avg(TR over N periods)",
+            "8. For technical indicator calculations (ATR, SMA, EMA, RSI, etc.):",
+            "   - You have a global variable 'df' available which contains the COMPLETE historical dataset (1000+ candles).",
+            "   - NEVER calculate indicators manually. Always write a Python code block (```python) to perform calculations.",
+            "   - Use 'df' directly in your code. It is already loaded and ready.",
+            "   - Output your results using print() or show_chart() functions.",
             "",
-            "9. For visualizing numeric series (like RSI or SMA values), use:",
+            "9. For visualizing numeric series or analysis results, use:",
             "```json",
             '{"action": "SHOW_CHART", "title": "RSI (14)", "data": [45.2, 48.5, 52.1, 50.4, 49.8], "color": "#22c55e"}',
             "```",
+            "OR use show_chart(data, title) within your Python code block.",
+            "",
+            "10. For displaying tables, use show_table(df, title) within your Python code block.",
         ]
 
         # Add market data if available (like Streamlit - include full data samples)
@@ -394,11 +397,12 @@ Last 10 candles:
             latest_time = candle_data_for_ai[-1].get('time', 'N/A')
             total_candles = len(candle_data_for_ai)
             samples = []
-            for c in candle_data_for_ai[-20:]:  # Last 20 candles for ATR calculations
+            for c in candle_data_for_ai[-5:]:  # Last 5 for quick text reference
                 samples.append(f"O:{c.get('open')} H:{c.get('high')} L:{c.get('low')} C:{c.get('close')}")
-            system_parts.append(f"\nLATEST_CANDLE: {latest_time}")
-            system_parts.append(f"TOTAL_CANDLES_AVAILABLE: {total_candles}")
-            system_parts.append(f"SAMPLES (Last 20 candles): {', '.join(samples)}")
+            system_parts.append(f"\nLATEST_CANDLE_TIME: {latest_time}")
+            system_parts.append(f"TOTAL_CANDLES_IN_DF: {total_candles}")
+            system_parts.append(f"LATEST_SAMPLES: {', '.join(samples)}")
+            system_parts.append("\nNote: The 'df' variable in the Python environment contains ALL these candles. Use it for your calculations.")
 
         # Add current session context (recent conversation from database)
         if user_memory_context:

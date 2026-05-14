@@ -82,6 +82,22 @@ async def run_python_code(code: str, market_data: Optional[List[Dict[str, Any]]]
         safe_globals['pd'] = pd
         safe_globals['np'] = np
 
+        # Add advanced trading and math libraries
+        try:
+            import pandas_ta as ta
+            safe_globals['ta'] = ta
+        except: pass
+        
+        try:
+            import scipy
+            safe_globals['scipy'] = scipy
+        except: pass
+        
+        try:
+            from sklearn import linear_model
+            safe_globals['sklearn'] = sklearn
+        except: pass
+
         # Setup matplotlib without display
         import matplotlib
         matplotlib.use('Agg')
