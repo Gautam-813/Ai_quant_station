@@ -170,9 +170,6 @@ export default function AutopilotPage() {
     }
   }
 
-    }
-  }
-
   const connectMT5 = async () => {
     try {
       const res = await axios.post('/api/autopilot/connect-mt5', null, {
@@ -452,8 +449,8 @@ export default function AutopilotPage() {
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle>Strategy Prompts</CardTitle>
             <div className="flex gap-2">
-              <Button variant="outline" size="xs" className="h-7 text-[10px]" onClick={selectAllPrompts}>All</Button>
-              <Button variant="outline" size="xs" className="h-7 text-[10px]" onClick={clearPromptSelection}>None</Button>
+              <Button variant="outline" size="sm" className="h-7 text-[10px]" onClick={selectAllPrompts}>All</Button>
+              <Button variant="outline" size="sm" className="h-7 text-[10px]" onClick={clearPromptSelection}>None</Button>
             </div>
           </CardHeader>
           <CardContent className="flex-1 flex flex-col space-y-4 overflow-hidden">
@@ -500,8 +497,8 @@ export default function AutopilotPage() {
                             }}
                           />
                           <div className="flex gap-2">
-                            <Button size="xs" onClick={() => handleUpdatePrompt(p.id, p.text)}>Save</Button>
-                            <Button size="xs" variant="ghost" onClick={() => setEditingPromptId(null)}>Cancel</Button>
+                            <Button size="sm" onClick={() => handleUpdatePrompt(p.id, p.text)}>Save</Button>
+                            <Button size="sm" variant="ghost" onClick={() => setEditingPromptId(null)}>Cancel</Button>
                           </div>
                         </div>
                       ) : (
