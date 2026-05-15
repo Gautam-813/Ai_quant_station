@@ -15,6 +15,7 @@ from .ai_memory import (
     CalculationHistory,
     IndicatorRequest,
 )
+from .historical_lab import HistoricalBacktest
 
 __all__ = [
     "User",
@@ -26,4 +27,5 @@ __all__ = [
     "UserFeedback",
     "CalculationHistory",
     "IndicatorRequest",
+    "HistoricalBacktest",
 ]

@@ -11,9 +11,11 @@ import DashboardPage from '@/pages/DashboardPage'
 import TerminalPage from '@/pages/TerminalPage'
 import AIAnalystPage from '@/pages/AIAnalystPage'
 import HistoryPage from '@/pages/HistoryPage'
+import HistoricalLabPage from '@/pages/HistoricalLabPage'
 import SettingsPage from '@/pages/SettingsPage'
 import AutopilotPage from '@/pages/AutopilotPage'
 import UserManagementPage from '@/pages/UserManagementPage'
+import BacktestPage from '@/pages/BacktestPage'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated } = useAuthStore()
@@ -37,9 +39,11 @@ function App() {
           <Route index element={<DashboardPage />} />
           <Route path="terminal" element={<TerminalPage />} />
           <Route path="ai-analyst" element={<AIAnalystPage />} />
+          <Route path="historical-lab" element={<HistoricalLabPage />} />
           <Route path="history" element={<HistoryPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="autopilot" element={<AutopilotPage />} />
+          <Route path="backtest" element={<BacktestPage />} />
           <Route path="users" element={<UserManagementPage />} />
         </Route>
       </Routes>

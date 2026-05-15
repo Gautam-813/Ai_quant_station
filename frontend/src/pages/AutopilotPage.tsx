@@ -62,6 +62,14 @@ export default function AutopilotPage() {
   const [trades, setTrades] = useState<TradeResult[]>([])
   const [loading, setLoading] = useState(true)
 
+  // Prompts State
+  const [defaultPrompts, setDefaultPrompts] = useState<{id: string, text: string}[]>([])
+  const [personalPrompts, setPersonalPrompts] = useState<{id: string, text: string}[]>([])
+  const [selectedPromptIds, setSelectedPromptIds] = useState<string[]>([])
+  const [newPromptText, setNewPromptText] = useState('')
+  const [editingPromptId, setEditingPromptId] = useState<string | null>(null)
+  const [promptSearch, setPromptSearch] = useState('')
+
   // Settings form
   const [intervalVal, setIntervalVal] = useState('300')
   const [lotSize, setLotSize] = useState('0.10')
@@ -75,11 +83,23 @@ export default function AutopilotPage() {
   useEffect(() => {
     fetchStatus()
     fetchTrades()
+    fetchPrompts()
     const intervalId: ReturnType<typeof setInterval> = setInterval(() => {
       fetchStatus()
     }, 5000)
     return () => clearInterval(intervalId)
   }, [])
+
+  const fetchPrompts = async () => {
+    try {
+      const res = await axios.get('/api/autopilot/prompts')
+      setDefaultPrompts(res.data.default_prompts)
+      setPersonalPrompts(res.data.personal_prompts)
+      setSelectedPromptIds(res.data.selected_ids.map(String))
+    } catch (error) {
+      console.error('Failed to fetch prompts:', error)
+    }
+  }
 
   const fetchStatus = async () => {
     try {
@@ -142,10 +162,14 @@ export default function AutopilotPage() {
         mt5_connector_url: connectorUrl || null,
         symbol: symbol,
         provider: provider,
-        model: model
+        model: model,
+        selected_prompts: selectedPromptIds.map(id => id.startsWith('custom_') ? id : parseInt(id))
       })
     } catch (error) {
       console.error('Failed to save settings:', error)
+    }
+  }
+
     }
   }
 
@@ -164,6 +188,52 @@ export default function AutopilotPage() {
     } catch (error: any) {
       alert('Error: ' + (error.response?.data?.detail || error.message))
     }
+  }
+
+  const handleAddPrompt = async () => {
+    if (!newPromptText.trim()) return
+    try {
+      await axios.post('/api/autopilot/prompts', { content: newPromptText })
+      setNewPromptText('')
+      fetchPrompts()
+    } catch (error) {
+      console.error('Failed to add prompt:', error)
+    }
+  }
+
+  const handleDeletePrompt = async (id: string) => {
+    if (!confirm('Are you sure you want to delete this prompt?')) return
+    try {
+      await axios.delete(`/api/autopilot/prompts/${id}`)
+      fetchPrompts()
+    } catch (error) {
+      console.error('Failed to delete prompt:', error)
+    }
+  }
+
+  const handleUpdatePrompt = async (id: string, text: string) => {
+    try {
+      await axios.put(`/api/autopilot/prompts/${id}`, { content: text })
+      setEditingPromptId(null)
+      fetchPrompts()
+    } catch (error) {
+      console.error('Failed to update prompt:', error)
+    }
+  }
+
+  const togglePromptSelection = (id: string) => {
+    setSelectedPromptIds(prev => 
+      prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
+    )
+  }
+
+  const selectAllPrompts = () => {
+    const allIds = [...defaultPrompts.map(p => p.id), ...personalPrompts.map(p => p.id)]
+    setSelectedPromptIds(allIds)
+  }
+
+  const clearPromptSelection = () => {
+    setSelectedPromptIds([])
   }
 
   const getLogColor = (level: string) => {
@@ -374,6 +444,115 @@ export default function AutopilotPage() {
             <Button onClick={saveSettings} variant="outline" className="w-full">
               Save Settings
             </Button>
+          </CardContent>
+        </Card>
+
+        {/* Prompt Management */}
+        <Card className="lg:row-span-2 flex flex-col">
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle>Strategy Prompts</CardTitle>
+            <div className="flex gap-2">
+              <Button variant="outline" size="xs" className="h-7 text-[10px]" onClick={selectAllPrompts}>All</Button>
+              <Button variant="outline" size="xs" className="h-7 text-[10px]" onClick={clearPromptSelection}>None</Button>
+            </div>
+          </CardHeader>
+          <CardContent className="flex-1 flex flex-col space-y-4 overflow-hidden">
+            <div className="space-y-2">
+              <Input 
+                placeholder="Search prompts..." 
+                value={promptSearch}
+                onChange={(e) => setPromptSearch(e.target.value)}
+                className="h-8 text-xs"
+              />
+              <div className="flex items-center gap-2 text-[10px] text-muted-foreground px-1">
+                <span className="flex items-center gap-1">
+                  <div className="w-2 h-2 rounded-full bg-blue-500"></div> Default
+                </span>
+                <span className="flex items-center gap-1">
+                  <div className="w-2 h-2 rounded-full bg-purple-500"></div> Personal
+                </span>
+                <span className="ml-auto">{selectedPromptIds.length} selected</span>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto pr-2 space-y-2 max-h-[500px]">
+              {/* Personal Prompts First */}
+              {personalPrompts
+                .filter(p => p.text.toLowerCase().includes(promptSearch.toLowerCase()))
+                .map(p => (
+                <div key={p.id} className={`p-3 rounded-lg border text-xs transition-colors ${selectedPromptIds.includes(p.id) ? 'bg-purple-500/10 border-purple-500/30' : 'bg-muted/30 border-transparent'}`}>
+                  <div className="flex items-start gap-3">
+                    <input 
+                      type="checkbox" 
+                      checked={selectedPromptIds.includes(p.id)}
+                      onChange={() => togglePromptSelection(p.id)}
+                      className="mt-1 accent-purple-500"
+                    />
+                    <div className="flex-1">
+                      {editingPromptId === p.id ? (
+                        <div className="space-y-2">
+                          <textarea 
+                            className="w-full bg-background border rounded p-2 min-h-[60px]"
+                            value={p.text}
+                            onChange={(e) => {
+                              const newText = e.target.value
+                              setPersonalPrompts(prev => prev.map(item => item.id === p.id ? {...item, text: newText} : item))
+                            }}
+                          />
+                          <div className="flex gap-2">
+                            <Button size="xs" onClick={() => handleUpdatePrompt(p.id, p.text)}>Save</Button>
+                            <Button size="xs" variant="ghost" onClick={() => setEditingPromptId(null)}>Cancel</Button>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <p className="leading-relaxed">{p.text}</p>
+                          <div className="flex gap-2 mt-2 opacity-50 hover:opacity-100">
+                            <button onClick={() => setEditingPromptId(p.id)} className="hover:text-blue-400">Edit</button>
+                            <button onClick={() => handleDeletePrompt(p.id)} className="hover:text-red-400">Delete</button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+
+              {/* Default Prompts */}
+              {defaultPrompts
+                .filter(p => p.text.toLowerCase().includes(promptSearch.toLowerCase()) || p.id.includes(promptSearch))
+                .map(p => (
+                <div key={p.id} className={`p-3 rounded-lg border text-xs transition-colors ${selectedPromptIds.includes(p.id) ? 'bg-blue-500/10 border-blue-500/30' : 'bg-muted/30 border-transparent'}`}>
+                  <div className="flex items-start gap-3">
+                    <input 
+                      type="checkbox" 
+                      checked={selectedPromptIds.includes(p.id)}
+                      onChange={() => togglePromptSelection(p.id)}
+                      className="mt-1 accent-blue-500"
+                    />
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="font-bold text-blue-400">#{p.id}</span>
+                      </div>
+                      <p className="leading-relaxed text-muted-foreground">{p.text}</p>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="pt-4 border-t border-border">
+              <label className="text-xs font-medium mb-2 block">Add Personal Strategy</label>
+              <textarea 
+                placeholder="Enter your custom trading prompt..." 
+                className="w-full bg-muted/30 border-border rounded-lg p-3 text-xs min-h-[80px] focus:ring-1 focus:ring-purple-500 outline-none"
+                value={newPromptText}
+                onChange={(e) => setNewPromptText(e.target.value)}
+              />
+              <Button className="w-full mt-2" onClick={handleAddPrompt} disabled={!newPromptText.trim()}>
+                Add to Library
+              </Button>
+            </div>
           </CardContent>
         </Card>
 

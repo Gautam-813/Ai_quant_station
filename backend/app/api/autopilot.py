@@ -17,7 +17,7 @@ from openai import AsyncOpenAI
 from ..core.config import settings
 from ..core.security import get_current_user
 from ..core.database import AsyncSessionLocal
-from ..models.ai_memory import AutopilotTrade, AutopilotSettings
+from ..models.ai_memory import AutopilotTrade, AutopilotSettings, UserPrompt
 from .execute import run_python_code
 
 router = APIRouter(prefix="/autopilot", tags=["Autopilot"])
@@ -255,12 +255,10 @@ async def check_open_positions(connector_url: str = None):
 
 async def run_autopilot_cycle(user_id: int):
     """Run one cycle of autopilot."""
-    prompts = load_prompts()
-    if not prompts:
-        add_log("No prompts available", "ERROR")
-        return
-
-    # Get settings
+    # Load default prompts
+    default_prompts = load_prompts()
+    
+    # Get settings and personal prompts
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             select(AutopilotSettings).where(AutopilotSettings.user_id == user_id)
@@ -271,6 +269,12 @@ async def run_autopilot_cycle(user_id: int):
             add_log("Autopilot not configured", "ERROR")
             return
 
+        # Fetch personal prompts
+        result = await db.execute(
+            select(UserPrompt).where(UserPrompt.user_id == user_id)
+        )
+        personal_prompts = result.scalars().all()
+
         symbol = settings_obj.symbol
         provider = settings_obj.provider
         model = settings_obj.model
@@ -278,6 +282,32 @@ async def run_autopilot_cycle(user_id: int):
         terminal_path = settings_obj.mt5_terminal_path
         connector_url = settings_obj.mt5_connector_url
         mt5_connected = settings_obj.mt5_connected
+        selected_ids = settings_obj.selected_prompts or []
+
+    # Filter prompts based on selection
+    # default_prompts are line numbers 1-100
+    # personal_prompts are "custom_{id}"
+    
+    prompt_pool = []
+    
+    # Add selected default prompts
+    for line in default_prompts:
+        try:
+            p_num = int(line.split(".")[0].strip())
+            if not selected_ids or p_num in selected_ids:
+                prompt_pool.append({"id": p_num, "text": line.split(".", 1)[1].strip(), "is_custom": False})
+        except:
+            continue
+            
+    # Add selected personal prompts
+    for p in personal_prompts:
+        custom_id = f"custom_{p.id}"
+        if not selected_ids or custom_id in selected_ids:
+            prompt_pool.append({"id": custom_id, "text": p.content, "is_custom": True})
+
+    if not prompt_pool:
+        add_log("No prompts selected in settings", "ERROR")
+        return
 
     # Check/initialize MT5 connection
     if not mt5_connected:
@@ -302,11 +332,20 @@ async def run_autopilot_cycle(user_id: int):
 
     add_log(f"=== Starting Cycle #{autopilot_state['stats']['total_runs']} ===")
 
-    # 1. Pick random prompt
-    selected_line = random.choice(prompts)
-    prompt_num = int(selected_line.split(".")[0].strip())
-    prompt_text = selected_line.split(".", 1)[1].strip()
-    add_log(f"Prompt #{prompt_num}: {prompt_text[:50]}...")
+    # 1. Pick random prompt from pool
+    chosen = random.choice(prompt_pool)
+    prompt_id_val = chosen["id"]
+    prompt_text = chosen["text"]
+    
+    # For logging/trade comment
+    if chosen["is_custom"]:
+        prompt_num = 999  # Dummy for custom
+        display_id = f"Custom-{prompt_id_val.split('_')[1]}"
+    else:
+        prompt_num = prompt_id_val
+        display_id = f"#{prompt_num}"
+        
+    add_log(f"Using Strategy {display_id}: {prompt_text[:50]}...")
 
     # 2. Get market data
     market_data = await get_market_data(symbol, connector_url=connector_url)
@@ -591,6 +630,7 @@ class AutopilotConfig(BaseModel):
     symbol: str = "XAUUSD"
     provider: str = "nvidia"
     model: str = "qwen/qwen3.5-122b-a10b"
+    selected_prompts: Optional[List] = None
 
 
 class AutopilotStatus(BaseModel):
@@ -607,6 +647,26 @@ class AutopilotStats(BaseModel):
     success_count: int
     error_count: int
     last_run: Optional[str] = None
+
+
+class UserPromptCreate(BaseModel):
+    content: str
+
+
+class UserPromptUpdate(BaseModel):
+    content: str
+
+
+class PromptResponse(BaseModel):
+    id: str  # e.g., "1" or "custom_1"
+    text: str
+    is_custom: bool
+
+
+class PromptStatus(BaseModel):
+    default_prompts: List[PromptResponse]
+    personal_prompts: List[PromptResponse]
+    selected_ids: List
 
 
 class TradeResult(BaseModel):
@@ -794,10 +854,121 @@ async def save_settings(
         settings_obj.symbol = config.symbol
         settings_obj.provider = config.provider
         settings_obj.model = config.model
+        settings_obj.selected_prompts = config.selected_prompts
 
         await db.commit()
 
     autopilot_state["settings"] = config.dict()
+    return {"success": True}
+
+
+@router.get("/prompts", response_model=PromptStatus)
+async def get_prompts(current_user: dict = Depends(get_current_user)):
+    """Get all available prompts and current selection."""
+    user_id = current_user["id"]
+    
+    # 1. Load defaults
+    defaults_raw = load_prompts()
+    defaults = []
+    for line in defaults_raw:
+        try:
+            parts = line.split(".", 1)
+            defaults.append(PromptResponse(
+                id=parts[0].strip(),
+                text=parts[1].strip(),
+                is_custom=False
+            ))
+        except:
+            continue
+            
+    # 2. Load personal from DB
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(UserPrompt).where(UserPrompt.user_id == user_id)
+        )
+        personal_objs = result.scalars().all()
+        personal = [PromptResponse(
+            id=f"custom_{p.id}",
+            text=p.content,
+            is_custom=True
+        ) for p in personal_objs]
+        
+        # 3. Get selected IDs
+        result = await db.execute(
+            select(AutopilotSettings.selected_prompts).where(AutopilotSettings.user_id == user_id)
+        )
+        selected_ids = result.scalar() or []
+        
+    return PromptStatus(
+        default_prompts=defaults,
+        personal_prompts=personal,
+        selected_ids=selected_ids
+    )
+
+
+@router.post("/prompts")
+async def create_prompt(data: UserPromptCreate, current_user: dict = Depends(get_current_user)):
+    """Create a personal prompt."""
+    user_id = current_user["id"]
+    async with AsyncSessionLocal() as db:
+        new_p = UserPrompt(user_id=user_id, content=data.content)
+        db.add(new_p)
+        await db.commit()
+        await db.refresh(new_p)
+        return {"success": True, "id": f"custom_{new_p.id}"}
+
+
+@router.put("/prompts/{prompt_id}")
+async def update_prompt(prompt_id: str, data: UserPromptUpdate, current_user: dict = Depends(get_current_user)):
+    """Update a personal prompt."""
+    user_id = current_user["id"]
+    if not prompt_id.startswith("custom_"):
+        raise HTTPException(status_code=400, detail="Cannot edit default prompts")
+        
+    db_id = int(prompt_id.split("_")[1])
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(UserPrompt).where(UserPrompt.id == db_id, UserPrompt.user_id == user_id)
+        )
+        prompt = result.scalar_one_or_none()
+        if not prompt:
+            raise HTTPException(status_code=404, detail="Prompt not found")
+            
+        prompt.content = data.content
+        await db.commit()
+        return {"success": True}
+
+
+@router.delete("/prompts/{prompt_id}")
+async def delete_prompt(prompt_id: str, current_user: dict = Depends(get_current_user)):
+    """Delete a personal prompt."""
+    user_id = current_user["id"]
+    if not prompt_id.startswith("custom_"):
+        raise HTTPException(status_code=400, detail="Cannot delete default prompts")
+        
+    db_id = int(prompt_id.split("_")[1])
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(UserPrompt).where(UserPrompt.id == db_id, UserPrompt.user_id == user_id)
+        )
+        prompt = result.scalar_one_or_none()
+        if not prompt:
+            raise HTTPException(status_code=404, detail="Prompt not found")
+            
+        await db.delete(prompt)
+        
+        # Also remove from selected_prompts if present
+        result = await db.execute(
+            select(AutopilotSettings).where(AutopilotSettings.user_id == user_id)
+        )
+        settings_obj = result.scalar_one_or_none()
+        if settings_obj and settings_obj.selected_prompts:
+            if prompt_id in settings_obj.selected_prompts:
+                new_selected = [s for s in settings_obj.selected_prompts if s != prompt_id]
+                settings_obj.selected_prompts = new_selected
+                
+        await db.commit()
+        return {"success": True}
 
     return {"success": True, "message": "Settings saved"}
 

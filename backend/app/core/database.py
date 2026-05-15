@@ -25,12 +25,18 @@ async def get_db():
             await session.close()
 
 
+from sqlalchemy import text
+
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         
-        # Add is_active column if it doesn't exist (for PostgreSQL migration)
+        # Add is_active column if it doesn't exist
         try:
-            await conn.execute("ALTER TABLE users ADD COLUMN is_active VARCHAR(20) DEFAULT 'true'")
-        except Exception:
-            pass  # Column already exists
+            # Check if column exists first for SQLite
+            await conn.execute(text("ALTER TABLE users ADD COLUMN is_active VARCHAR(20) DEFAULT 'true'"))
+            await conn.commit()
+            print("Database migration: added is_active column to users table.")
+        except Exception as e:
+            # Column likely already exists or other non-critical error
+            pass

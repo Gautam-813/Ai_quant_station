@@ -9,7 +9,9 @@ import {
   Settings,
   LogOut,
   Zap,
-  Users
+  Users,
+  BarChart3,
+  FlaskConical
 } from 'lucide-react'
 import { cn } from '@/utils/utils'
 
@@ -17,6 +19,8 @@ const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/terminal', icon: Terminal, label: 'Terminal' },
   { to: '/ai-analyst', icon: BrainCircuit, label: 'AI Analyst' },
+  { to: '/historical-lab', icon: BarChart3, label: 'Historical Lab' },
+  { to: '/backtest', icon: FlaskConical, label: 'Prompt Backtesting' },
   { to: '/autopilot', icon: Zap, label: 'Autopilot' },
   { to: '/history', icon: History, label: 'History' },
   { to: '/settings', icon: Settings, label: 'Settings' },

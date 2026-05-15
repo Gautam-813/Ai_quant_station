@@ -43,3 +43,24 @@ logs/
 # Temp
 *.tmp
 temp/
+
+# Large Data & Binaries
+data_archive/
+MT5_Connector.exe
+*.zip
+*.spec
+mt5_connector/connector_venv/
+scratch/
+backend/scratch/
+cookies.txt
+summary.txt
+data_factory.py
+mt5_multi_fetcher.py
+btc_history_fetcher.py
+gap_fill_agent.py
+fix_hf.py
+discover_data.py
+test_data_factory.py
+test_historical_lab.py
+backend/test_historical_lab.py
+cloud_sync.py

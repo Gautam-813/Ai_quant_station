@@ -176,6 +176,25 @@ class AutopilotTrade(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class UserPrompt(Base):
+    __tablename__ = "user_prompts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    content = Column(Text, nullable=False)
+    strategy_code = Column(Text, nullable=True)  # Cached AI-generated backtest code
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class DefaultPromptStrategy(Base):
+    __tablename__ = "default_prompt_strategies"
+
+    prompt_number = Column(Integer, primary_key=True)
+    strategy_code = Column(Text, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class AutopilotSettings(Base):
     __tablename__ = "autopilot_settings"
 
@@ -205,5 +224,11 @@ class AutopilotSettings(Base):
     # Provider settings
     provider = Column(String, default="nvidia")
     model = Column(String, default="qwen/qwen3.5-122b-a10b")
+
+    # Selected Prompts
+    # JSON list of prompt identifiers: 
+    # - Integers (1-100) for default prompts
+    # - "custom_{id}" for user prompts
+    selected_prompts = Column(JSON, default=None) 
 
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

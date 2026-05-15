@@ -21,3 +21,8 @@ httpx==0.28.1
 python-socketio==5.12.0
 openai==1.57.0
 python-dotenv==1.0.1
+
+# Historical Lab — Analytical Engine
+pandas-ta>=0.3.14b
+pyarrow>=15.0.0
+apscheduler>=3.10.0

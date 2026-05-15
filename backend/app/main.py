@@ -8,7 +8,8 @@ from pathlib import Path
 from .core.config import settings
 from .core.database import init_db, AsyncSessionLocal
 from .core.security import get_password_hash
-from .api import auth, mt5, trade, ai, yahoo, execute, analytics, autopilot
+from .api import auth, mt5, trade, ai, yahoo, execute, analytics, autopilot, historical_lab, backtest
+from .core.mt5_sync import start_sync_scheduler
 from .models.user import User
 
 # Import all models to register them with SQLAlchemy Base before database creation
@@ -51,6 +52,7 @@ async def create_default_users():
 async def startup_event():
     await init_db()
     await create_default_users()
+    start_sync_scheduler()
 
 # CORS Middleware (still needed for development when frontend runs separately)
 app.add_middleware(
@@ -70,6 +72,8 @@ app.include_router(yahoo.router, prefix="/api")
 app.include_router(execute.router, prefix="/api")
 app.include_router(analytics.router, prefix="/api")
 app.include_router(autopilot.router, prefix="/api")
+app.include_router(historical_lab.router, prefix="/api")
+app.include_router(backtest.router, prefix="/api")
 
 # Mount static files (React build) - ONLY if frontend is built
 # In development, frontend runs on separate dev server (Vite)
