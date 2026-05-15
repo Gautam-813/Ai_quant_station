@@ -418,15 +418,44 @@ RULES:
         autopilot_state["stats"]["error_count"] += 1
         return
 
-    # 5. Detect trade setup
-    setup = detect_trade_setup(ai_response)
-
-    if not setup:
+    # 5. Detect trade setup with Auto-Retry / Self-Correction
+    max_retries = 2
+    setup = None
+    
+    for attempt in range(max_retries):
+        setup = detect_trade_setup(ai_response)
+        if setup:
+            break
+            
         if "NO_SETUP" in ai_response:
             add_log("🤷 AI Response: NO_SETUP - No trade opportunity found", "WARNING")
-        else:
-            add_log("⚠️ No valid trade setup detected in AI response")
-        add_log(f"Full AI response was: {ai_response[:300]}...")
+            return
+            
+        add_log(f"⚠️ Attempt {attempt+1}: No valid trade setup detected. Retrying with correction...", "WARNING")
+        
+        # Call AI again with correction prompt
+        try:
+            correction_msg = "Your previous response was missing the TRADE_SETUP JSON block. Please provide your analysis again and include a valid JSON block in the exact format required."
+            
+            response = await client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt_text},
+                    {"role": "assistant", "content": ai_response},
+                    {"role": "user", "content": correction_msg}
+                ],
+                temperature=0.2,
+                timeout=60
+            )
+            ai_response = response.choices[0].message.content or ""
+            add_log(f"🤖 AI Correction Response Received")
+        except Exception as e:
+            add_log(f"AI correction failed: {str(e)}", "ERROR")
+            break
+
+    if not setup:
+        add_log("❌ Failed to get valid setup after retries", "ERROR")
         return
 
     # 6. Execute trade

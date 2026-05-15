@@ -481,26 +481,57 @@ Last 10 candles:
         detected_setup = _detect_trade_setup(assistant_message)
         detected_action = _detect_trade_action(assistant_message)
         
-        # AUTOMATIC CODE EXECUTION
+        # AUTOMATIC CODE EXECUTION with Self-Correction
         execution_output = None
         exec_data_preview = None
         exec_charts = None
         exec_tables = None
+        
+        # Initial code detection
         python_match = re.search(r"```python\s*(.*?)\s*```", assistant_message, re.S)
         if python_match:
             code = python_match.group(1)
             logger.info(f"[AI Chat] Detected Python code block - executing...")
+            
             exec_res = await run_python_code(code, candle_data_for_ai, chat_req.symbol)
+            
+            # Self-Correction Loop
+            if not exec_res.get("success"):
+                error_msg = exec_res.get("error")
+                logger.warning(f"[AI Chat] Code execution failed: {error_msg}. Attempting self-correction...")
+                
+                try:
+                    # Ask the AI to fix its own code
+                    correction_messages = messages + [
+                        {"role": "assistant", "content": assistant_message},
+                        {"role": "user", "content": f"The Python code you provided failed with this error: {error_msg}. Please provide a FIXED version of the code block."}
+                    ]
+                    
+                    response = await client.chat.completions.create(
+                        model=chat_req.model,
+                        messages=correction_messages,
+                        temperature=0.1
+                    )
+                    
+                    assistant_message = response.choices[0].message.content or ""
+                    # Try executing the NEW code
+                    new_match = re.search(r"```python\s*(.*?)\s*```", assistant_message, re.S)
+                    if new_match:
+                        code = new_match.group(1)
+                        exec_res = await run_python_code(code, candle_data_for_ai, chat_req.symbol)
+                except Exception as e:
+                    logger.error(f"[AI Chat] Self-correction failed: {str(e)}")
+
+            # Handle final result (success or failure)
             if exec_res.get("success"):
                 execution_output = exec_res.get("output")
                 exec_data_preview = exec_res.get("data_preview")
                 exec_charts = exec_res.get("charts")
                 exec_tables = exec_res.get("tables")
-                logger.info(f"[AI Chat] Code executed successfully. Output length: {len(execution_output) if execution_output else 0}")
-                logger.info(f"[AI Chat] Charts: {len(exec_charts) if exec_charts else 0}, Tables: {len(exec_tables) if exec_tables else 0}")
+                logger.info(f"[AI Chat] Code executed (final attempt).")
             else:
                 execution_output = f"Error executing code: {exec_res.get('error')}"
-                logger.error(f"[AI Chat] Code execution failed: {exec_res.get('error')}")
+                logger.error(f"[AI Chat] Code execution failed permanently.")
 
         # Combine data previews
         final_data_preview = exec_data_preview or _detect_data_preview(assistant_message)

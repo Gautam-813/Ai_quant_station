@@ -269,25 +269,32 @@ async def chat_followup(
     user_msg = {"role": "user", "content": request.message}
     messages.append(user_msg)
     
-    try:
-        client = await _get_ai_client()
-        response = await client.chat.completions.create(
-            model="qwen/qwen3.5-122b-a10b",
-            messages=messages,
-            temperature=0.7,
-            max_tokens=500
-        )
-        ai_msg = {"role": "assistant", "content": response.choices[0].message.content}
-        
-        new_history = list(record.chat_history)
-        new_history.extend([user_msg, ai_msg])
-        record.chat_history = new_history
-        await db.commit()
-        await db.refresh(record)
-        
-        return await get_status(record.id, db, current_user)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    last_error = ""
+    for attempt in range(2):
+        try:
+            client = await _get_ai_client()
+            response = await client.chat.completions.create(
+                model="qwen/qwen3.5-122b-a10b",
+                messages=messages,
+                temperature=0.7,
+                max_tokens=500
+            )
+            ai_msg = {"role": "assistant", "content": response.choices[0].message.content}
+            
+            new_history = list(record.chat_history)
+            new_history.extend([user_msg, ai_msg])
+            record.chat_history = new_history
+            await db.commit()
+            await db.refresh(record)
+            
+            return await get_status(record.id, db, current_user)
+        except Exception as e:
+            last_error = str(e)
+            if attempt < 1:
+                logger.warning(f"Historical Lab chat retry {attempt+1} due to: {last_error}")
+                await asyncio.sleep(1)
+            else:
+                raise HTTPException(status_code=500, detail=f"AI service error after retries: {last_error}")
 
 @router.get("/available-symbols")
 async def get_symbols():

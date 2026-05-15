@@ -51,14 +51,21 @@ def _get_api_key(provider: str = "nvidia") -> str:
         return val
     return ""
 
-async def generate_strategy_code(prompt_text: str):
+async def generate_strategy_code(prompt_text: str, error_msg: Optional[str] = None):
     """Call AI to convert prompt to rule-based Python code."""
-    api_key = _get_api_key("nvidia")
+    api_key = _get_api_key("mistral") # Use Mistral/Codestral for better code gen
     if not api_key:
-        raise Exception("NVIDIA_API_KEY not configured")
+        api_key = _get_api_key("nvidia")
+    
+    if not api_key:
+        raise Exception("AI API Key not configured")
+
+    # Determine provider/base_url based on key
+    base_url = "https://api.mistral.ai/v1" if api_key.startswith("7B") else "https://integrate.api.nvidia.com/v1"
+    model = "codestral-latest" if api_key.startswith("7B") else "qwen/qwen3.5-122b-a10b"
 
     client = AsyncOpenAI(
-        base_url="https://integrate.api.nvidia.com/v1",
+        base_url=base_url,
         api_key=api_key
     )
 
@@ -89,12 +96,16 @@ def calculate_signals(df):
     return signal
 ```
 """
+    
+    user_content = f"Convert this strategy: {prompt_text}"
+    if error_msg:
+        user_content = f"Your previous code for this strategy: '{prompt_text}' failed with this error: {error_msg}. Please fix the code and return ONLY the corrected 'calculate_signals(df)' function."
 
     response = await client.chat.completions.create(
-        model="qwen/qwen3.5-122b-a10b",
+        model=model,
         messages=[
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Convert this strategy: {prompt_text}"}
+            {"role": "user", "content": user_content}
         ],
         temperature=0.1
     )
@@ -230,8 +241,34 @@ async def run_backtest(request: BacktestRequest, current_user: dict = Depends(ge
         }).dropna()
         full_df = resampled
 
-    # 4. Run Backtest
-    result = run_vectorized_backtest(full_df, strategy_code)
+    # 4. Run Backtest with Auto-Retry / Self-Correction
+    max_retries = 2
+    last_error = None
+    
+    for attempt in range(max_retries):
+        result = run_vectorized_backtest(full_df, strategy_code)
+        
+        if "error" not in result:
+            # Success! Break loop
+            break
+        
+        last_error = result["error"]
+        print(f"Backtest Attempt {attempt+1} failed: {last_error}. Retrying with correction...")
+        
+        # Call AI again with the error message
+        try:
+            strategy_code = await generate_strategy_code(prompt_text, error_msg=last_error)
+            # Update cache with fixed code
+            async with AsyncSessionLocal() as db:
+                if request.prompt_id.startswith("custom_"):
+                    db_id = int(request.prompt_id.split("_")[1])
+                    await db.execute(update(UserPrompt).where(UserPrompt.id == db_id).values(strategy_code=strategy_code))
+                else:
+                    await db.execute(update(DefaultPromptStrategy).where(DefaultPromptStrategy.prompt_number == int(request.prompt_id)).values(strategy_code=strategy_code))
+                await db.commit()
+        except:
+            # If AI generation fails during retry, stop
+            break
     
     if "error" in result:
         return BacktestResponse(success=False, error=result["error"], generated_code=strategy_code)
