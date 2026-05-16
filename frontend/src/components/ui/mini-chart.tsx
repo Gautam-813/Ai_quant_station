@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createChart, LineSeries, ColorType } from 'lightweight-charts'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 
@@ -10,6 +10,8 @@ interface MiniChartProps {
 
 export function MiniChart({ title, data, color = '#2563eb' }: MiniChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null)
+  const [isExpanded, setIsExpanded] = useState(false)
+  const chartRef = useRef<any>(null)
 
   useEffect(() => {
     if (!chartContainerRef.current) return
@@ -20,18 +22,34 @@ export function MiniChart({ title, data, color = '#2563eb' }: MiniChartProps) {
         textColor: '#d1d5db',
       },
       grid: {
-        vertLines: { visible: false },
+        vertLines: { color: '#2a2a2a' },
         horzLines: { color: '#2a2a2a' },
       },
       width: chartContainerRef.current.clientWidth,
-      height: 150,
-      handleScale: false,
-      handleScroll: false,
+      height: isExpanded ? 400 : 150,
+      handleScale: true,
+      handleScroll: true,
       timeScale: {
-        visible: false,
+        visible: true,
+        borderVisible: false,
+        timeVisible: true,
       },
       rightPriceScale: {
         borderVisible: false,
+      },
+      crosshair: {
+        vertLine: {
+          color: '#4b5563',
+          width: 1,
+          style: 2,
+          labelBackgroundColor: '#1f2937',
+        },
+        horzLine: {
+          color: '#4b5563',
+          width: 1,
+          style: 2,
+          labelBackgroundColor: '#1f2937',
+        },
       },
     })
 
@@ -47,6 +65,7 @@ export function MiniChart({ title, data, color = '#2563eb' }: MiniChartProps) {
 
     lineSeries.setData(formattedData)
     chart.timeScale().fitContent()
+    chartRef.current = chart
 
     const handleResize = () => {
       if (chartContainerRef.current) {
@@ -64,13 +83,19 @@ export function MiniChart({ title, data, color = '#2563eb' }: MiniChartProps) {
 
   return (
     <Card className="mt-3 bg-background/50 border-muted">
-      <CardHeader className="py-2 px-3">
+      <CardHeader className="py-2 px-3 flex flex-row items-center justify-between">
         <CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
           {title}
         </CardTitle>
+        <button 
+          onClick={() => setIsExpanded(!isExpanded)}
+          className="text-[10px] text-primary hover:underline"
+        >
+          {isExpanded ? 'Collapse' : 'Expand'}
+        </button>
       </CardHeader>
       <CardContent className="p-0">
-        <div ref={chartContainerRef} className="w-full h-[150px]" />
+        <div ref={chartContainerRef} style={{ height: isExpanded ? '400px' : '150px' }} className="w-full" />
       </CardContent>
     </Card>
   )

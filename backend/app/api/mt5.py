@@ -75,6 +75,9 @@ async def _cache_market_data(db: AsyncSession, symbol: str, timeframe: str, data
                 except ValueError:
                     # Try ISO format if standard format fails
                     dt_time = datetime.fromisoformat(d.time.replace('Z', '+00:00'))
+            elif isinstance(d.time, (int, float)):
+                # Handle Unix timestamp
+                dt_time = datetime.fromtimestamp(d.time)
             else:
                 dt_time = d.time
             
@@ -95,7 +98,7 @@ async def _cache_market_data(db: AsyncSession, symbol: str, timeframe: str, data
 
         # Use SQLite's ON CONFLICT DO NOTHING
         stmt = sqlite_insert(MarketData).values(records)
-        stmt = stmt.on_conflict_do_nothing(constraint="ix_market_data_symbol_tf_time")
+        stmt = stmt.on_conflict_do_nothing()
         
         await db.execute(stmt)
         await db.commit()

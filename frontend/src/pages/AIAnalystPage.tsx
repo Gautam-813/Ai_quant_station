@@ -8,6 +8,14 @@ import { createChart, CandlestickSeries, CandlestickData, Time } from 'lightweig
 import { DataPreviewTable } from '@/components/ui/data-preview-table'
 import { MiniChart } from '@/components/ui/mini-chart'
 
+const PROVIDER_MODELS: Record<string, { label: string, value: string }[]> = {}
+
+interface AIProvider {
+  id: string
+  name: string
+  models: string[]
+}
+
 
 
 interface Message {
@@ -71,6 +79,32 @@ export default function AIAnalystPage() {
   const [dataLoading, setDataLoading] = useState(false)
   const [liveMode, setLiveMode] = useState(false)
   const [timeframe, setTimeframe] = useState('1h')
+  const [availableProviders, setAvailableProviders] = useState<AIProvider[]>([])
+
+  // Fetch providers from backend on mount
+  useEffect(() => {
+    const fetchProviders = async () => {
+      try {
+        const res = await axios.get('/api/ai/providers')
+        if (res.data.providers) {
+          setAvailableProviders(res.data.providers)
+        }
+      } catch (error) {
+        console.error('Failed to fetch AI providers:', error)
+      }
+    }
+    fetchProviders()
+  }, [])
+
+  // Auto-select first model when provider changes
+  useEffect(() => {
+    const selectedProv = availableProviders.find(p => p.id === provider)
+    if (selectedProv && selectedProv.models.length > 0) {
+      if (!selectedProv.models.includes(model)) {
+        setModel(selectedProv.models[0])
+      }
+    }
+  }, [provider, availableProviders])
 
   useEffect(() => {
     let interval: any
@@ -379,6 +413,14 @@ export default function AIAnalystPage() {
     }
   }
 
+  const filterMessageContent = (content: string) => {
+    // Remove markdown code blocks (python and json)
+    return content
+      .replace(/```python[\s\S]*?(?:```|$)/g, '')
+      .replace(/```json[\s\S]*?(?:```|$)/g, '')
+      .trim()
+  }
+
   return (
     <div className="h-screen flex flex-col overflow-hidden">
       <div className="p-4 pb-2">
@@ -395,25 +437,26 @@ export default function AIAnalystPage() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="nvidia">NVIDIA</SelectItem>
-                    <SelectItem value="groq">Groq</SelectItem>
-                    <SelectItem value="openrouter">OpenRouter</SelectItem>
-                    <SelectItem value="gemini">Gemini</SelectItem>
-                    <SelectItem value="cerebras">Cerebras</SelectItem>
+                    {availableProviders.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.name}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
-              <Select value={model} onValueChange={setModel}>
-                <SelectTrigger className="w-52">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="qwen/qwen3.5-122b-a10b">Qwen 3.5 122B</SelectItem>
-                  <SelectItem value="deepseek-ai/deepseek-v3.1">DeepSeek V3.1</SelectItem>
-                  <SelectItem value="llama3-70b-8192">Llama 3 70B</SelectItem>
-                  <SelectItem value="gemini-2.5-flash">Gemini Flash</SelectItem>
-                </SelectContent>
-              </Select>
+                <Select value={model} onValueChange={setModel}>
+                  <SelectTrigger className="w-52">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableProviders.find(p => p.id === provider)?.models.map((m) => (
+                      <SelectItem key={m} value={m}>
+                        {m}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               
               <div className="flex items-center gap-2 border-l pl-4">
                 <span className="text-sm text-muted-foreground">Data:</span>
@@ -548,7 +591,9 @@ export default function AIAnalystPage() {
             messages.map((msg, idx) => (
               <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                 <div className={`max-w-[85%] p-4 rounded-lg ${msg.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted'}`}>
-                  <p className="whitespace-pre-wrap text-sm">{msg.content}</p>
+                  <p className="whitespace-pre-wrap text-sm">
+                    {msg.role === 'assistant' ? filterMessageContent(msg.content) : msg.content}
+                  </p>
                   
                   {msg.detected_setup && (
                     <div className="mt-3 p-3 bg-background rounded border border-green-500/30">
@@ -598,15 +643,15 @@ export default function AIAnalystPage() {
                             </CardTitle>
                           </CardHeader>
                           <CardContent className="p-0">
-                            <div className="overflow-x-auto">
-                              <table className="w-full text-xs border-collapse">
+                            <div className="max-h-[400px] overflow-auto rounded-md border border-border/50">
+                              <table className="w-full text-xs border-collapse relative">
                                 {table.columns && table.columns.length > 0 && (
-                                  <thead>
+                                  <thead className="sticky top-0 z-10">
                                     <tr>
                                       {table.columns.map((col, colIdx) => (
                                         <th
                                           key={colIdx}
-                                          className="border border-border/50 bg-muted px-2 py-1 text-left font-medium text-foreground"
+                                          className="border-b border-border bg-muted/95 backdrop-blur-sm px-3 py-2 text-left font-semibold text-foreground shadow-sm"
                                         >
                                           {col}
                                         </th>
@@ -616,11 +661,11 @@ export default function AIAnalystPage() {
                                 )}
                                 <tbody>
                                   {table.rows.map((row, rowIdx) => (
-                                    <tr key={rowIdx} className="border-b border-border/30">
+                                    <tr key={rowIdx} className="border-b border-border/30 hover:bg-primary/5 transition-colors">
                                       {row.map((cell, cellIdx) => (
                                         <td
                                           key={cellIdx}
-                                          className="border border-border/30 px-2 py-1 text-foreground"
+                                          className="border-r border-border/10 px-3 py-1.5 text-foreground last:border-r-0"
                                         >
                                           {cell !== null && cell !== undefined ? String(cell) : ''}
                                         </td>
@@ -661,6 +706,24 @@ export default function AIAnalystPage() {
                 </div>
               </div>
             ))
+          )}
+          {loading && (
+            <div className="flex justify-start">
+              <div className="max-w-[85%] p-4 rounded-lg bg-muted border border-primary/20 animate-pulse">
+                <div className="flex items-center gap-3">
+                  <div className="flex space-x-1">
+                    <div className="w-1.5 h-1.5 bg-primary rounded-full animate-bounce [animation-delay:-0.3s]"></div>
+                    <div className="w-1.5 h-1.5 bg-primary rounded-full animate-bounce [animation-delay:-0.15s]"></div>
+                    <div className="w-1.5 h-1.5 bg-primary rounded-full animate-bounce"></div>
+                  </div>
+                  <span className="text-sm font-medium text-primary">AI is performing deep quantitative analysis...</span>
+                </div>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Evaluating 1,000+ candles, checking technical indicators, and scanning for trade setups. 
+                  This may take a moment for long-form reasoning.
+                </p>
+              </div>
+            </div>
           )}
         </div>
 

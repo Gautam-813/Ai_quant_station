@@ -19,6 +19,12 @@ async def sync_mt5_to_parquet():
     # Clear RAM cache so the next backtest sees the new data
     _read_parquet_cached.cache_clear()
     
+    # 0. Connection Gatekeeper: Check if MT5 is actually available before flooding logs
+    from .mt5_service import init_mt5_connection
+    if not await init_mt5_connection():
+        logger.info("[Sync] Skipping sync: MT5/Connector is currently offline.")
+        return
+
     logger.info("--- [Pillar 3] Starting MT5 Auto-Sync Sequence ---")
     
     current_year = datetime.now().year

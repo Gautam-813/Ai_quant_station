@@ -56,6 +56,9 @@ async def _cache_market_data_internal(symbol: str, timeframe: str, data: List[di
                         dt_time = datetime.strptime(dt_time, '%Y-%m-%d %H:%M:%S')
                     except:
                         dt_time = datetime.fromisoformat(dt_time.replace('Z', '+00:00'))
+                elif isinstance(dt_time, (int, float)):
+                    # Handle Unix timestamp
+                    dt_time = datetime.fromtimestamp(dt_time)
                 
                 records.append({
                     "symbol": symbol,
@@ -73,7 +76,7 @@ async def _cache_market_data_internal(symbol: str, timeframe: str, data: List[di
                 return
 
             stmt = sqlite_insert(MarketData).values(records)
-            stmt = stmt.on_conflict_do_nothing(constraint="ix_market_data_symbol_tf_time")
+            stmt = stmt.on_conflict_do_nothing()
             await db.execute(stmt)
             await db.commit()
     except Exception as e:
@@ -443,7 +446,8 @@ Last 10 candles:
                 response = await client.chat.completions.create(
                     model=chat_req.model,
                     messages=messages,
-                    temperature=0.2
+                    temperature=0.2,
+                    max_tokens=8192
                 )
                 
                 # Handle both content and reasoning_content (Qwen model uses reasoning_content)
@@ -487,8 +491,8 @@ Last 10 candles:
         exec_charts = None
         exec_tables = None
         
-        # Initial code detection
-        python_match = re.search(r"```python\s*(.*?)\s*```", assistant_message, re.S)
+        # Initial code detection - use a robust regex that handles missing closing backticks
+        python_match = re.search(r"```python\s*(.*?)(?:```|$)", assistant_message, re.S)
         if python_match:
             code = python_match.group(1)
             logger.info(f"[AI Chat] Detected Python code block - executing...")
@@ -510,12 +514,13 @@ Last 10 candles:
                     response = await client.chat.completions.create(
                         model=chat_req.model,
                         messages=correction_messages,
-                        temperature=0.1
+                        temperature=0.1,
+                        max_tokens=8192
                     )
                     
                     assistant_message = response.choices[0].message.content or ""
-                    # Try executing the NEW code
-                    new_match = re.search(r"```python\s*(.*?)\s*```", assistant_message, re.S)
+                    # Try executing the NEW code - use the same robust regex
+                    new_match = re.search(r"```python\s*(.*?)(?:```|$)", assistant_message, re.S)
                     if new_match:
                         code = new_match.group(1)
                         exec_res = await run_python_code(code, candle_data_for_ai, chat_req.symbol)

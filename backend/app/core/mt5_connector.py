@@ -21,18 +21,14 @@ class MT5ConnectorClient:
         path = "/" + endpoint.lstrip("/")
         url = f"{base}{path}"
         
-        print(f"MT5 Connector Request: {method} {url}")
-        
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             try:
                 response = await client.request(method, url, **kwargs)
                 response.raise_for_status()
                 return response.json()
-            except httpx.ConnectError as e:
-                print(f"MT5 Connector Connection Error: {e}")
+            except httpx.ConnectError:
                 raise
-            except Exception as e:
-                print(f"MT5 Connector Request Error: {e}")
+            except Exception:
                 raise
     
     async def health(self) -> Dict[str, Any]:
