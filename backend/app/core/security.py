@@ -14,25 +14,23 @@ import bcrypt
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     try:
-        # Direct bcrypt verification to avoid passlib version conflicts
-        # We encode both to bytes as required by bcrypt
         password_bytes = plain_password.encode('utf-8')
-        # Truncate to 72 bytes (bcrypt limit) to be safe
-        password_bytes = password_bytes[:72]
-        
+        # Warn if password exceeds bcrypt's 72-byte limit
+        if len(password_bytes) > 72:
+            password_bytes = password_bytes[:72]
         hashed_bytes = hashed_password.encode('utf-8')
         return bcrypt.checkpw(password_bytes, hashed_bytes)
-    except Exception as e:
-        print(f"CRITICAL AUTH ERROR: {str(e)}")
-        # Fallback to passlib if direct bcrypt fails (unlikely)
+    except Exception:
         try:
             return pwd_context.verify(plain_password, hashed_password)
-        except:
+        except Exception:
             return False
 
 
 def get_password_hash(password: str) -> str:
-    return pwd_context.hash(password)
+    password_bytes = password.encode("utf-8")[:72]
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(password_bytes, salt).decode("utf-8")
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
@@ -42,7 +40,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     else:
         expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire, "type": "access"})
-    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    encoded_jwt = jwt.encode(to_encode, settings.effective_secret_key, algorithm=settings.ALGORITHM)
     return encoded_jwt
 
 
@@ -50,13 +48,13 @@ def create_refresh_token(data: dict) -> str:
     to_encode = data.copy()
     expire = datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
     to_encode.update({"exp": expire, "type": "refresh"})
-    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    encoded_jwt = jwt.encode(to_encode, settings.effective_secret_key, algorithm=settings.ALGORITHM)
     return encoded_jwt
 
 
-def decode_token(token: str) -> dict:
+def decode_token(token: str) -> dict | None:
     try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        payload = jwt.decode(token, settings.effective_secret_key, algorithms=[settings.ALGORITHM])
         return payload
     except JWTError:
         return None

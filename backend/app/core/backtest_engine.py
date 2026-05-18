@@ -93,32 +93,40 @@ class BacktestEngine:
         drawdown = (equity - roll_max) / roll_max
         return float(drawdown.min() * 100)
 
-    def _sharpe_ratio(self, returns: pd.Series, periods_per_year: int = 252 * 24 * 60) -> float:
-        """Annualized Sharpe Ratio (for 1-minute data)."""
+    def _sharpe_ratio(self, returns: pd.Series, periods_per_year: Optional[int] = None) -> float:
         if returns.std() == 0:
             return 0.0
+        if periods_per_year is None:
+            periods_per_year = 252 * 24 * 60
         return float((returns.mean() / returns.std()) * np.sqrt(periods_per_year))
 
     def _trade_stats(self, df: pd.DataFrame) -> tuple:
-        """Calculate win rate, profit factor, and number of trades."""
-        # Identify trade entries and exits
-        df["position"] = df["signal"].shift(1).fillna(0)
         df["trade_pnl"] = df["strategy_return"] * self.initial_capital
 
-        # Segment into individual trades
         trade_returns = []
         in_trade = False
+        current_position = 0
         trade_pnl = 0
 
         for _, row in df.iterrows():
-            if row["signal"] != 0 and not in_trade:
+            signal = row["signal"]
+            if signal != 0 and signal != current_position and not in_trade:
                 in_trade = True
+                current_position = signal
                 trade_pnl = 0
-            elif row["signal"] == 0 and in_trade:
+            elif in_trade and signal == 0:
                 trade_returns.append(trade_pnl)
                 in_trade = False
+                current_position = 0
+            elif in_trade and signal != 0 and signal != current_position:
+                trade_returns.append(trade_pnl)
+                current_position = signal
+                trade_pnl = 0
             if in_trade:
                 trade_pnl += row["trade_pnl"]
+
+        if in_trade:
+            trade_returns.append(trade_pnl)
 
         if not trade_returns:
             return 0.0, 0.0, 0
@@ -127,8 +135,8 @@ class BacktestEngine:
         losses = [t for t in trade_returns if t <= 0]
         win_rate = (len(wins) / len(trade_returns)) * 100
         gross_profit = sum(wins)
-        gross_loss = abs(sum(losses)) if losses else 1
-        profit_factor = gross_profit / gross_loss if gross_loss else float("inf")
+        gross_loss = abs(sum(losses)) if losses else 0
+        profit_factor = gross_profit / gross_loss if gross_loss > 0 else float("inf") if gross_profit > 0 else 0.0
 
         return win_rate, profit_factor, len(trade_returns)
 
@@ -177,6 +185,7 @@ class DeepAnalysisEngine:
             "std_return_pct": round(float(df["daily_return"].std()), 4),
             "best_day": df.loc[df["daily_return"].idxmax(), "datetime"].strftime("%Y-%m-%d"),
             "worst_day": df.loc[df["daily_return"].idxmin(), "datetime"].strftime("%Y-%m-%d"),
+            "avg_atr_14": round(float(df["atr_14"].mean()), 5) if "atr_14" in df.columns else 0,
             "total_bars": len(df),
         }
 

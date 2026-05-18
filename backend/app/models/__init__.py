@@ -14,6 +14,11 @@ from .ai_memory import (
     UserFeedback,
     CalculationHistory,
     IndicatorRequest,
+    UserPreferences,
+    AutopilotTrade,
+    UserPrompt,
+    DefaultPromptStrategy,
+    AutopilotSettings,
 )
 from .historical_lab import HistoricalBacktest
 
@@ -27,5 +32,10 @@ __all__ = [
     "UserFeedback",
     "CalculationHistory",
     "IndicatorRequest",
+    "UserPreferences",
+    "AutopilotTrade",
+    "UserPrompt",
+    "DefaultPromptStrategy",
+    "AutopilotSettings",
     "HistoricalBacktest",
 ]

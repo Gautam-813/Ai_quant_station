@@ -1,12 +1,11 @@
 services:
-  # Single Web Service - FastAPI serves both frontend AND backend
   - type: web
     name: impulse-analyst
     env: python
-    pythonVersion: "3.11"  # Stable version - avoid 3.14 for now
+    pythonVersion: "3.11"
     buildCommand: |
       pip install -r backend/requirements.txt
-      cd frontend && npm install && npm run build
+      npm install --prefix frontend && npm run build --prefix frontend
     startCommand: cd backend && uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: DATABASE_URL
@@ -16,8 +15,9 @@ services:
       - key: SECRET_KEY
         generateValue: true
       - key: MT5_API_TOKEN
-        value: "impulse_secure_2026"
-      # Add these in Render Dashboard with your actual keys:
+        generateValue: true
+      - key: DEFAULT_ADMIN_PASSWORD
+        generateValue: true
       - key: NVIDIA_API_KEY
         sync: false
       - key: CEREBRAS_API_KEY
@@ -32,8 +32,6 @@ services:
         sync: false
       - key: HF_REPO_ID
         value: "TheFinanceEngineer/impulse-market-data"
-      - key: DEFAULT_ADMIN_PASSWORD
-        value: "admin2026"
 
 databases:
   - name: impulse-db

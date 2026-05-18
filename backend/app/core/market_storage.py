@@ -11,10 +11,12 @@ from pathlib import Path
 
 
 class MarketDataStorage:
-    """Handle market data storage in parquet files."""
     
-    def __init__(self, storage_dir: str = "market_data"):
-        self.storage_dir = Path(storage_dir)
+    def __init__(self, storage_dir: str = ""):
+        if storage_dir:
+            self.storage_dir = Path(storage_dir)
+        else:
+            self.storage_dir = Path(__file__).resolve().parent.parent.parent.parent / "market_data"
         self.storage_dir.mkdir(exist_ok=True)
     
     def _get_parquet_path(self, symbol: str, timeframe: str) -> Path:

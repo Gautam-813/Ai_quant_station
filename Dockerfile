@@ -1,44 +1,36 @@
-# Production Dockerfile for Impulse Analyst
-FROM python:3.11-slim
-
-# Set working directory
+# Build stage: Frontend
+FROM node:20-alpine AS frontend-builder
 WORKDIR /app
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm ci
+COPY frontend/ .
+RUN npm run build
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    curl \
-    git \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Node.js for frontend build
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y nodejs \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy requirements first for better caching
+# Build stage: Backend
+FROM python:3.11-slim AS backend-builder
+WORKDIR /app
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install frontend dependencies
-COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm install
+# Production stage
+FROM python:3.11-slim
+WORKDIR /app
 
-# Copy application code
+# Install only runtime system deps
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy backend from builder
+COPY --from=backend-builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY backend/ ./backend/
-COPY frontend/ ./frontend/
 
-# Build frontend
-WORKDIR /app/frontend
-RUN npm run build
+# Copy built frontend from frontend builder
+COPY --from=frontend-builder /app/dist/ ./frontend/dist/
 
-# Set working directory back to backend
-WORKDIR /app/backend
+ENV PYTHONUNBUFFERED=1
+ENV ENV=production
 
-# Expose port
 EXPOSE 8000
 
-# Environment variables
-ENV PYTHONUNBUFFERED=1
-
-# Run the application
-CMD ["python", "run.py"]
+CMD ["python", "backend/run.py"]

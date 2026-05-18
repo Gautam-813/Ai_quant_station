@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+from .config import settings
 from .historical_loader import LOCAL_CACHE, AVAILABLE_SYMBOLS, _read_parquet_cached
 from .mt5_service import fetch_ohlc_range
 
@@ -57,6 +58,12 @@ async def sync_mt5_to_parquet():
             # 3. Fetch data
             logger.info(f"[Sync] Fetching {symbol} from {start_dt} to {end_dt}...")
             raw_data = await fetch_ohlc_range(symbol, "1m", start_dt, end_dt)
+            # Convert broker-local timestamps to UTC
+            if raw_data and settings.MT5_BROKER_UTC_OFFSET != 0:
+                offset = settings.MT5_BROKER_UTC_OFFSET * 3600
+                for row in raw_data:
+                    if 'time' in row:
+                        row['time'] = row['time'] - offset
             
             if not raw_data:
                 logger.info(f"[Sync] No new candles found for {symbol}.")
@@ -98,11 +105,13 @@ async def sync_mt5_to_parquet():
 scheduler = AsyncIOScheduler()
 
 def start_sync_scheduler():
-    """Start the hourly sync job."""
     if not scheduler.running:
-        # Run once immediately on startup
-        scheduler.add_job(sync_mt5_to_parquet, 'date', run_date=datetime.now())
-        # Then every 60 minutes
+        scheduler.add_job(sync_mt5_to_parquet, 'date', run_date=datetime.now(timezone.utc))
         scheduler.add_job(sync_mt5_to_parquet, 'interval', minutes=60)
         scheduler.start()
         logger.info("MT5 Auto-Sync Scheduler initialized (Hourly).")
+
+def shutdown_scheduler():
+    if scheduler.running:
+        scheduler.shutdown()
+        logger.info("MT5 Auto-Sync Scheduler shut down.")

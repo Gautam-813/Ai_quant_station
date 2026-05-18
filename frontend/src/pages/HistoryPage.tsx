@@ -3,36 +3,20 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import axios from 'axios'
 
-interface Trade {
-  ticket: number
-  symbol: string
-  direction: string
-  volume: number
-  price: number
-  profit: number
-  time: string
-  comment: string
-}
+interface Trade { ticket: number; symbol: string; direction: string; volume: number; price: number; profit: number; time: string; comment: string }
 
 export default function HistoryPage() {
   const [trades, setTrades] = useState<Trade[]>([])
   const [loading, setLoading] = useState(true)
   const [hours, setHours] = useState('0')
 
-  useEffect(() => {
-    fetchHistory()
-  }, [hours])
+  useEffect(() => { fetchHistory() }, [hours])
 
   const fetchHistory = async () => {
     setLoading(true)
-    try {
-      const res = await axios.get(`/api/mt5/history?hours=${hours}`)
-      setTrades(res.data.deals || [])
-    } catch (error) {
-      console.error('Failed to fetch history:', error)
-    } finally {
-      setLoading(false)
-    }
+    try { setTrades((await axios.get(`/api/mt5/history?hours=${hours}`)).data.deals || []) }
+    catch { console.error('Failed to fetch history') }
+    finally { setLoading(false) }
   }
 
   const totalProfit = trades.reduce((sum, t) => sum + t.profit, 0)
@@ -40,15 +24,12 @@ export default function HistoryPage() {
   const winRate = trades.length > 0 ? (wins / trades.length) * 100 : 0
 
   return (
-    <div className="p-8">
-      <h1 className="font-heading text-3xl font-bold mb-8">Trade History</h1>
+    <div className="p-3 sm:p-6 md:p-8">
+      <h1 className="font-heading text-xl sm:text-2xl md:text-3xl font-bold mb-4 sm:mb-6 md:mb-8">Trade History</h1>
 
-      {/* Filters */}
-      <div className="flex gap-4 mb-6">
+      <div className="flex flex-wrap gap-2 sm:gap-4 mb-4 sm:mb-6">
         <Select value={hours} onValueChange={setHours}>
-          <SelectTrigger className="w-40">
-            <SelectValue />
-          </SelectTrigger>
+          <SelectTrigger className="w-32 sm:w-40 text-sm"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="0">All Time</SelectItem>
             <SelectItem value="24">Last 24h</SelectItem>
@@ -58,85 +39,78 @@ export default function HistoryPage() {
         </Select>
       </div>
 
-      {/* Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-4 mb-4 sm:mb-6 md:mb-8">
         <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Total P&L</CardTitle>
+          <CardHeader className="pb-1 px-3 pt-3 sm:px-4 sm:pt-4">
+            <CardTitle className="text-[10px] sm:text-xs md:text-sm font-medium text-muted-foreground">Total P&L</CardTitle>
           </CardHeader>
-          <CardContent>
-            <div className={`text-2xl font-bold ${totalProfit >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+          <CardContent className="px-3 pb-3 sm:px-4 sm:pb-4">
+            <div className={`text-sm sm:text-lg md:text-2xl font-bold ${totalProfit >= 0 ? 'text-green-500' : 'text-red-500'}`}>
               ${totalProfit.toFixed(2)}
             </div>
           </CardContent>
         </Card>
-
         <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Total Trades</CardTitle>
+          <CardHeader className="pb-1 px-3 pt-3 sm:px-4 sm:pt-4">
+            <CardTitle className="text-[10px] sm:text-xs md:text-sm font-medium text-muted-foreground">Total Trades</CardTitle>
           </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{trades.length}</div>
+          <CardContent className="px-3 pb-3 sm:px-4 sm:pb-4">
+            <div className="text-sm sm:text-lg md:text-2xl font-bold">{trades.length}</div>
           </CardContent>
         </Card>
-
         <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Wins</CardTitle>
+          <CardHeader className="pb-1 px-3 pt-3 sm:px-4 sm:pt-4">
+            <CardTitle className="text-[10px] sm:text-xs md:text-sm font-medium text-muted-foreground">Wins</CardTitle>
           </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-green-500">{wins}</div>
+          <CardContent className="px-3 pb-3 sm:px-4 sm:pb-4">
+            <div className="text-sm sm:text-lg md:text-2xl font-bold text-green-500">{wins}</div>
           </CardContent>
         </Card>
-
         <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Win Rate</CardTitle>
+          <CardHeader className="pb-1 px-3 pt-3 sm:px-4 sm:pt-4">
+            <CardTitle className="text-[10px] sm:text-xs md:text-sm font-medium text-muted-foreground">Win Rate</CardTitle>
           </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{winRate.toFixed(1)}%</div>
+          <CardContent className="px-3 pb-3 sm:px-4 sm:pb-4">
+            <div className="text-sm sm:text-lg md:text-2xl font-bold">{winRate.toFixed(1)}%</div>
           </CardContent>
         </Card>
       </div>
 
-      {/* Table */}
       <Card>
-        <CardHeader>
-          <CardTitle>Closed Trades</CardTitle>
+        <CardHeader className="px-3 sm:px-4 md:px-6 pt-3 sm:pt-4 md:pt-6 pb-2 sm:pb-3">
+          <CardTitle className="text-sm sm:text-base md:text-lg">Closed Trades</CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent className="px-3 sm:px-4 md:px-6 pb-3 sm:pb-4 md:pb-6">
           {loading ? (
-            <p className="text-muted-foreground">Loading...</p>
+            <p className="text-muted-foreground text-center py-6 sm:py-8 text-sm">Loading...</p>
           ) : trades.length === 0 ? (
-            <p className="text-muted-foreground text-center py-8">No closed trades found</p>
+            <p className="text-muted-foreground text-center py-6 sm:py-8 text-sm">No closed trades found</p>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full">
+            <div className="overflow-x-auto -mx-3 sm:mx-0">
+              <table className="w-full text-xs sm:text-sm">
                 <thead>
                   <tr className="border-b border-border">
-                    <th className="text-left py-3 px-2">Time</th>
-                    <th className="text-left py-3 px-2">Symbol</th>
-                    <th className="text-left py-3 px-2">Dir</th>
-                    <th className="text-right py-3 px-2">Vol</th>
-                    <th className="text-right py-3 px-2">Price</th>
-                    <th className="text-right py-3 px-2">P&L</th>
-                    <th className="text-left py-3 px-2">Comment</th>
+                    <th className="text-left py-2 px-1 sm:px-2 font-medium text-muted-foreground">Time</th>
+                    <th className="text-left py-2 px-1 sm:px-2 font-medium text-muted-foreground">Symbol</th>
+                    <th className="text-left py-2 px-1 sm:px-2 font-medium text-muted-foreground hidden sm:table-cell">Dir</th>
+                    <th className="text-right py-2 px-1 sm:px-2 font-medium text-muted-foreground">Vol</th>
+                    <th className="text-right py-2 px-1 sm:px-2 font-medium text-muted-foreground hidden md:table-cell">Price</th>
+                    <th className="text-right py-2 px-1 sm:px-2 font-medium text-muted-foreground">P&L</th>
+                    <th className="text-left py-2 px-1 sm:px-2 font-medium text-muted-foreground hidden lg:table-cell">Comment</th>
                   </tr>
                 </thead>
                 <tbody>
                   {trades.map((trade) => (
-                    <tr key={trade.ticket} className="border-b border-border hover:bg-muted/50">
-                      <td className="py-3 px-2 text-sm">{trade.time}</td>
-                      <td className="py-3 px-2 font-medium">{trade.symbol}</td>
-                      <td className={`py-3 px-2 ${trade.direction === 'BUY' ? 'text-green-500' : 'text-red-500'}`}>
-                        {trade.direction}
-                      </td>
-                      <td className="py-3 px-2 text-right">{trade.volume}</td>
-                      <td className="py-3 px-2 text-right">{trade.price.toFixed(5)}</td>
-                      <td className={`py-3 px-2 text-right font-medium ${trade.profit >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                    <tr key={trade.ticket} className="border-b border-border/50 hover:bg-muted/50">
+                      <td className="py-2 px-1 sm:px-2 text-[10px] sm:text-xs whitespace-nowrap">{trade.time}</td>
+                      <td className="py-2 px-1 sm:px-2 font-medium">{trade.symbol}</td>
+                      <td className={`py-2 px-1 sm:px-2 hidden sm:table-cell ${trade.direction === 'BUY' ? 'text-green-500' : 'text-red-500'}`}>{trade.direction}</td>
+                      <td className="py-2 px-1 sm:px-2 text-right">{trade.volume}</td>
+                      <td className="py-2 px-1 sm:px-2 text-right hidden md:table-cell">{trade.price.toFixed(5)}</td>
+                      <td className={`py-2 px-1 sm:px-2 text-right font-medium ${trade.profit >= 0 ? 'text-green-500' : 'text-red-500'}`}>
                         ${trade.profit.toFixed(2)}
                       </td>
-                      <td className="py-3 px-2 text-sm text-muted-foreground">{trade.comment}</td>
+                      <td className="py-2 px-1 sm:px-2 text-xs text-muted-foreground truncate max-w-[80px] sm:max-w-[150px] hidden lg:table-cell">{trade.comment}</td>
                     </tr>
                   ))}
                 </tbody>

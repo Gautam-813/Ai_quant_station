@@ -7,6 +7,9 @@ from datetime import datetime
 import json
 import logging
 import pandas as pd
+import asyncio
+import re
+from pydantic import BaseModel, Field
 
 from app.core.historical_loader import load_data, add_indicators, get_available_years, AVAILABLE_SYMBOLS
 from app.core.backtest_engine import BacktestEngine, DeepAnalysisEngine
@@ -35,6 +38,8 @@ class LabRequest(BaseModel):
     leverage: float = 100.0
     include_spread: bool = False
     include_commission: bool = False
+    provider: Optional[str] = "nvidia"
+    model: Optional[str] = "qwen/qwen3.5-122b-a10b"
 
 
 class LabResponse(BaseModel):
@@ -45,45 +50,82 @@ class LabResponse(BaseModel):
     equity_curve: Optional[list] = None
     metrics: Optional[dict] = None
     analysis: Optional[dict] = None
-    ai_report: str = ""
+    ai_report: Optional[str] = Field(default="")
     chat_history: List[dict] = []
 
 
 class ChatMessageRequest(BaseModel):
     backtest_id: int
     message: str
+    provider: Optional[str] = "nvidia"
+    model: Optional[str] = "qwen/qwen3.5-122b-a10b"
 
 
 # ─────────────────────────────────────────────
 # Utility & AI Helpers
 # ─────────────────────────────────────────────
 
-def _apply_strategy_from_prompt(df, prompt: str):
-    prompt_lower = prompt.lower()
-    df["signal"] = 0
-    if "rsi" in prompt_lower:
-        oversold, overbought = 30, 70
-        if "rsi_14" in df.columns:
-            df.loc[df["rsi_14"] < oversold, "signal"] = 1
-            df.loc[df["rsi_14"] > overbought, "signal"] = -1
-    elif "ema" in prompt_lower or "crossover" in prompt_lower:
-        if "ema_9" in df.columns and "ema_21" in df.columns:
-            df.loc[df["ema_9"] > df["ema_21"], "signal"] = 1
-            df.loc[df["ema_9"] < df["ema_21"], "signal"] = -1
-    elif "macd" in prompt_lower:
-        if "macd" in df.columns and "macd_signal" in df.columns:
-            df.loc[df["macd"] > df["macd_signal"], "signal"] = 1
-            df.loc[df["macd"] < df["macd_signal"], "signal"] = -1
-    elif "bollinger" in prompt_lower or "band" in prompt_lower:
-        if "bb_upper" in df.columns and "bb_lower" in df.columns:
-            df.loc[df["close"] < df["bb_lower"], "signal"] = 1
-            df.loc[df["close"] > df["bb_upper"], "signal"] = -1
+async def _generate_signals_from_prompt(df: pd.DataFrame, prompt: str, symbol: str, provider: str = "nvidia", model: str = "qwen/qwen3.5-122b-a10b"):
+    """Use AI to generate a signal column (1, -1, 0) based on natural language strategy."""
+    if not prompt:
+        df["signal"] = 0
+        return df
+        
+    system_prompt = f"""You are a Strategy Developer. Given a dataset 'df' for {symbol} and a strategy description, write Python code to:
+1. Calculate necessary indicators.
+2. Create a 'signal' column where 1=BUY, -1=SELL, 0=NONE.
+3. Ensure the 'signal' column is added to 'df'.
+
+Strategy: {prompt}
+
+ONLY output the Python code block. No explanation."""
+
+    try:
+        client = await _get_ai_client(provider)
+        response = await client.chat.completions.create(
+            model=model,
+            messages=[{"role": "system", "content": system_prompt}],
+            temperature=0.1
+        )
+        code = response.choices[0].message.content or ""
+        python_match = re.search(r"```python\s*(.*?)(?:```|$)", code, re.S)
+        if python_match:
+            code_clean = python_match.group(1)
+            # Execute in a safe environment
+            from .execute import run_python_code
+            res = await run_python_code(code_clean, df.to_dict('records'), symbol)
+            
+            if res.get("success") and res.get("modified_data"):
+                # Convert modified records back to DataFrame
+                df_mod = pd.DataFrame(res["modified_data"])
+                if "signal" in df_mod.columns:
+                    # Ensure same index and merge signal
+                    df["signal"] = df_mod["signal"].values
+                    logger.info(f"Successfully integrated AI signals for {symbol}")
+                else:
+                    logger.warning("AI code executed but no 'signal' column found.")
+            else:
+                logger.error(f"Signal code execution failed: {res.get('error')}")
+    except Exception as e:
+        logger.error(f"Signal generation error: {e}")
+    
     return df
 
-async def _get_ai_client():
+async def _get_ai_client(provider: str = "nvidia"):
     api_key = settings.NVIDIA_API_KEY
-    if not api_key.startswith("nvapi-"): api_key = f"nvapi-{api_key}"
-    return AsyncOpenAI(base_url="https://integrate.api.nvidia.com/v1", api_key=api_key)
+    base_url = "https://integrate.api.nvidia.com/v1"
+    
+    if provider == "groq":
+        api_key = settings.GROQ_API_KEY
+        base_url = "https://api.groq.com/openai/v1"
+    elif provider == "openrouter":
+        api_key = settings.OPEN_ROUTER_API_KEY
+        base_url = "https://openrouter.ai/api/v1"
+        
+    if provider == "nvidia" and not api_key.startswith("nvapi-"): 
+        api_key = f"nvapi-{api_key}"
+        
+    return AsyncOpenAI(base_url=base_url, api_key=api_key)
 
 def _generate_initial_report(mode: str, symbol: str, start: str, end: str,
                              metrics: Optional[dict], analysis: Optional[dict]) -> str:
@@ -131,7 +173,9 @@ async def run_backtest_task(backtest_id: int, request_data: dict):
             analysis = None
             
             if record.mode == "backtest":
-                df = _apply_strategy_from_prompt(df, record.prompt or "")
+                # AI-driven strategy translation
+                df = await _generate_signals_from_prompt(df, record.prompt or "", record.symbol)
+                
                 engine = BacktestEngine(
                     initial_capital=record.initial_capital,
                     leverage=record.leverage,
@@ -235,7 +279,7 @@ async def get_status(
         equity_curve=record.equity_curve,
         metrics=record.metrics,
         analysis=record.analysis_data,
-        ai_report=record.chat_history[-1]["content"] if record.chat_history else "",
+        ai_report=str(record.chat_history[-1].get("content", "") or "") if record.chat_history else "",
         chat_history=record.chat_history
     )
 
@@ -258,40 +302,107 @@ async def chat_followup(
         raise HTTPException(status_code=400, detail="Backtest not ready for chat.")
     
     # Build Context
-    context = f"Backtest on {record.symbol} ({record.start_date.date()} to {record.end_date.date()}). "
+    context = f"Context: Market {record.symbol} from {record.start_date.date()} to {record.end_date.date()} on {record.timeframe} timeframe. "
     if record.mode == "backtest":
-        context += f"Metrics: {record.metrics.get('total_return_pct')}% return, {record.metrics.get('sharpe_ratio')} Sharpe."
+        context += f"Backtest Results: {record.metrics.get('total_return_pct')}% total return, {record.metrics.get('sharpe_ratio')} Sharpe, {record.metrics.get('win_rate_pct')}% win rate, {record.metrics.get('num_trades')} trades."
+    else:
+        stats = record.analysis_data.get("stats", {})
+        context += f"Analysis Results: {stats.get('total_bars', 0)} bars analyzed. "
+        context += f"Mean Daily Return: {stats.get('mean_return_pct')}% (Std: {stats.get('std_return_pct')}%). "
+        context += f"Avg ATR (14): {stats.get('avg_atr_14', 'N/A')}."
         
+    system_prompt = f"""You are a Lead Quant Analyst in the Research Vault.
+{context}
+
+You have access to the COMPLETE historical dataset in a variable called 'df'.
+TECHNICAL GUIDELINES:
+1. Technical indicators (ATR, RSI, etc.) produce 'NaN' values for the first N periods. ALWAYS use '.dropna()' or handle these NaNs before performing calculations like '.idxmax()', '.mean()', or '.iloc[-1]'.
+2. If the user asks for a calculation (like Max ATR), compute it on the server and use 'print()' to show the final result.
+3. Use 'show_chart(data, title)' or 'show_table(df, title)' for visualizations.
+4. The system automatically caps tables at 50 rows, so focus on summary statistics for large datasets.
+5. The 'df' variable contains: open, high, low, close, volume, datetime.
+
+Be precise, professional, and mathematically rigorous."""
+
     messages = [
-        {"role": "system", "content": f"You are a Quant Analyst. {context} Discuss the results with the user."},
+        {"role": "system", "content": system_prompt},
     ]
-    for msg in record.chat_history[-5:]: messages.append(msg)
+    for msg in record.chat_history: messages.append(msg)
     user_msg = {"role": "user", "content": request.message}
     messages.append(user_msg)
     
     last_error = ""
     for attempt in range(2):
         try:
-            client = await _get_ai_client()
+            client = await _get_ai_client(request.provider)
             response = await client.chat.completions.create(
-                model="qwen/qwen3.5-122b-a10b",
+                model=request.model,
                 messages=messages,
-                temperature=0.7,
-                max_tokens=500
+                temperature=0.2,
+                max_tokens=4000
             )
-            ai_msg = {"role": "assistant", "content": response.choices[0].message.content}
+            
+            msg_obj = response.choices[0].message
+            ai_content = getattr(msg_obj, 'content', None) or getattr(msg_obj, 'reasoning_content', None) or ""
+            
+            if not ai_content:
+                if attempt == 0: continue
+                raise ValueError("Empty AI response")
+
+            # --- Agentic Execution Loop ---
+            execution_results = None
+            python_match = re.search(r"```python\s*(.*?)(?:```|$)", ai_content, re.S)
+            
+            if python_match:
+                from .execute import run_python_code
+                from ..core.historical_loader import load_data, add_indicators
+                
+                # Load the data for execution
+                df = load_data(record.symbol, record.start_date.strftime('%Y-%m-%d'), record.end_date.strftime('%Y-%m-%d'), record.timeframe)
+                if df is not None:
+                    df = add_indicators(df)
+                    # Convert to records for the executor if needed, 
+                    # but run_python_code can take a df directly if we modify it slightly 
+                    # or pass it as a list of dicts. 
+                    # For Historical Lab, we pass the df directly to safe_globals.
+                    code = python_match.group(1)
+                    execution_results = await run_python_code(code, df.to_dict('records'), record.symbol)
+
+            # Build structured message
+            ai_msg_data = {
+                "role": "assistant", 
+                "content": str(ai_content),
+                "execution_output": execution_results.get("output") if execution_results else None,
+                "execution_charts": execution_results.get("charts") if execution_results else None,
+                "execution_tables": execution_results.get("tables") if execution_results else None,
+            }
+            
+            # Recursive cleaner for JSON serialization safety
+            def _clean_for_json(obj):
+                from datetime import date, time, datetime
+                import math
+                if isinstance(obj, (datetime, pd.Timestamp)): return obj.isoformat()
+                if isinstance(obj, (date, time)): return str(obj)
+                if isinstance(obj, dict): return {k: _clean_for_json(v) for k, v in obj.items()}
+                if isinstance(obj, (list, tuple)): return [_clean_for_json(i) for i in obj]
+                if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)): return None
+                return obj
+
+            ai_msg_data = _clean_for_json(ai_msg_data)
             
             new_history = list(record.chat_history)
-            new_history.extend([user_msg, ai_msg])
+            new_history.extend([user_msg, ai_msg_data])
             record.chat_history = new_history
             await db.commit()
             await db.refresh(record)
             
             return await get_status(record.id, db, current_user)
+            
         except Exception as e:
+            await db.rollback() # Recover the session
             last_error = str(e)
+            logger.error(f"Chat error: {e}")
             if attempt < 1:
-                logger.warning(f"Historical Lab chat retry {attempt+1} due to: {last_error}")
                 await asyncio.sleep(1)
             else:
                 raise HTTPException(status_code=500, detail=f"AI service error after retries: {last_error}")

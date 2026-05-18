@@ -45,8 +45,7 @@ export const useAuthStore = create<AuthState>()(
           
           const { access_token, refresh_token } = response.data
           
-          // Decode JWT to get user info (simple decode)
-          const payload = JSON.parse(atob(access_token.split('.')[1]))
+          const payload = JSON.parse(decodeBase64Url(access_token.split('.')[1]))
           
           set({
             accessToken: access_token,
@@ -58,7 +57,8 @@ export const useAuthStore = create<AuthState>()(
               role: payload.role || 'trader'
             },
             isAuthenticated: true,
-            isLoading: false
+            isLoading: false,
+            error: null
           })
         } catch (error: any) {
           set({
@@ -101,22 +101,20 @@ export const useAuthStore = create<AuthState>()(
         }
       },
 
-      checkAuth: () => {
+      checkAuth: async () => {
         const { accessToken, storedRefreshToken } = get()
         if (!accessToken || !storedRefreshToken) {
           set({ isAuthenticated: false })
           return
         }
 
-        // Check if token is expired
         try {
-          const payload = JSON.parse(atob(accessToken.split('.')[1]))
+          const payload = JSON.parse(decodeBase64Url(accessToken.split('.')[1]))
           const exp = payload.exp * 1000
           const now = Date.now()
           
           if (exp < now) {
-            // Token expired, try to refresh
-            get().refreshAccessToken()
+            await get().refreshAccessToken()
           } else {
             set({ isAuthenticated: true })
           }
@@ -136,6 +134,16 @@ export const useAuthStore = create<AuthState>()(
     }
   )
 )
+
+function decodeBase64Url(str: string): string {
+  try {
+    let base64 = str.replace(/-/g, '+').replace(/_/g, '/')
+    while (base64.length % 4) base64 += '='
+    return atob(base64)
+  } catch {
+    return atob(str)
+  }
+}
 
 // Helper to get token from localStorage directly
 const getTokenFromStorage = (): string | null => {
@@ -198,6 +206,9 @@ axios.interceptors.request.use((config) => {
   return config
 })
 
+// Token refresh queue to prevent concurrent refresh attempts
+let refreshPromise: Promise<void> | null = null
+
 // Response interceptor for handling 401
 axios.interceptors.response.use(
   (response) => response,
@@ -206,10 +217,15 @@ axios.interceptors.response.use(
       const storedRefreshToken = useAuthStore.getState().storedRefreshToken
       if (storedRefreshToken) {
         try {
-          await useAuthStore.getState().refreshAccessToken()
+          if (!refreshPromise) {
+            refreshPromise = useAuthStore.getState().refreshAccessToken()
+          }
+          await refreshPromise
+          refreshPromise = null
           // Retry the original request
           return axios(error.config)
         } catch {
+          refreshPromise = null
           useAuthStore.getState().logout()
         }
       } else {

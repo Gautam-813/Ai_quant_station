@@ -88,7 +88,10 @@ async def fetch_ohlc_range(symbol: str, timeframe: str, start_dt: datetime, end_
         if rates is None or len(rates) == 0:
             return []
             
-        # Convert to list of dicts
         import pandas as pd
         df = pd.DataFrame(rates)
+        # Convert broker-local timestamps to UTC if offset is configured
+        offset_hours = settings.MT5_BROKER_UTC_OFFSET
+        if offset_hours != 0:
+            df['time'] = df['time'] - (offset_hours * 3600)
         return df.to_dict("records")

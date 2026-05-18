@@ -1,5 +1,6 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base
+from sqlalchemy import text, event
 from .config import settings
 
 engine = create_async_engine(
@@ -7,6 +8,14 @@ engine = create_async_engine(
     echo=False,
     future=True
 )
+
+# Enable foreign keys for SQLite (required for CASCADE deletes)
+@event.listens_for(engine.sync_engine, "connect")
+def _enable_sqlite_fks(dbapi_connection, connection_record):
+    if hasattr(dbapi_connection, "execute"):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
 
 AsyncSessionLocal = async_sessionmaker(
     engine,
@@ -25,18 +34,25 @@ async def get_db():
             await session.close()
 
 
-from sqlalchemy import text
-
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        
-        # Add is_active column if it doesn't exist
         try:
-            # Check if column exists first for SQLite
-            await conn.execute(text("ALTER TABLE users ADD COLUMN is_active VARCHAR(20) DEFAULT 'true'"))
-            await conn.commit()
-            print("Database migration: added is_active column to users table.")
-        except Exception as e:
-            # Column likely already exists or other non-critical error
+            result = await conn.execute(text("PRAGMA table_info(users)"))
+            cols = {row[1]: row for row in result.fetchall()}
+            is_active_col = cols.get("is_active")
+            if is_active_col and is_active_col[2].upper().startswith(("VARCHAR", "TEXT")):
+                temp = "users_migrate_temp"
+                await conn.execute(text(f"ALTER TABLE users RENAME TO {temp}"))
+                await conn.run_sync(Base.metadata.create_all)
+                await conn.execute(text(f"""
+                    INSERT INTO users (id, username, name, hashed_password, role, is_active, created_at, last_login)
+                    SELECT id, username, name, hashed_password, role,
+                        CASE WHEN is_active IN ('true','1') THEN 1 ELSE 0 END,
+                        created_at, last_login
+                    FROM {temp}
+                """))
+                await conn.execute(text(f"DROP TABLE {temp}"))
+                await conn.execute(text("DELETE FROM sqlite_sequence WHERE name='users'"))
+        except Exception:
             pass

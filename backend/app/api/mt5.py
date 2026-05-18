@@ -22,11 +22,9 @@ router = APIRouter(prefix="/mt5", tags=["MT5"])
 # MT5 Connection State
 _mt5_initialized = False
 _mt5_terminal_path = None
-_mt5_connector_url: str | None = None
 
 
 def _get_mt5():
-    """Lazy import MT5 (Windows only)."""
     try:
         import MetaTrader5 as mt5
         return mt5
@@ -35,28 +33,12 @@ def _get_mt5():
 
 
 def _is_using_connector() -> bool:
-    """Check if we're using external connector."""
-    return _mt5_connector_url is not None
-
-
-def get_mt5_connector_config(
-    x_mt5_connector_url: Annotated[str | None, Header()] = None
-):
-    """Dependency to set global connector URL from header."""
-    global _mt5_connector_url
-    if x_mt5_connector_url:
-        _mt5_connector_url = x_mt5_connector_url
-        connector_client.base_url = x_mt5_connector_url
-    else:
-        _mt5_connector_url = None
-    return _mt5_connector_url
+    return settings.MT5_USE_EXTERNAL_CONNECTOR and bool(settings.MT5_CONNECTOR_URL)
 
 
 def verify_mt5_token(
-    x_mt5_token: Annotated[str, Header()],
-    connector_url: str | None = Depends(get_mt5_connector_config)
+    x_mt5_token: Annotated[str, Header()]
 ):
-    """Verify MT5 API token."""
     if x_mt5_token != settings.MT5_API_TOKEN:
         raise HTTPException(status_code=401, detail="Invalid MT5 token")
     return x_mt5_token
@@ -109,8 +91,7 @@ async def _cache_market_data(db: AsyncSession, symbol: str, timeframe: str, data
 
 
 async def _init_mt5():
-    """Initialize MT5 if not already initialized."""
-    global _mt5_initialized, _mt5_terminal_path, _mt5_connector_url
+    global _mt5_initialized, _mt5_terminal_path
 
     if _mt5_initialized:
         return True
@@ -118,16 +99,11 @@ async def _init_mt5():
     try:
         mt5 = _get_mt5()
         
-        # Check if using external connector
-        if _mt5_connector_url:
-            # For external connector, we don't directly initialize MT5
-            # The connector handles MT5 communication
-            # Just mark as initialized for now (connector handles the actual MT5)
-            print(f"Using external MT5 connector: {_mt5_connector_url}")
+        if _is_using_connector():
+            connector_url = settings.MT5_CONNECTOR_URL
             _mt5_initialized = True
             return True
         
-        # Direct MT5 initialization
         if settings.MT5_TERMINAL_PATH:
             if not mt5.initialize(path=settings.MT5_TERMINAL_PATH):
                 return False
@@ -136,26 +112,23 @@ async def _init_mt5():
                 return False
         _mt5_initialized = True
         return True
-    except Exception as e:
-        print(f"MT5 initialization error: {e}")
+    except Exception:
         return False
 
 
 @router.get("/health")
 async def health_check(token: str = Depends(verify_mt5_token)):
-    """Check MT5 server health."""
     if _is_using_connector():
         try:
             result = await connector_client.health()
             return {
                 "status": "running",
-                "connector": _mt5_connector_url,
+                "connector": settings.MT5_CONNECTOR_URL,
                 "mt5_initialized": result.get("mt5_initialized", False),
-                "server": _mt5_connector_url
+                "server": settings.MT5_CONNECTOR_URL
             }
         except Exception as e:
-            error_msg = f"Connector unavailable at {_mt5_connector_url}: {str(e)}"
-            print(error_msg)
+            error_msg = f"Connector unavailable: {str(e)}"
             raise HTTPException(status_code=503, detail=error_msg)
     
     initialized = await _init_mt5()
@@ -229,7 +202,6 @@ async def get_all_symbols(token: str = Depends(verify_mt5_token)):
 @router.get("/symbols")
 async def get_symbols_jwt(
     current_user: dict = Depends(get_current_user),
-    connector_url: str | None = Depends(get_mt5_connector_config)
 ):
     """Get available symbols from MT5 (JWT auth)."""
     if not await _init_mt5():

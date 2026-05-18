@@ -3,18 +3,17 @@ import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
-  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  BarChart, Bar
+  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
 } from 'recharts'
 import {
   Play, AlertTriangle, Zap, BrainCircuit, Settings2,
   TrendingUp, History as HistoryIcon, FlaskConical, BarChartHorizontal,
   Send, User as UserIcon, Bot, Loader2
 } from 'lucide-react'
-
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000/api'
+import axios from 'axios'
 
 type Mode = 'backtest' | 'analysis'
 type Status = 'pending' | 'running' | 'completed' | 'failed'
@@ -22,7 +21,16 @@ type Status = 'pending' | 'running' | 'completed' | 'failed'
 interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
+  execution_output?: string
+  execution_charts?: any[]
+  execution_tables?: any[]
 }
+
+// ... other interfaces ...
+
+// Update the Chat rendering loop (around line 443)
+// I will use a multi-replace if needed, but let's try a single contiguous block first.
+
 
 interface Metrics {
   total_return_pct: number
@@ -79,8 +87,35 @@ export default function HistoricalLabPage() {
   const [includeCommission, setIncludeCommission] = useState(false)
   const [prompt, setPrompt] = useState('')
   const [loading, setLoading] = useState(false)
-  const [result, setResult] = useState<LabResult | null>(null)
+  const [backtestResult, setBacktestResult] = useState<LabResult | null>(null)
+  const [analysisResult, setAnalysisResult] = useState<LabResult | null>(null)
   const [error, setError] = useState<string | null>(null)
+  
+  // Model Selection
+  const [provider, setProvider] = useState('nvidia')
+  const [model, setModel] = useState('qwen/qwen3.5-122b-a10b')
+  const [availableProviders, setAvailableProviders] = useState<any[]>([])
+
+  // Fetch providers
+  useEffect(() => {
+    const fetchProviders = async () => {
+      try {
+        const res = await axios.get('/api/ai/providers')
+        setAvailableProviders(res.data.providers || [])
+      } catch (e) { console.error("Providers error", e) }
+    }
+    fetchProviders()
+  }, [])
+
+  // Auto-select first model when provider changes
+  useEffect(() => {
+    const selectedProv = availableProviders.find(p => p.id === provider)
+    if (selectedProv && selectedProv.models.length > 0) {
+      if (!selectedProv.models.includes(model)) {
+        setModel(selectedProv.models[0])
+      }
+    }
+  }, [provider, availableProviders])
   
   // Chat specific state
   const [chatInput, setChatInput] = useState('')
@@ -90,21 +125,17 @@ export default function HistoricalLabPage() {
   // Polling for status
   useEffect(() => {
     let interval: any = null;
+    const currentResult = mode === 'backtest' ? backtestResult : analysisResult
+    const setResult = mode === 'backtest' ? setBacktestResult : setAnalysisResult
     
-    if (result && (result.status === 'pending' || result.status === 'running')) {
+    if (currentResult && (currentResult.status === 'pending' || currentResult.status === 'running')) {
       interval = setInterval(async () => {
         try {
-          const token = localStorage.getItem('access_token')
-          const res = await fetch(`${API_BASE}/historical-lab/status/${result.id}`, {
-            headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) }
-          })
-          if (res.ok) {
-            const data = await res.json()
-            setResult(data)
-            if (data.status === 'completed' || data.status === 'failed') {
-              setLoading(false)
-              if (data.status === 'failed') setError('Processing failed. Please check parameters.')
-            }
+          const res = await axios.get(`/api/historical-lab/status/${currentResult.id}`)
+          setResult(res.data)
+          if (res.data.status === 'completed' || res.data.status === 'failed') {
+            setLoading(false)
+            if (res.data.status === 'failed') setError('Processing failed. Please check parameters.')
           }
         } catch (e) {
           console.error("Polling error", e)
@@ -113,81 +144,66 @@ export default function HistoricalLabPage() {
     }
     
     return () => { if (interval) clearInterval(interval) }
-  }, [result?.id, result?.status])
+  }, [backtestResult?.id, backtestResult?.status, analysisResult?.id, analysisResult?.status, mode])
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [result?.chat_history])
+  }, [backtestResult?.chat_history, analysisResult?.chat_history, mode])
 
   const handleRun = async () => {
     setLoading(true)
     setError(null)
+    const setResult = mode === 'backtest' ? setBacktestResult : setAnalysisResult
     setResult(null)
 
     try {
-      const token = localStorage.getItem('access_token')
-      const res = await fetch(`${API_BASE}/historical-lab/run`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {})
-        },
-        body: JSON.stringify({
-          mode, symbol, start_date: startDate, end_date: endDate,
-          timeframe, prompt, initial_capital: parseFloat(capital),
-          leverage: parseFloat(leverage), include_spread: includeSpread,
-          include_commission: includeCommission,
-        })
+      const res = await axios.post('/api/historical-lab/run', {
+        mode, symbol, start_date: startDate, end_date: endDate,
+        timeframe, prompt, initial_capital: parseFloat(capital),
+        leverage: parseFloat(leverage), include_spread: includeSpread,
+        include_commission: includeCommission,
+        provider, model,
       })
 
-      if (!res.ok) {
-        const err = await res.json()
-        throw new Error(err.detail || 'Request failed')
-      }
-
-      const data = await res.json()
-      // Initially, result will just have id and status: 'pending'
-      setResult(data as LabResult)
+      setResult(res.data as LabResult)
     } catch (e: any) {
-      setError(e.message || 'An error occurred.')
+      setError(e.response?.data?.detail || e.message || 'An error occurred.')
       setLoading(false)
     }
   }
 
   const handleChat = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!chatInput.trim() || !result?.id || chatLoading) return
+    if (!chatInput.trim() || chatLoading) return
+    
+    const currentResult = mode === 'backtest' ? backtestResult : analysisResult
+    const setResult = mode === 'backtest' ? setBacktestResult : setAnalysisResult
+
+    if (!currentResult?.id) {
+      setError("Please click 'Run Lab' first to initialize the research vault with market data.")
+      return
+    }
 
     setChatLoading(true)
     const userMsg = chatInput
     setChatInput('')
 
     try {
-      const token = localStorage.getItem('access_token')
-      const res = await fetch(`${API_BASE}/historical-lab/chat`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {})
-        },
-        body: JSON.stringify({
-          backtest_id: result.id,
-          message: userMsg
-        })
+      const res = await axios.post('/api/historical-lab/chat', {
+        backtest_id: currentResult.id,
+        message: userMsg,
+        provider, model
       })
-
-      if (!res.ok) throw new Error('Chat failed')
-      const data: LabResult = await res.json()
-      setResult(data)
+      setResult(res.data as LabResult)
     } catch (e: any) {
-      setError(e.message || 'Chat error.')
+      setError(e.response?.data?.detail || e.message || 'Chat error.')
     } finally {
       setChatLoading(false)
     }
   }
 
+  const result = mode === 'backtest' ? backtestResult : analysisResult
   const metrics = result?.metrics
-  const analysis = result?.analysis
   const isProcessing = result?.status === 'pending' || result?.status === 'running'
 
   return (
@@ -202,19 +218,43 @@ export default function HistoricalLabPage() {
           <p className="text-muted-foreground text-sm">Professional backtesting & analysis engine running on high-speed Parquet data</p>
         </div>
 
-        {/* Mode Switcher */}
-        <div className="bg-muted p-1 rounded-xl flex gap-1 border border-border">
-          {(['backtest', 'analysis'] as Mode[]).map((m) => (
-            <button
-              key={m}
-              onClick={() => setMode(m)}
-              className={`px-4 py-2 rounded-lg text-sm font-medium capitalize transition-all ${
-                mode === m ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              {m === 'backtest' ? '📈 Backtest' : '🔬 Deep Analysis'}
-            </button>
-          ))}
+        {/* Mode Switcher & Model Selection */}
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 bg-muted p-1 rounded-xl border border-border">
+            <Select value={provider} onValueChange={setProvider}>
+              <SelectTrigger className="h-8 w-32 border-none bg-transparent shadow-none focus:ring-0">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {availableProviders.map(p => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <div className="w-px h-4 bg-border" />
+            <Select value={model} onValueChange={setModel}>
+              <SelectTrigger className="h-8 w-48 border-none bg-transparent shadow-none focus:ring-0">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {availableProviders.find(p => p.id === provider)?.models.map((m: any) => (
+                  <SelectItem key={m} value={m}>{m}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="bg-muted p-1 rounded-xl flex gap-1 border border-border">
+            {(['backtest', 'analysis'] as Mode[]).map((m) => (
+              <button
+                key={m}
+                onClick={() => setMode(m)}
+                className={`px-4 py-2 rounded-lg text-sm font-medium capitalize transition-all ${
+                  mode === m ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                {m === 'backtest' ? '📈 Backtest' : '🔬 Deep Analysis'}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -300,19 +340,23 @@ export default function HistoricalLabPage() {
               </div>
             )}
 
-            <div className="space-y-1.5">
-              <Label className="text-xs flex items-center gap-1.5">
-                <BrainCircuit className="w-3.5 h-3.5 text-purple-400" />
-                Strategy Prompt
-              </Label>
-              <textarea
-                className="w-full h-28 rounded-lg bg-background border border-input p-3 text-sm focus:ring-1 focus:ring-primary outline-none transition-all resize-none"
-                placeholder="Describe your strategy here..."
-                value={prompt}
-                onChange={e => setPrompt(e.target.value)}
-                disabled={loading}
-              />
-            </div>
+            {mode === 'backtest' && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 text-sm font-medium text-primary">
+                  <BrainCircuit className="w-4 h-4" />
+                  Strategy Prompt
+                </div>
+                <Textarea 
+                  placeholder="Describe your entry/exit logic in plain English..." 
+                  className="min-h-[100px] bg-background/50 resize-none"
+                  value={prompt}
+                  onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setPrompt(e.target.value)}
+                />
+                <p className="text-[10px] text-muted-foreground italic">
+                  Example: "Buy when RSI &lt; 30 and price is above 200 EMA. Exit when RSI &gt; 70."
+                </p>
+              </div>
+            )}
 
             {error && <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/20 text-xs text-destructive">⚠️ {error}</div>}
 
@@ -368,35 +412,7 @@ export default function HistoricalLabPage() {
             </Card>
           )}
 
-          {/* Deep Analysis Charts */}
-          {mode === 'analysis' && analysis && !isProcessing && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <Card className="bg-card/50 border-border/50 h-[250px]">
-                <CardHeader className="pb-2"><CardTitle className="text-xs">Hourly Volatility</CardTitle></CardHeader>
-                <CardContent className="h-[180px] p-0 pr-4 pb-4">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={analysis.hourly_volatility}>
-                      <XAxis dataKey="hour_utc" fontSize={10} />
-                      <YAxis fontSize={10} />
-                      <Bar dataKey="avg_range" fill="hsl(var(--primary))" radius={[2, 2, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </CardContent>
-              </Card>
-              <Card className="bg-card/50 border-border/50 h-[250px]">
-                <CardHeader className="pb-2"><CardTitle className="text-xs">Day-of-Week Volatility</CardTitle></CardHeader>
-                <CardContent className="h-[180px] p-0 pr-4 pb-4">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={analysis.day_of_week_volatility}>
-                      <XAxis dataKey="day" fontSize={10} />
-                      <YAxis fontSize={10} />
-                      <Bar dataKey="avg_range" fill="hsl(var(--primary))" radius={[2, 2, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </CardContent>
-              </Card>
-            </div>
-          )}
+          {/* Deep Analysis results are now handled entirely by the Agentic Research Vault below. */}
 
           {/* AI Chat Terminal */}
           <Card className="bg-primary/5 border-primary/20 h-[500px] flex flex-col">
@@ -404,22 +420,104 @@ export default function HistoricalLabPage() {
               <CardTitle className="text-base flex items-center gap-2"><BrainCircuit className="w-5 h-5 text-primary" /> Quant Research Vault</CardTitle>
             </CardHeader>
             <CardContent className="flex-1 overflow-y-auto space-y-4 p-4">
-              {result?.chat_history.map((msg, i) => (
-                <div key={i} className={`flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
-                  <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${msg.role === 'user' ? 'bg-primary/20 text-primary' : 'bg-muted'}`}>
-                    {msg.role === 'user' ? <UserIcon size={16} /> : <Bot size={16} />}
+              {(result?.chat_history || []).map((msg, i) => (
+                <div key={i} className="space-y-2">
+                  <div className={`flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
+                    <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${msg.role === 'user' ? 'bg-primary/20 text-primary' : 'bg-muted'}`}>
+                      {msg.role === 'user' ? <UserIcon size={16} /> : <Bot size={16} />}
+                    </div>
+                    <div className={`p-3 rounded-2xl text-sm max-w-[85%] ${msg.role === 'user' ? 'bg-primary text-primary-foreground rounded-tr-none' : 'bg-muted/50 border border-border/50 rounded-tl-none whitespace-pre-wrap'}`}>
+                      {msg.role === 'assistant' 
+                        ? msg.content.replace(/```python[\s\S]*?```/g, '').trim() 
+                        : msg.content}
+                    </div>
                   </div>
-                  <div className={`p-3 rounded-2xl text-sm max-w-[85%] ${msg.role === 'user' ? 'bg-primary text-primary-foreground rounded-tr-none' : 'bg-muted/50 border border-border/50 rounded-tl-none whitespace-pre-wrap'}`}>
-                    {msg.content}
-                  </div>
+
+                  {/* Execution Results */}
+                  {msg.role === 'assistant' && (msg.execution_output || msg.execution_charts || msg.execution_tables) && (
+                    <div className="ml-11 space-y-3 max-w-[90%]">
+                      {msg.execution_output && (
+                        <div className="bg-muted/30 border border-border/50 rounded-lg p-3 font-mono text-[10px] whitespace-pre-wrap overflow-x-auto">
+                          <p className="text-[9px] uppercase tracking-widest text-muted-foreground mb-2 flex items-center gap-1.5">
+                            <Zap className="w-3 h-3" /> Execution Output
+                          </p>
+                          {msg.execution_output}
+                        </div>
+                      )}
+
+                      {msg.execution_charts?.map((chart: any, ci: number) => (
+                        <Card key={ci} className="bg-card/30 border-border/50 overflow-hidden">
+                          <div className="p-2 border-b border-border/30 bg-muted/20 flex justify-between items-center">
+                            <span className="text-[10px] font-bold uppercase tracking-tight">{chart.title || 'Analysis Chart'}</span>
+                          </div>
+                          <div className="h-[200px] p-2">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <AreaChart data={chart.data.map((v: any, idx: number) => ({ idx, value: v }))}>
+                                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
+                                <XAxis dataKey="idx" hide />
+                                <YAxis fontSize={10} tickLine={false} axisLine={false} />
+                                <Tooltip />
+                                <Area type="monotone" dataKey="value" stroke={chart.color || '#2563eb'} fill={chart.color || '#2563eb'} fillOpacity={0.1} />
+                              </AreaChart>
+                            </ResponsiveContainer>
+                          </div>
+                        </Card>
+                      ))}
+
+                      {msg.execution_tables?.map((table: any, ti: number) => (
+                        <div key={ti} className="border border-border/50 rounded-lg overflow-hidden bg-card/30">
+                          <div className="bg-muted/20 p-1.5 border-b border-border/30 text-[9px] font-bold uppercase tracking-widest">{table.title || 'Data Table'}</div>
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-left text-[10px]">
+                              {table.columns && (
+                                <thead className="bg-muted/10 border-b border-border/20">
+                                  <tr>
+                                    {table.columns.map((col: string) => <th key={col} className="p-1.5 font-medium">{col}</th>)}
+                                  </tr>
+                                </thead>
+                              )}
+                              <tbody>
+                                {table.rows.map((row: any[], ri: number) => (
+                                  <tr key={ri} className="border-b border-border/10 last:border-0 hover:bg-muted/5 transition-colors">
+                                    {row.map((cell: any, ci: number) => <td key={ci} className="p-1.5">{typeof cell === 'number' ? cell.toFixed(4) : String(cell)}</td>)}
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))}
+              {chatLoading && (
+                <div className="flex gap-3">
+                  <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center shrink-0">
+                    <Loader2 className="w-4 h-4 animate-spin text-primary" />
+                  </div>
+                  <div className="p-3 rounded-2xl text-sm bg-muted/50 border border-border/50 rounded-tl-none animate-pulse">
+                    Analyst is calculating insights...
+                  </div>
+                </div>
+              )}
               <div ref={chatEndRef} />
             </CardContent>
             <div className="p-4 border-t border-border/50 bg-background/50">
               <form onSubmit={handleChat} className="flex gap-2">
-                <Input placeholder="Ask a follow-up..." value={chatInput} onChange={e => setChatInput(e.target.value)} disabled={isProcessing || !result || chatLoading} />
-                <Button size="icon" type="submit" disabled={isProcessing || !result || chatLoading}><Send size={16} /></Button>
+                <Input 
+                  placeholder={!result ? "Run lab to start research..." : "Ask a follow-up..."} 
+                  value={chatInput} 
+                  onChange={e => setChatInput(e.target.value)} 
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      handleChat(e as any);
+                    }
+                  }}
+                  disabled={isProcessing || chatLoading} 
+                />
+                <Button size="icon" type="submit" disabled={isProcessing || chatLoading}><Send size={16} /></Button>
               </form>
             </div>
           </Card>

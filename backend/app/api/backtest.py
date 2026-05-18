@@ -20,14 +20,16 @@ from ..models.historical_lab import HistoricalBacktest
 
 router = APIRouter(prefix="/backtest", tags=["Backtest"])
 
-PARQUET_DIR = Path(r"D:\date-wise\06-04-2026(live current autopilot)\impulse_analyst_v2\data_archive\parquet_storage")
+PARQUET_DIR = Path(__file__).parent.parent.parent.parent / "data_archive" / "parquet_storage"
 
 class BacktestRequest(BaseModel):
     prompt_id: str  # e.g., "1" or "custom_1"
     symbol: str
     timeframe: str = "1T"
-    start_year: int = 2024
-    end_year: int = 2024
+    start_date: str = "2024-01-01"
+    end_date: str = "2024-12-31"
+    provider: Optional[str] = "nvidia"
+    model: Optional[str] = "qwen/qwen3.5-122b-a10b"
 
 class BacktestResponse(BaseModel):
     success: bool
@@ -51,25 +53,41 @@ def _get_api_key(provider: str = "nvidia") -> str:
         return val
     return ""
 
-async def generate_strategy_code(prompt_text: str, error_msg: Optional[str] = None):
+async def generate_strategy_code(prompt_text: str, provider: str = "nvidia", model: str = "qwen/qwen3.5-122b-a10b", error_msg: Optional[str] = None, previous_results: Optional[list] = None):
     """Call AI to convert prompt to rule-based Python code."""
-    api_key = _get_api_key("mistral") # Use Mistral/Codestral for better code gen
+    api_key = _get_api_key(provider)
     if not api_key:
         api_key = _get_api_key("nvidia")
     
     if not api_key:
-        raise Exception("AI API Key not configured")
+        raise Exception(f"AI API Key for {provider} not configured")
 
-    # Determine provider/base_url based on key
-    base_url = "https://api.mistral.ai/v1" if api_key.startswith("7B") else "https://integrate.api.nvidia.com/v1"
-    model = "codestral-latest" if api_key.startswith("7B") else "qwen/qwen3.5-122b-a10b"
+    # Determine base_url based on provider
+    base_url = "https://integrate.api.nvidia.com/v1"
+    if provider == "groq": base_url = "https://api.groq.com/openai/v1"
+    elif provider == "openrouter": base_url = "https://openrouter.ai/api/v1"
+    elif provider == "mistral": base_url = "https://api.mistral.ai/v1"
 
     client = AsyncOpenAI(
         base_url=base_url,
         api_key=api_key
     )
 
-    system_prompt = """You are a Quantitative Developer. Convert the following natural language trading strategy into a Python function.
+    # Build context from previous runs
+    improvement_context = ""
+    if previous_results:
+        best = max(previous_results, key=lambda r: r.get("total_return", -999))
+        worst = min(previous_results, key=lambda r: r.get("total_return", 999))
+        improvement_context = f"""
+PREVIOUS RESULTS for this strategy:
+- Total runs: {len(previous_results)}
+- Best result: {best.get('total_return', 'N/A')}% return, {best.get('win_rate', 'N/A')}% win rate, {best.get('max_drawdown', 'N/A')}% max drawdown
+- Worst result: {worst.get('total_return', 'N/A')}% return, {worst.get('win_rate', 'N/A')}% win rate, {worst.get('max_drawdown', 'N/A')}% max drawdown
+
+OBJECTIVE: Generate an IMPROVED version that outperforms the previous best result. Try different parameters, add filters, or combine indicators to increase return while reducing drawdown.
+"""
+
+    system_prompt = f"""You are a Quantitative Developer. Convert the following natural language trading strategy into a Python function.
 
 RULES:
 1. Use the variable 'df' which is a pandas DataFrame with columns: open, high, low, close, volume.
@@ -95,7 +113,7 @@ def calculate_signals(df):
     signal[(rsi > 70)] = -1
     return signal
 ```
-"""
+{improvement_context}"""
     
     user_content = f"Convert this strategy: {prompt_text}"
     if error_msg:
@@ -120,8 +138,19 @@ def calculate_signals(df):
 def run_vectorized_backtest(df, strategy_code):
     """Execute code and calculate PnL."""
     try:
-        # 1. Execute strategy code to define function
-        exec_globals = {"pd": pd, "np": np, "ta": ta}
+        # 1. Execute strategy code to define function - RESTRICTED builtins for security
+        safe_builtins = {
+            'abs': abs, 'all': all, 'any': any, 'bool': bool, 'True': True,
+            'False': False, 'None': None, 'dict': dict, 'enumerate': enumerate,
+            'float': float, 'int': int, 'isinstance': isinstance, 'len': len,
+            'list': list, 'max': max, 'min': min, 'range': range,
+            'round': round, 'sorted': sorted, 'str': str, 'sum': sum,
+            'tuple': tuple, 'type': type, 'zip': zip,
+            'Exception': Exception, 'ValueError': ValueError,
+            'TypeError': TypeError, 'KeyError': KeyError,
+            'IndexError': IndexError, 'ZeroDivisionError': ZeroDivisionError,
+        }
+        exec_globals = {"__builtins__": safe_builtins, "pd": pd, "np": np, "ta": ta}
         exec(strategy_code, exec_globals)
         calculate_signals = exec_globals.get('calculate_signals')
         
@@ -200,10 +229,30 @@ async def run_backtest(request: BacktestRequest, current_user: dict = Depends(ge
             if strategy_obj:
                 strategy_code = strategy_obj.strategy_code
 
-    # 2. Generate Code if not cached
+    # 2. Generate Code — query previous results for iterative improvement
+    previous_results = []
+    if prompt_text:
+        async with AsyncSessionLocal() as db:
+            prev_result = await db.execute(
+                select(HistoricalBacktest).where(
+                    HistoricalBacktest.prompt == prompt_text,
+                    HistoricalBacktest.status == "completed",
+                    HistoricalBacktest.metrics.isnot(None)
+                ).order_by(HistoricalBacktest.created_at.desc()).limit(5)
+            )
+            prev_runs = prev_result.scalars().all()
+            for run in prev_runs:
+                if run.metrics:
+                    previous_results.append(run.metrics)
+    
     if not strategy_code:
         try:
-            strategy_code = await generate_strategy_code(prompt_text)
+            strategy_code = await generate_strategy_code(
+                prompt_text, 
+                provider=request.provider, 
+                model=request.model,
+                previous_results=previous_results if previous_results else None
+            )
             # Save to cache
             async with AsyncSessionLocal() as db:
                 if request.prompt_id.startswith("custom_"):
@@ -217,20 +266,28 @@ async def run_backtest(request: BacktestRequest, current_user: dict = Depends(ge
             return BacktestResponse(success=False, error=f"AI Generation failed: {str(e)}")
 
     # 3. Load Market Data
+    start_dt = datetime.strptime(request.start_date, "%Y-%m-%d")
+    end_dt = datetime.strptime(request.end_date, "%Y-%m-%d")
+
     df_list = []
-    for year in range(request.start_year, request.end_year + 1):
+    for year in range(start_dt.year, end_dt.year + 1):
         file_path = PARQUET_DIR / f"{request.symbol}_{year}.parquet"
         if file_path.exists():
             df_list.append(pd.read_parquet(file_path))
     
     if not df_list:
-        return BacktestResponse(success=False, error=f"No historical data found for {request.symbol} in range {request.start_year}-{request.end_year}")
+        return BacktestResponse(success=False, error=f"No historical data found for {request.symbol} in range {request.start_date} to {request.end_date}")
 
     full_df = pd.concat(df_list).sort_values('timestamp')
+    full_df['datetime'] = pd.to_datetime(full_df['timestamp'], unit='s')
+
+    # Filter by date range
+    full_df = full_df[(full_df['datetime'] >= start_dt) & (full_df['datetime'] <= end_dt.replace(hour=23, minute=59, second=59))]
+    if full_df.empty:
+        return BacktestResponse(success=False, error=f"No data for {request.symbol} between {request.start_date} and {request.end_date}")
+
     # Resample if needed (Parquet is M1)
     if request.timeframe != "1T":
-        # e.g. "15T", "1H"
-        full_df['datetime'] = pd.to_datetime(full_df['timestamp'], unit='s')
         full_df.set_index('datetime', inplace=True)
         resampled = full_df.resample(request.timeframe).agg({
             'open': 'first',
@@ -257,7 +314,12 @@ async def run_backtest(request: BacktestRequest, current_user: dict = Depends(ge
         
         # Call AI again with the error message
         try:
-            strategy_code = await generate_strategy_code(prompt_text, error_msg=last_error)
+            strategy_code = await generate_strategy_code(
+                prompt_text, 
+                provider=request.provider,
+                model=request.model,
+                error_msg=last_error
+            )
             # Update cache with fixed code
             async with AsyncSessionLocal() as db:
                 if request.prompt_id.startswith("custom_"):
@@ -278,14 +340,15 @@ async def run_backtest(request: BacktestRequest, current_user: dict = Depends(ge
         backtest_rec = HistoricalBacktest(
             user_id=user_id,
             symbol=request.symbol,
-            start_date=datetime(request.start_year, 1, 1),
-            end_date=datetime(request.end_year, 12, 31),
+            start_date=start_dt,
+            end_date=end_dt,
             timeframe=request.timeframe,
             mode="backtest",
             prompt=prompt_text,
             status="completed",
             metrics=result["metrics"],
-            equity_curve=result["equity_curve"]
+            equity_curve=result["equity_curve"],
+            generated_code=strategy_code
         )
         db.add(backtest_rec)
         await db.commit()

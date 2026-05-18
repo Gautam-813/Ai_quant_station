@@ -4,8 +4,8 @@ Autopilot API - Automatic trading based on AI analysis
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from typing import Optional, List
-from datetime import datetime, timedelta
+from typing import Optional, List, Dict
+from datetime import datetime, timedelta, timezone
 import asyncio
 import random
 import os
@@ -13,6 +13,7 @@ import json
 import re
 from sqlalchemy import select, func
 from openai import AsyncOpenAI
+import httpx
 
 from ..core.config import settings
 from ..core.security import get_current_user
@@ -22,21 +23,41 @@ from .execute import run_python_code
 
 router = APIRouter(prefix="/autopilot", tags=["Autopilot"])
 
-# Global autopilot state
-autopilot_state = {
-    "enabled": False,
-    "running": False,
-    "logs": [],
-    "task": None,
-    "settings": None,
-    "stats": {
-        "total_runs": 0,
-        "trades_executed": 0,
-        "success_count": 0,
-        "error_count": 0,
-        "last_run": None
-    }
-}
+_http_client: httpx.AsyncClient | None = None
+
+def get_http_client() -> httpx.AsyncClient:
+    global _http_client
+    if _http_client is None:
+        _http_client = httpx.AsyncClient(timeout=30.0)
+    return _http_client
+
+async def shutdown_http_client():
+    global _http_client
+    if _http_client:
+        await _http_client.aclose()
+        _http_client = None
+
+_user_states: Dict[int, dict] = {}
+
+def _get_state(user_id: int) -> dict:
+    if user_id not in _user_states:
+        _user_states[user_id] = {
+            "enabled": False,
+            "running": False,
+            "logs": [],
+            "task": None,
+            "stats": {
+                "total_runs": 0,
+                "trades_executed": 0,
+                "success_count": 0,
+                "error_count": 0,
+                "last_run": None,
+                "daily_trade_count": 0,
+                "daily_pnl": 0.0,
+                "daily_reset_date": None,
+            }
+        }
+    return _user_states[user_id]
 
 PROMPT_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "prompt_list.txt")
 
@@ -74,47 +95,40 @@ PROVIDERS = {
 }
 
 
-def add_log(message: str, level: str = "INFO"):
-    """Add log entry."""
-    timestamp = datetime.utcnow().strftime("%H:%M:%S")
-    log_entry = {
-        "timestamp": timestamp,
-        "level": level,
-        "message": message
-    }
-    autopilot_state["logs"].insert(0, log_entry)
-    # Keep only last 100 logs
-    if len(autopilot_state["logs"]) > 100:
-        autopilot_state["logs"] = autopilot_state["logs"][:100]
+def add_log(user_id: int, message: str, level: str = "INFO"):
+    state = _get_state(user_id)
+    timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S")
+    log_entry = {"timestamp": timestamp, "level": level, "message": message}
+    state["logs"].insert(0, log_entry)
+    if len(state["logs"]) > 100:
+        state["logs"] = state["logs"][:100]
 
 
-async def initialize_mt5_connector(terminal_path: str = None, connector_url: str = None) -> bool:
-    """Initialize MT5 connector with optional terminal path."""
+async def async_request(method: str, url: str, **kwargs) -> dict:
+    client = get_http_client()
+    headers = kwargs.pop("headers", {})
+    if settings.MT5_API_TOKEN:
+        headers["Authorization"] = f"Bearer {settings.MT5_API_TOKEN}"
+    kwargs["headers"] = headers
+    response = await client.request(method, url, **kwargs)
+    response.raise_for_status()
+    return response.json()
+
+
+async def initialize_mt5_connector(user_id: int, terminal_path: str = None, connector_url: str = None) -> bool:
     try:
-        import requests
         connector_url = connector_url or settings.MT5_CONNECTOR_URL
-        mt5_token = settings.MT5_API_TOKEN
-
-        headers = {"X-MT5-Token": mt5_token}
         payload = {}
         if terminal_path:
             payload["terminal_path"] = terminal_path
-
-        resp = requests.post(
-            f"{connector_url}/initialize",
-            json=payload,
-            headers=headers,
-            timeout=30
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get("success"):
-                account = data.get("account", {})
-                add_log(f"MT5 Connected: {account.get('server')} | Balance: ${account.get('balance', 0):.2f}", "SUCCESS")
-                return True
-        add_log(f"MT5 init failed: {resp.text}", "ERROR")
+        data = await async_request("POST", f"{connector_url}/initialize", json=payload)
+        if data.get("success"):
+            account = data.get("account", {})
+            add_log(user_id, f"MT5 Connected: {account.get('server')} | Balance: ${account.get('balance', 0):.2f}", "SUCCESS")
+            return True
+        add_log(user_id, f"MT5 init failed", "ERROR")
     except Exception as e:
-        add_log(f"MT5 connection error: {str(e)}", "ERROR")
+        add_log(user_id, f"MT5 connection error: {str(e)}", "ERROR")
     return False
 
 
@@ -133,80 +147,40 @@ def detect_trade_setup(text: str) -> Optional[dict]:
     return None
 
 
-async def get_market_data(symbol: str, timeframe: str = "1m", count: int = 500, connector_url: str = None):
-    """Fetch market data from MT5 Connector."""
+async def get_market_data(user_id: int, symbol: str, timeframe: str = "1m", count: int = 500, connector_url: str = None):
     try:
-        import requests
-        # Use our own MT5 connector
         connector_url = connector_url or settings.MT5_CONNECTOR_URL
-        mt5_token = settings.MT5_API_TOKEN
-
-        headers = {"X-MT5-Token": mt5_token}
-        resp = requests.get(
-            f"{connector_url}/data/latest/{symbol}",
-            params={"timeframe": timeframe, "count": count},
-            headers=headers,
-            timeout=10
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get("success"):
-                return data.get("data", [])
+        data = await async_request("GET", f"{connector_url}/data/latest/{symbol}", params={"timeframe": timeframe, "count": count})
+        if data.get("success"):
+            return data.get("data", [])
     except Exception as e:
-        add_log(f"Failed to fetch market data: {str(e)}", "ERROR")
+        add_log(user_id, f"Failed to fetch market data: {str(e)}", "ERROR")
     return None
 
 
-async def execute_trade(symbol: str, direction: str, volume: float, entry_price: float = None,
+async def execute_trade(user_id: int, symbol: str, direction: str, volume: float, entry_price: float = None,
                        sl: float = None, tp: float = None, comment: str = "[AUTOPILOT]", prompt_num: int = None,
                        connector_url: str = None):
-    """Execute trade on MT5 Connector."""
     try:
-        import requests
-        # Use our own MT5 connector
         connector_url = connector_url or settings.MT5_CONNECTOR_URL
-        mt5_token = settings.MT5_API_TOKEN
-
-        # Build comment with prompt number if provided
         if prompt_num:
             trade_comment = f"[AUTOPILOT] P{prompt_num}"
         else:
             trade_comment = comment
 
-        # Determine action type - if entry_price provided, it's a pending order
-        action = direction.upper()  # Default to BUY or SELL
-
+        action = direction.upper()
         if entry_price:
-            # For pending orders, determine if it's limit or stop based on price vs current
-            # Get current price first
             try:
-                resp = requests.get(
-                    f"{connector_url}/symbol/{symbol}",
-                    headers={"X-MT5-Token": mt5_token},
-                    timeout=5
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if data.get("success"):
-                        current_price = data.get("bid") or data.get("ask") or 0
-                        if direction.upper() == "BUY":
-                            # BUY_LIMIT: entry below current, BUY_STOP: entry above current
-                            action = "BUY_LIMIT" if entry_price < current_price else "BUY_STOP"
-                        else:  # SELL
-                            # SELL_LIMIT: entry above current, SELL_STOP: entry below current
-                            action = "SELL_LIMIT" if entry_price > current_price else "SELL_STOP"
+                data = await async_request("GET", f"{connector_url}/symbol/{symbol}")
+                current_price = data.get("bid") or data.get("ask") or 0
+                if direction.upper() == "BUY":
+                    action = "BUY_LIMIT" if entry_price < current_price else "BUY_STOP"
+                else:
+                    action = "SELL_LIMIT" if entry_price > current_price else "SELL_STOP"
             except:
-                # Default to LIMIT if can't get current price
                 action = f"{direction.upper()}_LIMIT"
 
-        headers = {"X-MT5-Token": mt5_token}
-        payload = {
-            "symbol": symbol,
-            "action": action,
-            "volume": volume,
-            "comment": trade_comment
-        }
-        # Add optional parameters
+        payload = {"symbol": symbol, "action": action, "volume": volume, "comment": trade_comment}
         if entry_price:
             payload["price"] = entry_price
         if sl and sl > 0:
@@ -214,51 +188,30 @@ async def execute_trade(symbol: str, direction: str, volume: float, entry_price:
         if tp and tp > 0:
             payload["tp"] = tp
 
-        resp = requests.post(
-            f"{connector_url}/order",
-            json=payload,
-            headers=headers,
-            timeout=15
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get("success"):
-                return {"success": True, "ticket": data.get("ticket"), "price": data.get("price")}
-        return {"success": False, "error": resp.text}
+        data = await async_request("POST", f"{connector_url}/order", json=payload)
+        if data.get("success"):
+            return {"success": True, "ticket": data.get("ticket"), "price": data.get("price")}
+        return {"success": False, "error": "Order failed"}
     except Exception as e:
-        add_log(f"Trade execution failed: {str(e)}", "ERROR")
+        add_log(user_id, f"Trade execution failed: {str(e)}", "ERROR")
         return {"success": False, "error": str(e)}
 
 
 async def check_open_positions(connector_url: str = None):
-    """Check current open positions from MT5 Connector."""
     try:
-        import requests
-        # Use our own MT5 connector
         connector_url = connector_url or settings.MT5_CONNECTOR_URL
-        mt5_token = settings.MT5_API_TOKEN
-
-        headers = {"X-MT5-Token": mt5_token}
-        resp = requests.get(
-            f"{connector_url}/positions",
-            headers=headers,
-            timeout=10
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get("success"):
-                return data.get("positions", [])
+        data = await async_request("GET", f"{connector_url}/positions")
+        if data.get("success"):
+            return data.get("positions", [])
     except:
         pass
     return []
 
 
 async def run_autopilot_cycle(user_id: int):
-    """Run one cycle of autopilot."""
-    # Load default prompts
+    state = _get_state(user_id)
     default_prompts = load_prompts()
     
-    # Get settings and personal prompts
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             select(AutopilotSettings).where(AutopilotSettings.user_id == user_id)
@@ -266,10 +219,9 @@ async def run_autopilot_cycle(user_id: int):
         settings_obj = result.scalar_one_or_none()
 
         if not settings_obj:
-            add_log("Autopilot not configured", "ERROR")
+            add_log(user_id, "Autopilot not configured", "ERROR")
             return
 
-        # Fetch personal prompts
         result = await db.execute(
             select(UserPrompt).where(UserPrompt.user_id == user_id)
         )
@@ -283,14 +235,11 @@ async def run_autopilot_cycle(user_id: int):
         connector_url = settings_obj.mt5_connector_url
         mt5_connected = settings_obj.mt5_connected
         selected_ids = settings_obj.selected_prompts or []
+        max_trades = settings_obj.max_trades_per_day
+        max_loss = settings_obj.max_daily_loss
+        cooldown = settings_obj.cooldown_minutes
 
-    # Filter prompts based on selection
-    # default_prompts are line numbers 1-100
-    # personal_prompts are "custom_{id}"
-    
     prompt_pool = []
-    
-    # Add selected default prompts
     for line in default_prompts:
         try:
             p_num = int(line.split(".")[0].strip())
@@ -298,65 +247,61 @@ async def run_autopilot_cycle(user_id: int):
                 prompt_pool.append({"id": p_num, "text": line.split(".", 1)[1].strip(), "is_custom": False})
         except:
             continue
-            
-    # Add selected personal prompts
+
     for p in personal_prompts:
         custom_id = f"custom_{p.id}"
         if not selected_ids or custom_id in selected_ids:
             prompt_pool.append({"id": custom_id, "text": p.content, "is_custom": True})
 
     if not prompt_pool:
-        add_log("No prompts selected in settings", "ERROR")
+        add_log(user_id, "No prompts selected in settings", "ERROR")
         return
 
-    # Check/initialize MT5 connection
     if not mt5_connected:
-        add_log(f"Initializing MT5 connection to {connector_url or 'default'}...")
-        if not await initialize_mt5_connector(terminal_path, connector_url):
-            add_log("Failed to connect to MT5. Check terminal path.", "ERROR")
+        add_log(user_id, f"Initializing MT5 connection to {connector_url or 'default'}...")
+        if not await initialize_mt5_connector(user_id, terminal_path, connector_url):
+            add_log(user_id, "Failed to connect to MT5. Check terminal path.", "ERROR")
             return
-
-        # Update connection status in DB
         async with AsyncSessionLocal() as db:
-            result = await db.execute(
-                select(AutopilotSettings).where(AutopilotSettings.user_id == user_id)
-            )
-            settings_obj = result.scalar_one_or_none()
-            if settings_obj:
-                settings_obj.mt5_connected = True
+            result = await db.execute(select(AutopilotSettings).where(AutopilotSettings.user_id == user_id))
+            s = result.scalar_one_or_none()
+            if s:
+                s.mt5_connected = True
                 await db.commit()
 
-    # Update stats
-    autopilot_state["stats"]["total_runs"] += 1
-    autopilot_state["stats"]["last_run"] = datetime.utcnow().isoformat()
+    state["stats"]["total_runs"] += 1
+    state["stats"]["last_run"] = datetime.now(timezone.utc).isoformat()
+    add_log(user_id, f"=== Starting Cycle #{state['stats']['total_runs']} ===")
 
-    add_log(f"=== Starting Cycle #{autopilot_state['stats']['total_runs']} ===")
+    # Safety limits
+    today = datetime.now(timezone.utc).date()
+    if state["stats"]["daily_reset_date"] != str(today):
+        state["stats"]["daily_trade_count"] = 0
+        state["stats"]["daily_pnl"] = 0.0
+        state["stats"]["daily_reset_date"] = str(today)
 
-    # 1. Pick random prompt from pool
+    if state["stats"]["daily_trade_count"] >= max_trades:
+        add_log(user_id, f"Daily trade limit ({max_trades}) reached. Skipping.", "WARNING")
+        return
+
     chosen = random.choice(prompt_pool)
     prompt_id_val = chosen["id"]
     prompt_text = chosen["text"]
-    
-    # For logging/trade comment
     if chosen["is_custom"]:
-        prompt_num = 999  # Dummy for custom
+        prompt_num = 999
         display_id = f"Custom-{prompt_id_val.split('_')[1]}"
     else:
         prompt_num = prompt_id_val
         display_id = f"#{prompt_num}"
-        
-    add_log(f"Using Strategy {display_id}: {prompt_text[:50]}...")
+    add_log(user_id, f"Using Strategy {display_id}: {prompt_text[:50]}...")
 
-    # 2. Get market data
-    market_data = await get_market_data(symbol, connector_url=connector_url)
+    market_data = await get_market_data(user_id, symbol, connector_url=connector_url)
     if not market_data or len(market_data) == 0:
-        add_log("No market data available", "ERROR")
-        autopilot_state["stats"]["error_count"] += 1
+        add_log(user_id, "No market data available", "ERROR")
+        state["stats"]["error_count"] += 1
         return
+    add_log(user_id, f"Loaded {len(market_data)} candles for {symbol}")
 
-    add_log(f"Loaded {len(market_data)} candles for {symbol}")
-
-    # 3. Prepare data for AI
     latest = market_data[-1]
     samples = []
     for c in market_data[-20:]:
@@ -370,7 +315,7 @@ CURRENT MARKET DATA for {symbol}:
 SAMPLES (Last 20 candles): {', '.join(samples)}
 
 RULES:
-1. Analyze the data and if a high-confidence trade setup exists (≥60% confidence), output a JSON block:
+1. Analyze the data and if a high-confidence trade setup exists (>=60% confidence), output a JSON block:
 
 ```json
 {{"action": "TRADE_SETUP", "symbol": "{symbol}", "direction": "BUY", "entry_price": 2345.50, "stop_loss": 2338.00, "take_profit": 2360.00, "lot_size": {lot_size}, "risk_reward": 1.93, "reasoning": "Brief explanation", "confidence": 75}}
@@ -381,84 +326,61 @@ RULES:
 4. Consider technical indicators (RSI, MACD, moving averages) if helpful
 """
 
-    # 4. Call AI
     api_key = _get_api_key(provider)
     if not api_key:
-        add_log("No API key configured", "ERROR")
-        autopilot_state["stats"]["error_count"] += 1
+        add_log(user_id, "No API key configured", "ERROR")
+        state["stats"]["error_count"] += 1
         return
 
     if provider == "nvidia" and not api_key.startswith("nvapi-"):
         api_key = f"nvapi-{api_key}"
 
     try:
-        client = AsyncOpenAI(
-            base_url=PROVIDERS[provider]["base_url"],
-            api_key=api_key
-        )
-
+        client = AsyncOpenAI(base_url=PROVIDERS[provider]["base_url"], api_key=api_key)
         response = await client.chat.completions.create(
             model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt_text}
-            ],
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt_text}],
             temperature=0.2,
             timeout=60
         )
-
         ai_response = response.choices[0].message.content or ""
-        add_log(f"🤖 AI Response (length: {len(ai_response)} chars)")
-        add_log(f"---BEGIN AI RESPONSE---")
-        add_log(ai_response[:500] if len(ai_response) > 500 else ai_response)
-        add_log(f"---END AI RESPONSE---")
-
+        add_log(user_id, f"AI Response (length: {len(ai_response)} chars)")
     except Exception as e:
-        add_log(f"AI call failed: {str(e)}", "ERROR")
-        autopilot_state["stats"]["error_count"] += 1
+        add_log(user_id, f"AI call failed: {str(e)}", "ERROR")
+        state["stats"]["error_count"] += 1
         return
 
-    # 5. Detect trade setup with Auto-Retry / Self-Correction
     max_retries = 2
     setup = None
-    
     for attempt in range(max_retries):
         setup = detect_trade_setup(ai_response)
         if setup:
             break
-            
         if "NO_SETUP" in ai_response:
-            add_log("🤷 AI Response: NO_SETUP - No trade opportunity found", "WARNING")
+            add_log(user_id, "AI Response: NO_SETUP - No trade opportunity found", "WARNING")
             return
-            
-        add_log(f"⚠️ Attempt {attempt+1}: No valid trade setup detected. Retrying with correction...", "WARNING")
-        
-        # Call AI again with correction prompt
+        add_log(user_id, f"Attempt {attempt+1}: No valid trade setup. Retrying...", "WARNING")
         try:
-            correction_msg = "Your previous response was missing the TRADE_SETUP JSON block. Please provide your analysis again and include a valid JSON block in the exact format required."
-            
             response = await client.chat.completions.create(
                 model=model,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt_text},
                     {"role": "assistant", "content": ai_response},
-                    {"role": "user", "content": correction_msg}
+                    {"role": "user", "content": "Your previous response was missing the TRADE_SETUP JSON block. Please provide your analysis again and include a valid JSON block in the exact format required."}
                 ],
                 temperature=0.2,
                 timeout=60
             )
             ai_response = response.choices[0].message.content or ""
-            add_log(f"🤖 AI Correction Response Received")
         except Exception as e:
-            add_log(f"AI correction failed: {str(e)}", "ERROR")
+            add_log(user_id, f"AI correction failed: {str(e)}", "ERROR")
             break
 
     if not setup:
-        add_log("❌ Failed to get valid setup after retries", "ERROR")
+        add_log(user_id, "Failed to get valid setup after retries", "ERROR")
         return
 
-    # 6. Execute trade
     direction = setup.get("direction", "BUY").upper()
     entry_price = setup.get("entry_price")
     sl = setup.get("stop_loss")
@@ -467,132 +389,76 @@ RULES:
     reasoning = setup.get("reasoning", "")
     confidence = setup.get("confidence", 70)
 
-    add_log(f"🎯 TRADE SETUP FOUND!")
-    add_log(f"   Direction: {direction}")
-    add_log(f"   Entry: {entry_price} | SL: {sl} | TP: {tp}")
-    add_log(f"   Lot: {lot} | Confidence: {confidence}%")
-    add_log(f"   Reasoning: {reasoning[:100] if reasoning else 'N/A'}...")
-    add_log(f"   Prompt: #{prompt_num}")
+    add_log(user_id, f"TRADE SETUP - {direction} | Entry: {entry_price} SL: {sl} TP: {tp} Lot: {lot} Confidence: {confidence}%")
 
-    # Execute on MT5
-    result = await execute_trade(
-        symbol=symbol,
-        direction=direction,
-        volume=lot,
-        entry_price=entry_price,
-        sl=sl,
-        tp=tp,
-        prompt_num=prompt_num,
-        connector_url=connector_url
-    )
+    result = await execute_trade(user_id, symbol, direction, lot, entry_price, sl, tp, prompt_num=prompt_num, connector_url=connector_url)
 
     if result.get("success"):
         ticket = result.get("ticket")
         exec_price = result.get("price")
-        add_log(f"✅ TRADE EXECUTED SUCCESSFULLY!", "SUCCESS")
-        add_log(f"   MT5 Ticket: #{ticket}")
-        add_log(f"   Execution Price: {exec_price}")
-        add_log(f"   Comment: [AUTOPILOT] P{prompt_num}")
-        autopilot_state["stats"]["trades_executed"] += 1
-        autopilot_state["stats"]["success_count"] += 1
+        add_log(user_id, f"Trade executed - Ticket #{ticket} Price: {exec_price}", "SUCCESS")
+        state["stats"]["trades_executed"] += 1
+        state["stats"]["success_count"] += 1
+        state["stats"]["daily_trade_count"] += 1
 
-        # Save to database
         async with AsyncSessionLocal() as db:
             trade = AutopilotTrade(
-                user_id=user_id,
-                prompt_number=prompt_num,
-                prompt_text=prompt_text,
-                symbol=symbol,
-                direction=direction,
-                entry_price=entry_price,
-                stop_loss=sl,
-                take_profit=tp,
-                lot_size=lot,
-                mt5_ticket=ticket,
-                execution_price=exec_price,
-                execution_status="executed",
-                reasoning=reasoning,
-                confidence=confidence,
-                ai_response=ai_response[:1000]
+                user_id=user_id, prompt_number=prompt_num, prompt_text=prompt_text,
+                symbol=symbol, direction=direction, entry_price=entry_price,
+                stop_loss=sl, take_profit=tp, lot_size=lot,
+                mt5_ticket=ticket, execution_price=exec_price, execution_status="executed",
+                reasoning=reasoning, confidence=confidence, ai_response=ai_response[:1000]
             )
             db.add(trade)
             await db.commit()
     else:
-        add_log(f"❌ Trade failed: {result.get('error')}", "ERROR")
-        autopilot_state["stats"]["error_count"] += 1
+        add_log(user_id, f"Trade failed: {result.get('error')}", "ERROR")
+        state["stats"]["error_count"] += 1
 
 
 async def sync_trade_results(user_id: int, connector_url: str = None):
-    """Sync results of open trades from MT5 history."""
     try:
-        import requests
-        # Get settings and open trades in one session
         async with AsyncSessionLocal() as db:
-            # 1. Get settings
-            result = await db.execute(
-                select(AutopilotSettings).where(AutopilotSettings.user_id == user_id)
-            )
+            result = await db.execute(select(AutopilotSettings).where(AutopilotSettings.user_id == user_id))
             settings_obj = result.scalar_one_or_none()
             if not settings_obj:
                 return
-            
             connector_url = connector_url or settings_obj.mt5_connector_url or settings.MT5_CONNECTOR_URL
-            mt5_token = settings.MT5_API_TOKEN
 
-            # 2. Get open trades from DB that don't have a result yet
             result = await db.execute(
-                select(AutopilotTrade)
-                .where(AutopilotTrade.user_id == user_id)
-                .where(AutopilotTrade.execution_status == "executed")
-                .where(AutopilotTrade.result == None)
+                select(AutopilotTrade).where(AutopilotTrade.user_id == user_id)
+                .where(AutopilotTrade.execution_status == "executed").where(AutopilotTrade.result == None)
             )
             open_trades = result.scalars().all()
-            
             if not open_trades:
                 return
 
-            # 3. Fetch history from MT5 (last 24 hours)
-            headers = {"X-MT5-Token": mt5_token}
             try:
-                resp = requests.get(
-                    f"{connector_url}/history",
-                    params={"hours": 24},
-                    headers=headers,
-                    timeout=10
-                )
-                if resp.status_code != 200:
-                    return
-                history_data = resp.json()
+                history_data = await async_request("GET", f"{connector_url}/history", params={"hours": 24})
             except Exception as e:
-                add_log(f"History fetch failed: {str(e)}", "ERROR")
+                add_log(user_id, f"History fetch failed: {str(e)}", "ERROR")
                 return
-                
+
             if not history_data.get("success"):
                 return
-                
             deals = history_data.get("deals", [])
             if not deals:
                 return
 
-            # 4. Match deals with our trades
             updated_count = 0
+            state = _get_state(user_id)
             for trade in open_trades:
                 close_deal = None
                 for deal in deals:
-                    # Match by Position ID (best) or Order ID (fallback)
                     is_match = (deal.get("position_id") == trade.mt5_ticket or deal.get("ticket") == trade.mt5_ticket)
                     if is_match and deal.get("entry") == "CLOSE":
                         close_deal = deal
                         break
-                
                 if close_deal:
                     profit = close_deal.get("profit", 0)
                     closed_at_str = close_deal.get("time")
-                    
-                    # Determine result type
-                    res_type = "MANUAL_CLOSE"
-                    # Check if SL or TP was hit based on comment
                     comment = close_deal.get("comment", "").lower()
+                    res_type = "MANUAL_CLOSE"
                     if "sl" in comment:
                         res_type = "SL_HIT"
                     elif "tp" in comment:
@@ -601,47 +467,47 @@ async def sync_trade_results(user_id: int, connector_url: str = None):
                         res_type = "PROFIT"
                     else:
                         res_type = "LOSS"
-                    
-                    # Update trade in DB
+
                     trade.profit = profit
                     trade.result = res_type
+                    state["stats"]["daily_pnl"] = state["stats"].get("daily_pnl", 0) + profit
                     if closed_at_str:
                         trade.closed_at = datetime.strptime(closed_at_str, '%Y-%m-%d %H:%M:%S')
                         if trade.executed_at:
                             diff = trade.closed_at - trade.executed_at
                             trade.duration_minutes = int(diff.total_seconds() / 60)
-                    
                     updated_count += 1
-                    add_log(f"📉 Trade #{trade.mt5_ticket} Sync | Profit: ${profit:.2f} | Result: {res_type}", "SUCCESS" if profit > 0 else "WARNING")
-            
+                    add_log(user_id, f"Trade #{trade.mt5_ticket} | Profit: ${profit:.2f} | {res_type}", "SUCCESS" if profit > 0 else "WARNING")
+
             if updated_count > 0:
                 await db.commit()
-                print(f"Successfully synced {updated_count} trades for user {user_id}")
-            
+
     except Exception as e:
-        import traceback
-        print(f"Sync error: {str(e)}")
-        print(traceback.format_exc())
-        add_log(f"Failed to sync trade results: {str(e)}", "ERROR")
+        add_log(user_id, f"Failed to sync trade results: {str(e)}", "ERROR")
 
 
 async def autopilot_loop(user_id: int):
-    """Background loop for autopilot."""
-    while autopilot_state["enabled"]:
-        if autopilot_state["running"]:
-            # 1. Sync previous results
+    state = _get_state(user_id)
+    while state["enabled"]:
+        if state["running"]:
+            state["stats"]["daily_pnl"] = state["stats"].get("daily_pnl", 0)
+            max_loss = 0
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(select(AutopilotSettings).where(AutopilotSettings.user_id == user_id))
+                s = result.scalar_one_or_none()
+                if s:
+                    max_loss = s.max_daily_loss
+            if state["stats"]["daily_pnl"] <= max_loss:
+                add_log(user_id, f"Daily loss limit (${max_loss}) reached. Stopping.", "WARNING")
+                state["running"] = False
+                continue
             await sync_trade_results(user_id)
-            
-            # 2. Run new cycle
             await run_autopilot_cycle(user_id)
 
-        # Get interval from settings
         async with AsyncSessionLocal() as db:
-            result = await db.execute(
-                select(AutopilotSettings).where(AutopilotSettings.user_id == user_id)
-            )
-            settings_obj = result.scalar_one_or_none()
-            interval = settings_obj.interval_seconds if settings_obj else 300
+            result = await db.execute(select(AutopilotSettings).where(AutopilotSettings.user_id == user_id))
+            s = result.scalar_one_or_none()
+            interval = s.interval_seconds if s else 300
 
         await asyncio.sleep(interval)
 
@@ -720,95 +586,63 @@ class TradeResult(BaseModel):
 # Endpoints
 @router.post("/start")
 async def start_autopilot(current_user: dict = Depends(get_current_user)):
-    """Start the autopilot."""
     user_id = current_user["id"]
+    state = _get_state(user_id)
 
-    # Get or create settings
     async with AsyncSessionLocal() as db:
-        result = await db.execute(
-            select(AutopilotSettings).where(AutopilotSettings.user_id == user_id)
-        )
+        result = await db.execute(select(AutopilotSettings).where(AutopilotSettings.user_id == user_id))
         settings_obj = result.scalar_one_or_none()
-
         if not settings_obj:
             settings_obj = AutopilotSettings(user_id=user_id)
             db.add(settings_obj)
             await db.commit()
-
         if not settings_obj.enabled:
             settings_obj.enabled = True
             await db.commit()
 
-    autopilot_state["enabled"] = True
-    autopilot_state["running"] = True
+    state["enabled"] = True
+    state["running"] = True
+    if state["task"] is None or state["task"].done():
+        state["task"] = asyncio.create_task(autopilot_loop(user_id))
 
-    # Start background task
-    if autopilot_state["task"] is None or autopilot_state["task"].done():
-        autopilot_state["task"] = asyncio.create_task(autopilot_loop(user_id))
-
-    add_log("🚀 Autopilot STARTED")
-
+    add_log(user_id, "Autopilot STARTED")
     return {"success": True, "message": "Autopilot started"}
 
 
 @router.post("/stop")
 async def stop_autopilot(current_user: dict = Depends(get_current_user)):
-    """Stop the autopilot."""
     user_id = current_user["id"]
-
+    state = _get_state(user_id)
     async with AsyncSessionLocal() as db:
-        result = await db.execute(
-            select(AutopilotSettings).where(AutopilotSettings.user_id == user_id)
-        )
-        settings_obj = result.scalar_one_or_none()
-
-        if settings_obj:
-            settings_obj.enabled = False
+        result = await db.execute(select(AutopilotSettings).where(AutopilotSettings.user_id == user_id))
+        s = result.scalar_one_or_none()
+        if s:
+            s.enabled = False
             await db.commit()
-
-    autopilot_state["enabled"] = False
-    autopilot_state["running"] = False
-
-    add_log("⏹️ Autopilot STOPPED")
-
+    state["enabled"] = False
+    state["running"] = False
+    add_log(user_id, "Autopilot STOPPED")
     return {"success": True, "message": "Autopilot stopped"}
 
 
 @router.get("/status", response_model=AutopilotStatus)
 async def get_status(current_user: dict = Depends(get_current_user)):
-    """Get autopilot status."""
     user_id = current_user["id"]
-
+    state = _get_state(user_id)
     async with AsyncSessionLocal() as db:
-        result = await db.execute(
-            select(AutopilotSettings).where(AutopilotSettings.user_id == user_id)
-        )
+        result = await db.execute(select(AutopilotSettings).where(AutopilotSettings.user_id == user_id))
         settings_obj = result.scalar_one_or_none()
-
         settings = None
         if settings_obj:
             settings = {
-                "enabled": settings_obj.enabled,
-                "interval_seconds": settings_obj.interval_seconds,
-                "default_lot": settings_obj.default_lot,
-                "max_trades_per_day": settings_obj.max_trades_per_day,
-                "cooldown_minutes": settings_obj.cooldown_minutes,
-                "max_daily_loss": settings_obj.max_daily_loss,
-                "mt5_terminal_path": settings_obj.mt5_terminal_path,
-                "mt5_connector_url": settings_obj.mt5_connector_url,
-                "symbol": settings_obj.symbol,
-                "provider": settings_obj.provider,
-                "model": settings_obj.model,
+                "enabled": settings_obj.enabled, "interval_seconds": settings_obj.interval_seconds,
+                "default_lot": settings_obj.default_lot, "max_trades_per_day": settings_obj.max_trades_per_day,
+                "cooldown_minutes": settings_obj.cooldown_minutes, "max_daily_loss": settings_obj.max_daily_loss,
+                "mt5_terminal_path": settings_obj.mt5_terminal_path, "mt5_connector_url": settings_obj.mt5_connector_url,
+                "symbol": settings_obj.symbol, "provider": settings_obj.provider, "model": settings_obj.model,
                 "mt5_connected": settings_obj.mt5_connected
             }
-
-    return AutopilotStatus(
-        enabled=autopilot_state["enabled"],
-        running=autopilot_state["running"],
-        settings=settings,
-        stats=autopilot_state["stats"],
-        logs=autopilot_state["logs"]
-    )
+    return AutopilotStatus(enabled=state["enabled"], running=state["running"], settings=settings, stats=state["stats"], logs=state["logs"])
 
 
 @router.post("/connect-mt5")

@@ -6,6 +6,8 @@ import asyncio
 import logging
 import traceback
 from datetime import datetime
+from time import time
+import httpx
 from openai import AsyncOpenAI
 from openai import RateLimitError, APIError, Timeout
 from .execute import run_python_code
@@ -80,7 +82,7 @@ async def _cache_market_data_internal(symbol: str, timeframe: str, data: List[di
             await db.execute(stmt)
             await db.commit()
     except Exception as e:
-        print(f"AI Cache Error: {e}")
+                logger.warning(f"AI Cache Error: {e}")
 
 
 # AI Provider Configuration
@@ -135,24 +137,61 @@ PROVIDERS = {
     "cerebras": {
         "name": "Cerebras",
         "base_url": "https://api.cerebras.ai/v1",
-        "models": ["llama3.1-70b", "llama3.1-8b"],
+        "models": ["gpt-oss-120b", "llama3.1-8b"],
     },
 }
 
 
+_model_cache = {"data": {}, "timestamp": 0}
+MODEL_CACHE_TTL = 300  # 5 minutes
+
+
+async def _fetch_live_models(provider_id: str, config: dict, api_key: str) -> Optional[List[str]]:
+    """Fetch available models from provider API. Returns None on failure."""
+    if not api_key:
+        return None
+    try:
+        headers = {"Authorization": f"Bearer {api_key}"}
+        if provider_id == "nvidia" and not api_key.startswith("nvapi-"):
+            headers["Authorization"] = f"Bearer nvapi-{api_key}"
+
+        base = config["base_url"].rstrip("/")
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(f"{base}/models", headers=headers)
+            if resp.status_code == 200:
+                data = resp.json()
+                models = [
+                    item["id"] for item in data.get("data", []) if item.get("id")
+                ]
+                if models:
+                    return sorted(models)
+    except Exception as e:
+        logger.warning(f"Could not fetch live models for {provider_id}: {e}")
+    return None
+
+
 @router.get("/providers", response_model=AIProvidersResponse)
 async def get_providers(current_user: dict = Depends(get_current_user)):
-    """Get available AI providers."""
+    """Get available AI providers with live model lists."""
+    now = time()
+    if now - _model_cache["timestamp"] < MODEL_CACHE_TTL and _model_cache["data"]:
+        return AIProvidersResponse(providers=_model_cache["data"])
+
     providers_list = []
     for key, value in PROVIDERS.items():
+        api_key = _get_api_key(key)
+        live_models = await _fetch_live_models(key, value, api_key)
         providers_list.append(
             AIProvider(
                 id=key,
                 name=value["name"],
                 base_url=value["base_url"],
-                models=value["models"],
+                models=live_models if live_models else value["models"],
             )
         )
+
+    _model_cache["data"] = providers_list
+    _model_cache["timestamp"] = now
     return AIProvidersResponse(providers=providers_list)
 
 
@@ -219,15 +258,16 @@ async def chat(chat_req: ChatRequest, current_user: dict = Depends(get_current_u
         api_key = f"nvapi-{api_key}"
 
     try:
-        # Debug: Print what we received
-        print(f"[AI] Received - symbol: {chat_req.symbol}, candle_data: {len(chat_req.candle_data) if chat_req.candle_data else 0}")
+        logger.info(f"[AI] Received - symbol: {chat_req.symbol}, candle_data: {len(chat_req.candle_data) if chat_req.candle_data else 0}")
         
         # Fetch market data if requested
         market_context = ""
         candle_data_for_ai = []  # Store for prompt
         # Use candle data if provided directly, or if load_market_data is set with symbol
         if chat_req.candle_data or (chat_req.load_market_data and chat_req.symbol):
-            print(f"[AI] Processing market data - candle_data count: {len(chat_req.candle_data) if chat_req.candle_data else 0}")
+            # Limit incoming candle data to prevent OOM
+            if chat_req.candle_data and len(chat_req.candle_data) > 5000:
+                chat_req.candle_data = chat_req.candle_data[-5000:]
             period = chat_req.data_period or "1mo"
             
             # USE INCOMING CANDLE DATA FROM FRONTEND (Priority)
@@ -250,7 +290,7 @@ Current market data for {chat_req.symbol or 'Unknown'} (Source: MT5):
 SAMPLES (Last 10 candles): {', '.join(samples)}
 """
                 mt5_success = True
-                print(f"[AI] Market context built - using {len(candle_data_for_ai)} candles")
+                logger.info(f"[AI] Market context built - using {len(candle_data_for_ai)} candles")
 
             # FALLBACK TO YAHOO if no candle data and yahoo requested
             elif not mt5_success and chat_req.load_market_data == "yahoo":
@@ -346,7 +386,7 @@ Last 10 candles:
                         sell_count = setups.count("SELL")
                         global_memory_context = f"\n[Community insights for {chat_req.symbol}: {buy_count} BUY signals, {sell_count} SELL signals suggested recently]"
             except Exception as e:
-                print(f"Memory fetch error: {e}")
+                logger.warning(f"Memory fetch error: {e}")
 
         # Build messages with current conversation + memory context
         messages = []
@@ -423,13 +463,11 @@ Last 10 candles:
         for m in chat_req.messages:
             messages.append({"role": m.role, "content": m.content})
 
-        # Debug: Log all parameters before creating client
         logger.info(f"[AI Chat] === Starting AI Request ===")
         logger.info(f"[AI Chat] Provider: {chat_req.provider}")
         logger.info(f"[AI Chat] Model: {chat_req.model}")
         logger.info(f"[AI Chat] Base URL: {provider_config['base_url']}")
-        logger.info(f"[AI Chat] API Key present: {bool(api_key)}")
-        logger.info(f"[AI Chat] API Key value: {api_key[:30]}..." if api_key else "[AI Chat] No API key!")
+        logger.info(f"[AI Chat] API Key configured: {bool(api_key)}")
         
         client = AsyncOpenAI(base_url=provider_config["base_url"], api_key=api_key)
         logger.info(f"[AI Chat] OpenAI client created successfully")
@@ -447,7 +485,8 @@ Last 10 candles:
                     model=chat_req.model,
                     messages=messages,
                     temperature=0.2,
-                    max_tokens=8192
+                    max_tokens=8192,
+                    timeout=REQUEST_TIMEOUT
                 )
                 
                 # Handle both content and reasoning_content (Qwen model uses reasoning_content)
@@ -622,7 +661,7 @@ Last 10 candles:
                 await db.commit()
 
             except Exception as e:
-                print(f"Failed to save chat memory: {e}")
+                logger.warning(f"Failed to save chat memory: {e}")
 
         return ChatResponse(
             message=assistant_message,
@@ -729,9 +768,6 @@ def _detect_chart(text: str) -> Optional[dict]:
 
 
 
-from sqlalchemy import select, func
-
-
 # Memory endpoints
 @router.get("/memory", response_model=MemoryResponse)
 async def get_memory(current_user: dict = Depends(get_current_user)):
@@ -805,19 +841,19 @@ async def get_memory(current_user: dict = Depends(get_current_user)):
                 ),
             )
         except Exception as e:
-            print(f"Memory error: {e}")
-            return MemoryResponse(
-                conversations=[],
-                insights=[],
-                preferences={},
-                stats=MemoryStats(
-                    total_conversations=0,
-                    total_trades_suggested=0,
-                    successful_trades=0,
-                    failed_trades=0,
-                    win_rate=0.0,
-                ),
-            )
+            logger.warning(f"Memory error: {e}")
+        return MemoryResponse(
+            conversations=[],
+            insights=[],
+            preferences={},
+            stats=MemoryStats(
+                total_conversations=0,
+                total_trades_suggested=0,
+                successful_trades=0,
+                failed_trades=0,
+                win_rate=0.0,
+            ),
+        )
 
 
 @router.post("/feedback")

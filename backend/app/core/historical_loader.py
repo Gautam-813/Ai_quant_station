@@ -11,16 +11,20 @@ from typing import Optional
 from functools import lru_cache
 
 import pandas as pd
-import ta
+try:
+    import pandas_ta as ta
+except ImportError:
+    import ta
 from dotenv import load_dotenv
 from huggingface_hub import hf_hub_download
 
-load_dotenv(dotenv_path=r"D:\date-wise\06-04-2026(live current autopilot)\impulse_analyst_v2\backend\.env")
-
 logger = logging.getLogger(__name__)
 
-# Local cache directory (the parquet_storage we built)
-LOCAL_CACHE = Path(r"D:\date-wise\06-04-2026(live current autopilot)\impulse_analyst_v2\data_archive\parquet_storage")
+_env_path = Path(__file__).resolve().parent.parent.parent.parent / ".env"
+if _env_path.exists():
+    load_dotenv(dotenv_path=str(_env_path))
+
+LOCAL_CACHE = Path(__file__).resolve().parent.parent.parent.parent / "data_archive" / "parquet_storage"
 HF_REPO_ID = os.getenv("HF_REPO_ID", "TheFinanceEngineer/impulse-market-data")
 HF_TOKEN = os.getenv("HUGGINGFACE_API_KEY")
 

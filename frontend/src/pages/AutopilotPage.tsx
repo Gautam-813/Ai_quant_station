@@ -70,6 +70,15 @@ export default function AutopilotPage() {
   const [editingPromptId, setEditingPromptId] = useState<string | null>(null)
   const [promptSearch, setPromptSearch] = useState('')
 
+  // Available providers (dynamic)
+  interface ProviderOption {
+    id: string
+    name: string
+    models: string[]
+  }
+  const [providers, setProviders] = useState<ProviderOption[]>([])
+  const [providerModels, setProviderModels] = useState<string[]>([])
+
   // Settings form
   const [intervalVal, setIntervalVal] = useState('300')
   const [lotSize, setLotSize] = useState('0.10')
@@ -81,14 +90,35 @@ export default function AutopilotPage() {
   const [mt5Connected, setMt5Connected] = useState(false)
 
   useEffect(() => {
+    fetchProviders()
     fetchStatus()
     fetchTrades()
     fetchPrompts()
+    // Poll only for status/running state, not settings
     const intervalId: ReturnType<typeof setInterval> = setInterval(() => {
-      fetchStatus()
+      axios.get('/api/autopilot/status').then(res => {
+        const data = res.data
+        setStatus(data)
+        // Only update runtime state, not form settings
+      }).catch(console.error)
     }, 5000)
     return () => clearInterval(intervalId)
   }, [])
+
+  // Sync model list when provider changes
+  useEffect(() => {
+    const prov = providers.find(p => p.id === provider)
+    setProviderModels(prov?.models || [])
+  }, [provider, providers])
+
+  const fetchProviders = async () => {
+    try {
+      const res = await axios.get('/api/ai/providers')
+      setProviders(res.data.providers || [])
+    } catch (error) {
+      console.error('Failed to fetch providers:', error)
+    }
+  }
 
   const fetchPrompts = async () => {
     try {
@@ -411,14 +441,12 @@ export default function AutopilotPage() {
                 <label className="text-sm text-muted-foreground">AI Provider</label>
                 <Select value={provider} onValueChange={setProvider} disabled={status?.enabled}>
                   <SelectTrigger>
-                    <SelectValue />
+                    <SelectValue placeholder="Select provider" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="nvidia">NVIDIA</SelectItem>
-                    <SelectItem value="groq">Groq</SelectItem>
-                    <SelectItem value="openrouter">OpenRouter</SelectItem>
-                    <SelectItem value="gemini">Gemini</SelectItem>
-                    <SelectItem value="cerebras">Cerebras</SelectItem>
+                    {providers.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
@@ -426,13 +454,12 @@ export default function AutopilotPage() {
                 <label className="text-sm text-muted-foreground">Model</label>
                 <Select value={model} onValueChange={setModel} disabled={status?.enabled}>
                   <SelectTrigger>
-                    <SelectValue />
+                    <SelectValue placeholder="Select model" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="qwen/qwen3.5-122b-a10b">Qwen 3.5 122B</SelectItem>
-                    <SelectItem value="deepseek-ai/deepseek-v3.1">DeepSeek V3.1</SelectItem>
-                    <SelectItem value="llama3-70b-8192">Llama 3 70B</SelectItem>
-                    <SelectItem value="gemini-2.5-flash">Gemini Flash</SelectItem>
+                    {providerModels.map((m) => (
+                      <SelectItem key={m} value={m}>{m}</SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>

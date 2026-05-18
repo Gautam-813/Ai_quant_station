@@ -23,28 +23,26 @@ app = FastAPI(
 
 
 async def create_default_users():
-    """Create default admin user on first run - only admin, no passwords exposed."""
+    """Create default users on first run."""
     from sqlalchemy import select
     
     async with AsyncSessionLocal() as session:
         try:
             result = await session.execute(select(User).where(User.username == "admin"))
-            existing_admin = result.scalar_one_or_none()
-            
-            if existing_admin:
+            if result.scalar_one_or_none():
                 return
             
-            admin_user = User(
-                username="admin",
-                name="System Administrator",
-                hashed_password=get_password_hash(settings.DEFAULT_ADMIN_PASSWORD),
-                role="admin"
-            )
-            session.add(admin_user)
-            
+            default_users = [
+                User(username="admin", name="System Administrator", hashed_password=get_password_hash(settings.DEFAULT_ADMIN_PASSWORD or "admin@2026"), role="admin"),
+                User(username="keval_viradiya", name="Keval Viradiya", hashed_password=get_password_hash("Usdt@2026"), role="trader"),
+                User(username="sagar_barot", name="Sagar Barot", hashed_password=get_password_hash("Usdt@2026"), role="trader"),
+                User(username="meet_rao", name="Meet Rao", hashed_password=get_password_hash("Usdt@2026"), role="trader"),
+                User(username="guest", name="Guest Viewer", hashed_password=get_password_hash("Usdt@2026"), role="viewer"),
+            ]
+            for u in default_users:
+                session.add(u)
             await session.commit()
-            print("Default admin user created!")
-            print(f"Admin login - Username: admin, Password: {settings.DEFAULT_ADMIN_PASSWORD}")
+            print("Default users created!")
         except Exception as e:
             print(f"Error creating default users: {e}")
 
@@ -53,6 +51,15 @@ async def startup_event():
     await init_db()
     await create_default_users()
     start_sync_scheduler()
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    from .core.mt5_connector import shutdown_connector
+    from .core.mt5_sync import shutdown_scheduler
+    from .api.autopilot import shutdown_http_client
+    await shutdown_connector()
+    shutdown_scheduler()
+    await shutdown_http_client()
 
 # CORS Middleware (still needed for development when frontend runs separately)
 app.add_middleware(
@@ -109,9 +116,10 @@ async def health():
 
 if __name__ == "__main__":
     import uvicorn
+    port = int(os.getenv("PORT", "8002"))
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
-        port=8002,
-        reload=False  # Set to True for development
+        port=port,
+        reload=(os.getenv("ENV", "production") == "development")
     )

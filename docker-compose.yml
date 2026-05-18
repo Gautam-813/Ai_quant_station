@@ -1,14 +1,11 @@
-version: '3.8'
-
 services:
-  # PostgreSQL Database
   postgres:
     image: postgres:16-alpine
     container_name: impulse_postgres
     environment:
       POSTGRES_DB: impulse_analyst
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
@@ -20,20 +17,22 @@ services:
       retries: 5
     networks:
       - impulse_network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
-  # Backend API
   backend:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: impulse_backend
+    env_file:
+      - ./backend/.env
     environment:
-      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/impulse_analyst
-      - SECRET_KEY=impulse-secret-key-change-in-production-use-secure-random
-      - MT5_API_TOKEN=impulse_secure_2026
-      - HUGGINGFACE_API_KEY=
-      - HF_REPO_ID=TheFinanceEngineer/impulse-market-data
-      - CORS_ORIGINS=http://localhost:3000,http://frontend:3000
+      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/impulse_analyst
+      - CORS_ORIGINS=http://localhost:3000,http://localhost:8000
     ports:
       - "8000:8000"
     depends_on:
@@ -42,21 +41,11 @@ services:
     networks:
       - impulse_network
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
 
-  # Frontend (Optional - can also serve from backend)
-  # Uncomment if you want separate frontend container
-  # frontend:
-  #   build:
-  #     context: ./frontend
-  #     dockerfile: Dockerfile
-  #   ports:
-  #     - "3000:3000"
-  #   depends_on:
-  #     - backend
-  #   networks:
-  #     - impulse_network
-
-  # Nginx Reverse Proxy (Production)
   nginx:
     image: nginx:alpine
     container_name: impulse_nginx
@@ -64,12 +53,15 @@ services:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
     ports:
       - "80:80"
-      - "443:443"
     depends_on:
       - backend
     networks:
       - impulse_network
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 128M
 
 volumes:
   postgres_data:

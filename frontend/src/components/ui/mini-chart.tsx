@@ -81,6 +81,12 @@ export function MiniChart({ title, data, color = '#2563eb' }: MiniChartProps) {
     }
   }, [data, color])
 
+  useEffect(() => {
+    if (chartRef.current) {
+      chartRef.current.applyOptions({ height: isExpanded ? 400 : 150 })
+    }
+  }, [isExpanded])
+
   return (
     <Card className="mt-3 bg-background/50 border-muted">
       <CardHeader className="py-2 px-3 flex flex-row items-center justify-between">

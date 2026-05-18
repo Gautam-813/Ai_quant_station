@@ -8,8 +8,6 @@ import { createChart, CandlestickSeries, CandlestickData, Time } from 'lightweig
 import { DataPreviewTable } from '@/components/ui/data-preview-table'
 import { MiniChart } from '@/components/ui/mini-chart'
 
-const PROVIDER_MODELS: Record<string, { label: string, value: string }[]> = {}
-
 interface AIProvider {
   id: string
   name: string
@@ -404,7 +402,7 @@ export default function AIAnalystPage() {
         symbol: setup.symbol,
         action: setup.direction,
         volume: setup.lot_size,
-        entry_price: setup.order_type === 'market' ? null : setup.entry_price,
+        price: setup.order_type === 'market' ? null : setup.entry_price,
         sl: setup.stop_loss,
         tp: setup.take_profit
       })

@@ -5,7 +5,10 @@ const api = axios.create({
 })
 
 api.interceptors.request.use((config) => {
-  config.headers['X-MT5-Token'] = 'impulse_secure_2026'
+  const mt5Token = localStorage.getItem('mt5_api_token') || ''
+  if (mt5Token) {
+    config.headers['X-MT5-Token'] = mt5Token
+  }
   return config
 })
 

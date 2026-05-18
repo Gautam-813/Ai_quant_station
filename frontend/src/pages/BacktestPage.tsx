@@ -28,12 +28,38 @@ export default function BacktestPage() {
   const [selectedPromptId, setSelectedPromptId] = useState('')
   const [symbol, setSymbol] = useState('XAUUSD')
   const [timeframe, setTimeframe] = useState('15T')
-  const [startYear, setStartYear] = useState(2024)
-  const [endYear, setEndYear] = useState(2024)
+  const [startDate, setStartDate] = useState('2024-01-01')
+  const [endDate, setEndDate] = useState('2024-12-31')
   
   const [loading, setLoading] = useState(false)
   const [results, setResults] = useState<BacktestResults | null>(null)
   const [error, setError] = useState<string | null>(null)
+  
+  // Model Selection
+  const [provider, setProvider] = useState('nvidia')
+  const [model, setModel] = useState('qwen/qwen3.5-122b-a10b')
+  const [availableProviders, setAvailableProviders] = useState<any[]>([])
+
+  // Fetch providers
+  useEffect(() => {
+    const fetchProviders = async () => {
+      try {
+        const res = await axios.get('/api/ai/providers')
+        setAvailableProviders(res.data.providers || [])
+      } catch (e) { console.error("Providers error", e) }
+    }
+    fetchProviders()
+  }, [])
+
+  // Auto-select first model when provider changes
+  useEffect(() => {
+    const selectedProv = availableProviders.find(p => p.id === provider)
+    if (selectedProv && selectedProv.models.length > 0) {
+      if (!selectedProv.models.includes(model)) {
+        setModel(selectedProv.models[0])
+      }
+    }
+  }, [provider, availableProviders])
 
   useEffect(() => {
     fetchPrompts()
@@ -59,8 +85,10 @@ export default function BacktestPage() {
         prompt_id: selectedPromptId,
         symbol,
         timeframe,
-        start_year: startYear,
-        end_year: endYear
+        start_date: startDate,
+        end_date: endDate,
+        provider,
+        model
       })
       if (res.data.success) {
         setResults(res.data)
@@ -129,33 +157,54 @@ export default function BacktestPage() {
               </Select>
             </div>
 
+            <div>
+              <label className="text-sm font-medium">Timeframe</label>
+              <Select value={timeframe} onValueChange={setTimeframe}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="5T">5 Minutes</SelectItem>
+                  <SelectItem value="15T">15 Minutes</SelectItem>
+                  <SelectItem value="30T">30 Minutes</SelectItem>
+                  <SelectItem value="1H">1 Hour</SelectItem>
+                  <SelectItem value="4H">4 Hours</SelectItem>
+                  <SelectItem value="1D">1 Day</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="text-sm font-medium">Timeframe</label>
-                <Select value={timeframe} onValueChange={setTimeframe}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="5T">5 Minutes</SelectItem>
-                    <SelectItem value="15T">15 Minutes</SelectItem>
-                    <SelectItem value="30T">30 Minutes</SelectItem>
-                    <SelectItem value="1H">1 Hour</SelectItem>
-                    <SelectItem value="4H">4 Hours</SelectItem>
-                    <SelectItem value="1D">1 Day</SelectItem>
-                  </SelectContent>
-                </Select>
+                <label className="text-sm font-medium">Start Date</label>
+                <Input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
               </div>
               <div>
-                <label className="text-sm font-medium">Year</label>
-                <Input 
-                  type="number" 
-                  value={startYear} 
-                  onChange={(e) => {
-                    setStartYear(parseInt(e.target.value))
-                    setEndYear(parseInt(e.target.value))
-                  }}
-                />
+                <label className="text-sm font-medium">End Date</label>
+                <Input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+              </div>
+            </div>
+
+            <div className="pt-4 border-t border-border">
+              <label className="text-sm font-medium block mb-2 text-primary">Model Selection</label>
+              <div className="space-y-3">
+                <Select value={provider} onValueChange={setProvider}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="Select Provider" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableProviders.map(p => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+                <Select value={model} onValueChange={setModel}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="Select Model" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableProviders.find(p => p.id === provider)?.models.map((m: any) => (
+                      <SelectItem key={m} value={m}>{m}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             </div>
 

@@ -60,8 +60,23 @@ async def run_python_code(code: str, market_data: Optional[List[Dict[str, Any]]]
     charts = []
     tables = []
 
-    # Build execution environment with charting support
+    # Build execution environment with charting support - RESTRICTED builtins for security
+    safe_builtins = {
+        'abs': abs, 'all': all, 'any': any, 'bool': bool, 'dict': dict,
+        'enumerate': enumerate, 'float': float, 'int': int, 'len': len,
+        'list': list, 'max': max, 'min': min, 'range': range,
+        'round': round, 'sorted': sorted, 'str': str, 'sum': sum,
+        'tuple': tuple, 'type': type, 'zip': zip, 'map': map, 'filter': filter,
+        'True': True, 'False': False, 'None': None,
+        'isinstance': isinstance, 'hasattr': hasattr, 'getattr': getattr,
+        'setattr': setattr, 'reversed': reversed, 'slice': slice,
+        'iter': iter, 'next': next, 'print': print, 'Exception': Exception,
+        'ValueError': ValueError, 'TypeError': TypeError, 'KeyError': KeyError,
+        'IndexError': IndexError, 'ZeroDivisionError': ZeroDivisionError,
+        'KeyboardInterrupt': KeyboardInterrupt,
+    }
     safe_globals = {
+        '__builtins__': safe_builtins,
         'pd': None,
         'np': None,
         'math': math,
@@ -122,17 +137,17 @@ async def run_python_code(code: str, market_data: Optional[List[Dict[str, Any]]]
                 })
 
         def show_table(data, title="Data"):
-            """Display a table - stores data for frontend rendering."""
+            """Display a table - capped at 50 rows for performance and DB stability."""
             if isinstance(data, pd.DataFrame):
                 safe_globals['_tables'].append({
                     "title": title,
                     "columns": list(data.columns),
-                    "rows": data.head(20).values.tolist()
+                    "rows": data.head(50).values.tolist()
                 })
             elif isinstance(data, list):
                 safe_globals['_tables'].append({
                     "title": title,
-                    "rows": data[:20]
+                    "rows": data[:50]
                 })
 
         safe_globals['show_chart'] = show_chart
@@ -177,12 +192,24 @@ async def run_python_code(code: str, market_data: Optional[List[Dict[str, Any]]]
             except:
                 pass
 
+        # Universal JSON Sanitization
+        def _sanitize(obj):
+            import math
+            from datetime import date, time, datetime
+            if isinstance(obj, (datetime, pd.Timestamp)): return obj.isoformat()
+            if isinstance(obj, (date, time)): return str(obj)
+            if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)): return None
+            if isinstance(obj, dict): return {k: _sanitize(v) for k, v in obj.items()}
+            if isinstance(obj, (list, tuple)): return [_sanitize(i) for i in obj]
+            return obj
+
         return {
             "success": True,
             "output": output_text if output_text else "Code executed successfully",
             "data_preview": data_preview,
-            "charts": charts if charts else None,
-            "tables": tables if tables else None
+            "charts": _sanitize(charts) if charts else None,
+            "tables": _sanitize(tables) if tables else None,
+            "modified_data": _sanitize(df.tail(100).to_dict('records')) if df is not None else None
         }
 
     except Exception as e:

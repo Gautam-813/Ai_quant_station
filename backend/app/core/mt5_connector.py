@@ -3,7 +3,7 @@ MT5 Connector Client
 Connects to external MT5 Connector service instead of direct MT5
 """
 import httpx
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 from ..core.config import settings
 
 
@@ -13,23 +13,24 @@ class MT5ConnectorClient:
     def __init__(self):
         self.base_url = settings.MT5_CONNECTOR_URL
         self.timeout = 30.0
+        self._client = httpx.AsyncClient(timeout=self.timeout)
+    
+    async def close(self):
+        await self._client.aclose()
     
     async def _request(self, method: str, endpoint: str, **kwargs) -> Dict[str, Any]:
-        """Make HTTP request to connector."""
-        # Ensure base_url doesn't have trailing slash and endpoint has leading slash
+        """Make HTTP request to connector with auth token."""
         base = self.base_url.rstrip("/")
         path = "/" + endpoint.lstrip("/")
         url = f"{base}{path}"
         
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            try:
-                response = await client.request(method, url, **kwargs)
-                response.raise_for_status()
-                return response.json()
-            except httpx.ConnectError:
-                raise
-            except Exception:
-                raise
+        headers = kwargs.pop("headers", {})
+        if settings.MT5_API_TOKEN:
+            headers["Authorization"] = f"Bearer {settings.MT5_API_TOKEN}"
+        
+        response = await self._client.request(method, url, headers=headers, **kwargs)
+        response.raise_for_status()
+        return response.json()
     
     async def health(self) -> Dict[str, Any]:
         """Check connector health."""
@@ -82,3 +83,6 @@ class MT5ConnectorClient:
 
 # Global client instance
 connector_client = MT5ConnectorClient()
+
+async def shutdown_connector():
+    await connector_client.close()

@@ -17,53 +17,23 @@ from pydantic import BaseModel
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
-@router.post("/login/test", response_model=Token)
-async def test_login(user_data: UserLogin, db: AsyncSession = Depends(get_db)):
-    """Test login - bypass password verification (for testing only)"""
-    result = await db.execute(select(User).where(User.username == user_data.username))
-    user = result.scalar_one_or_none()
-    
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found"
-        )
-    
-    access_token = create_access_token(data={"sub": user.username, "user_id": user.id, "role": user.role})
-    refresh_token = create_refresh_token(data={"sub": user.username, "user_id": user.id, "role": user.role})
-    
-    return Token(access_token=access_token, refresh_token=refresh_token)
-
-
 @router.post("/login", response_model=Token)
 async def login(user_data: UserLogin, db: AsyncSession = Depends(get_db)):
-    print(f"DEBUG: Login attempt for username: {user_data.username}")
     try:
         result = await db.execute(select(User).where(User.username == user_data.username))
         user = result.scalar_one_or_none()
-        print(f"DEBUG: User search result: {'Found' if user else 'Not Found'}")
-    except Exception as e:
-        print(f"DEBUG ERROR: Database query failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    except Exception:
+        raise HTTPException(status_code=500, detail="Internal authentication error")
 
     if not user:
-        print(f"DEBUG: Login failed - User {user_data.username} not in database")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid username or password"
         )
 
-    print(f"DEBUG: Verifying password for {user.username} (Length: {len(user_data.password)})...")
-    is_valid = False
-    try:
-        is_valid = verify_password(user_data.password, user.hashed_password)
-        print(f"DEBUG: Password verification result: {is_valid}")
-    except Exception as e:
-        print(f"DEBUG ERROR: Password verification crashed: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal Authentication Error")
+    is_valid = verify_password(user_data.password, user.hashed_password)
 
     if not is_valid:
-        print(f"DEBUG: Password incorrect for {user.username}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid username or password"
@@ -72,19 +42,11 @@ async def login(user_data: UserLogin, db: AsyncSession = Depends(get_db)):
     try:
         user.last_login = datetime.utcnow()
         await db.commit()
-        print("DEBUG: Last login updated successfully")
-    except Exception as e:
-        print(f"DEBUG WARNING: Could not update last_login: {str(e)}")
+    except Exception:
         pass
 
-    print("DEBUG: Generating tokens...")
-    try:
-        access_token = create_access_token(data={"sub": user.username, "user_id": user.id, "role": user.role})
-        refresh_token = create_refresh_token(data={"sub": user.username, "user_id": user.id, "role": user.role})
-        print("DEBUG: Tokens generated successfully")
-    except Exception as e:
-        print(f"DEBUG ERROR: Token generation failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Token error: {str(e)}")
+    access_token = create_access_token(data={"sub": user.username, "user_id": user.id, "role": user.role})
+    refresh_token = create_refresh_token(data={"sub": user.username, "user_id": user.id, "role": user.role})
 
     return Token(access_token=access_token, refresh_token=refresh_token)
 
@@ -115,8 +77,8 @@ async def refresh_token(refresh_data: dict, db: AsyncSession = Depends(get_db)):
             detail="User not found"
         )
 
-    access_token = create_access_token(data={"sub": user.username, "user_id": user.id})
-    new_refresh_token = create_refresh_token(data={"sub": user.username, "user_id": user.id})
+    access_token = create_access_token(data={"sub": user.username, "user_id": user.id, "role": user.role})
+    new_refresh_token = create_refresh_token(data={"sub": user.username, "user_id": user.id, "role": user.role})
 
     return Token(access_token=access_token, refresh_token=new_refresh_token)
 
