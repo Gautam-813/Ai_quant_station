@@ -33,6 +33,8 @@ export default function BacktestPage() {
   const setProvider = useBacktestStore((s) => s.setProvider)
   const model = useBacktestStore((s) => s.model)
   const setModel = useBacktestStore((s) => s.setModel)
+  const lotSize = useBacktestStore((s) => s.lotSize)
+  const setLotSize = useBacktestStore((s) => s.setLotSize)
 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -86,7 +88,8 @@ export default function BacktestPage() {
         start_date: startDate,
         end_date: endDate,
         provider,
-        model
+        model,
+        lot_size: parseFloat(lotSize) || 0.01
       })
       if (res.data?.success) {
         setResults(res.data)
@@ -181,6 +184,11 @@ export default function BacktestPage() {
                 <label className="text-sm font-medium">End Date</label>
                 <Input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
               </div>
+            </div>
+
+            <div>
+              <label className="text-sm font-medium">Lot Size</label>
+              <Input type="number" step="0.01" min="0.01" value={lotSize} onChange={(e) => setLotSize(e.target.value)} />
             </div>
 
             <div className="pt-4 border-t border-border">
@@ -282,6 +290,46 @@ export default function BacktestPage() {
                       />
                     </LineChart>
                   </ResponsiveContainer>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {results?.trades && results.trades.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Trade History ({results.trades.length} trades)</CardTitle>
+              </CardHeader>
+              <CardContent className="p-0">
+                <div className="max-h-[400px] overflow-auto">
+                  <table className="w-full text-xs">
+                    <thead className="sticky top-0 bg-muted/95 backdrop-blur-sm">
+                      <tr className="border-b border-border">
+                        <th className="p-2 text-left">Entry</th>
+                        <th className="p-2 text-left">Exit</th>
+                        <th className="p-2 text-left">Dir</th>
+                        <th className="p-2 text-right">Entry $</th>
+                        <th className="p-2 text-right">Exit $</th>
+                        <th className="p-2 text-right">P&L $</th>
+                        <th className="p-2 text-right">P&L %</th>
+                        <th className="p-2 text-right">Bars</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {results.trades.map((t, i) => (
+                        <tr key={i} className="border-b border-border/30 hover:bg-muted/10 transition-colors">
+                          <td className="p-2 text-muted-foreground whitespace-nowrap">{t.entry_time}</td>
+                          <td className="p-2 text-muted-foreground whitespace-nowrap">{t.exit_time}</td>
+                          <td className={`p-2 font-medium ${t.direction === 'BUY' ? 'text-green-500' : 'text-red-500'}`}>{t.direction}</td>
+                          <td className="p-2 text-right">{t.entry_price.toFixed(5)}</td>
+                          <td className="p-2 text-right">{t.exit_price.toFixed(5)}</td>
+                          <td className={`p-2 text-right font-medium ${t.pnl_dollars >= 0 ? 'text-green-500' : 'text-red-500'}`}>${t.pnl_dollars.toFixed(2)}</td>
+                          <td className={`p-2 text-right font-medium ${t.pnl_pct >= 0 ? 'text-green-500' : 'text-red-500'}`}>{t.pnl_pct.toFixed(2)}%</td>
+                          <td className="p-2 text-right text-muted-foreground">{t.holding_period}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               </CardContent>
             </Card>

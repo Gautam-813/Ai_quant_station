@@ -10,6 +10,17 @@ interface BacktestResults {
   } | null
   equity_curve: number[] | null
   generated_code: string
+  trades?: Array<{
+    entry_time: string
+    exit_time: string
+    direction: string
+    entry_price: number
+    exit_price: number
+    pnl_points: number
+    pnl_pct: number
+    pnl_dollars: number
+    holding_period: number
+  }>
 }
 
 interface BacktestState {
@@ -21,6 +32,7 @@ interface BacktestState {
   results: BacktestResults | null
   provider: string
   model: string
+  lotSize: string
 
   setSelectedPromptId: (v: string) => void
   setSymbol: (v: string) => void
@@ -30,6 +42,7 @@ interface BacktestState {
   setResults: (v: BacktestResults | null) => void
   setProvider: (v: string) => void
   setModel: (v: string) => void
+  setLotSize: (v: string) => void
 }
 
 export const useBacktestStore = create<BacktestState>()(
@@ -43,6 +56,7 @@ export const useBacktestStore = create<BacktestState>()(
       results: null,
       provider: 'nvidia',
       model: 'qwen/qwen3.5-122b-a10b',
+      lotSize: '0.01',
 
       setSelectedPromptId: (v) => set({ selectedPromptId: v }),
       setSymbol: (v) => set({ symbol: v }),
@@ -52,6 +66,7 @@ export const useBacktestStore = create<BacktestState>()(
       setResults: (v) => set({ results: v }),
       setProvider: (v) => set({ provider: v }),
       setModel: (v) => set({ model: v }),
+      setLotSize: (v) => set({ lotSize: v }),
     }),
     {
       name: 'backtest-storage',
@@ -64,6 +79,7 @@ export const useBacktestStore = create<BacktestState>()(
         results: state.results,
         provider: state.provider,
         model: state.model,
+        lotSize: state.lotSize,
       }),
     }
   )

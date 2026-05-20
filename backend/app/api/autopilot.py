@@ -79,9 +79,9 @@ def add_log(user_id: int, message: str, level: str = "INFO"):
     state = _get_state(user_id)
     timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S")
     log_entry = {"timestamp": timestamp, "level": level, "message": message}
-    state["logs"].insert(0, log_entry)
+    state["logs"].append(log_entry)
     if len(state["logs"]) > 100:
-        state["logs"] = state["logs"][:100]
+        state["logs"] = state["logs"][-100:]
 
 
 async def async_request(method: str, url: str, **kwargs) -> dict:
@@ -91,13 +91,15 @@ async def async_request(method: str, url: str, **kwargs) -> dict:
         headers["Authorization"] = f"Bearer {settings.MT5_API_TOKEN}"
     kwargs["headers"] = headers
     response = await client.request(method, url, **kwargs)
-    response.raise_for_status()
+    if not response.is_success:
+        body = response.text[:500]
+        raise Exception(f"HTTP {response.status_code}: {body}")
     return response.json()
 
 
 async def initialize_mt5_connector(user_id: int, terminal_path: str = None, connector_url: str = None) -> bool:
     try:
-        connector_url = connector_url or settings.MT5_CONNECTOR_URL
+        connector_url = (connector_url or settings.MT5_CONNECTOR_URL or "").strip() or None
         payload = {}
         if terminal_path:
             payload["terminal_path"] = terminal_path
@@ -129,7 +131,7 @@ def detect_trade_setup(text: str) -> Optional[dict]:
 
 async def get_market_data(user_id: int, symbol: str, timeframe: str = "1m", count: int = 500, connector_url: str = None):
     try:
-        connector_url = connector_url or settings.MT5_CONNECTOR_URL
+        connector_url = (connector_url or settings.MT5_CONNECTOR_URL or "").strip() or None
         data = await async_request("GET", f"{connector_url}/data/latest/{symbol}", params={"timeframe": timeframe, "count": count})
         if data.get("success"):
             return data.get("data", [])
@@ -142,27 +144,58 @@ async def execute_trade(user_id: int, symbol: str, direction: str, volume: float
                        sl: float = None, tp: float = None, comment: str = "[AUTOPILOT]", prompt_num: int = None,
                        connector_url: str = None):
     try:
-        connector_url = connector_url or settings.MT5_CONNECTOR_URL
+        connector_url = (connector_url or settings.MT5_CONNECTOR_URL or "").strip() or None
         if prompt_num:
             trade_comment = f"[AUTOPILOT] P{prompt_num}"
         else:
             trade_comment = comment
 
         action = direction.upper()
-        if entry_price:
-            try:
-                data = await async_request("GET", f"{connector_url}/symbol/{symbol}")
-                current_price = data.get("bid") or data.get("ask") or 0
-                if direction.upper() == "BUY":
-                    action = "BUY_LIMIT" if entry_price < current_price else "BUY_STOP"
-                else:
-                    action = "SELL_LIMIT" if entry_price > current_price else "SELL_STOP"
-            except:
-                action = f"{direction.upper()}_LIMIT"
+
+        # Fetch symbol info for min stop distance + current price
+        price = None
+        min_dist = None
+        digits = None
+        try:
+            sym_data = await async_request("GET", f"{connector_url}/symbol/{symbol}")
+            price = sym_data.get("bid") or sym_data.get("ask")
+            stops_level = sym_data.get("trade_stops_level") or sym_data.get("stops_level")
+            point = sym_data.get("point")
+            if stops_level is not None and point:
+                min_dist = max(stops_level, 10) * point
+            digits = sym_data.get("digits")
+        except:
+            pass
+
+        # Apply minimum stop distance safeguard to SL
+        if sl and sl > 0 and min_dist and price and digits:
+            sl = round(sl, digits)
+            if action == "BUY":
+                if sl >= price - min_dist:
+                    adjusted = round(price - min_dist, digits)
+                    add_log(user_id, f"SL {sl} too close, adjusted to {adjusted}", "WARNING")
+                    sl = adjusted
+            else:
+                if sl <= price + min_dist:
+                    adjusted = round(price + min_dist, digits)
+                    add_log(user_id, f"SL {sl} too close, adjusted to {adjusted}", "WARNING")
+                    sl = adjusted
+
+        # Minimum stop distance safeguard to TP
+        if tp and tp > 0 and min_dist and price and digits:
+            tp = round(tp, digits)
+            if action == "BUY":
+                if tp <= price + min_dist:
+                    adjusted = round(price + min_dist, digits)
+                    add_log(user_id, f"TP {tp} too close, adjusted to {adjusted}", "WARNING")
+                    tp = adjusted
+            else:
+                if tp >= price - min_dist:
+                    adjusted = round(price - min_dist, digits)
+                    add_log(user_id, f"TP {tp} too close, adjusted to {adjusted}", "WARNING")
+                    tp = adjusted
 
         payload = {"symbol": symbol, "action": action, "volume": volume, "comment": trade_comment}
-        if entry_price:
-            payload["price"] = entry_price
         if sl and sl > 0:
             payload["sl"] = sl
         if tp and tp > 0:
@@ -179,7 +212,7 @@ async def execute_trade(user_id: int, symbol: str, direction: str, volume: float
 
 async def check_open_positions(connector_url: str = None):
     try:
-        connector_url = connector_url or settings.MT5_CONNECTOR_URL
+        connector_url = (connector_url or settings.MT5_CONNECTOR_URL or "").strip() or None
         data = await async_request("GET", f"{connector_url}/positions")
         if data.get("success"):
             return data.get("positions", [])
@@ -239,8 +272,10 @@ async def run_autopilot_cycle(user_id: int):
 
     if not mt5_connected:
         add_log(user_id, f"Initializing MT5 connection to {connector_url or 'default'}...")
-        if not await initialize_mt5_connector(user_id, terminal_path, connector_url):
-            add_log(user_id, "Failed to connect to MT5. Check terminal path.", "ERROR")
+        conn_ok = await initialize_mt5_connector(user_id, terminal_path, connector_url)
+        if not conn_ok:
+            hint = "Check connector URL." if connector_url else "Check terminal path."
+            add_log(user_id, f"Failed to connect to MT5. {hint}", "ERROR")
             return
         async with AsyncSessionLocal() as db:
             result = await db.execute(select(AutopilotSettings).where(AutopilotSettings.user_id == user_id))
@@ -403,7 +438,7 @@ async def sync_trade_results(user_id: int, connector_url: str = None):
             settings_obj = result.scalar_one_or_none()
             if not settings_obj:
                 return
-            connector_url = connector_url or settings_obj.mt5_connector_url or settings.MT5_CONNECTOR_URL
+            connector_url = (connector_url or settings_obj.mt5_connector_url or settings.MT5_CONNECTOR_URL or "").strip() or None
 
             result = await db.execute(
                 select(AutopilotTrade).where(AutopilotTrade.user_id == user_id)
@@ -620,7 +655,8 @@ async def get_status(current_user: dict = Depends(get_current_user)):
                 "cooldown_minutes": settings_obj.cooldown_minutes, "max_daily_loss": settings_obj.max_daily_loss,
                 "mt5_terminal_path": settings_obj.mt5_terminal_path, "mt5_connector_url": settings_obj.mt5_connector_url,
                 "symbol": settings_obj.symbol, "provider": settings_obj.provider, "model": settings_obj.model,
-                "mt5_connected": settings_obj.mt5_connected
+                "mt5_connected": settings_obj.mt5_connected,
+                "selected_prompts": settings_obj.selected_prompts or []
             }
     return AutopilotStatus(enabled=state["enabled"], running=state["running"], settings=settings, stats=state["stats"], logs=state["logs"])
 
@@ -641,28 +677,30 @@ async def connect_mt5(
         )
         settings_obj = result.scalar_one_or_none()
         if settings_obj:
-            connector_url = settings_obj.mt5_connector_url
+            connector_url = (settings_obj.mt5_connector_url or "").strip() or None
+            selected = settings_obj.selected_prompts or []
+            if selected:
+                add_log(user_id, f"Active prompts: {len(selected)} selected ({', '.join(str(s) for s in selected)})")
 
     add_log(user_id, f"Connecting to MT5 at {connector_url or 'default'}...")
 
     success = await initialize_mt5_connector(user_id, terminal_path, connector_url)
 
     if success:
-        # Save terminal path if provided
-        if terminal_path:
-            async with AsyncSessionLocal() as db:
-                result = await db.execute(
-                    select(AutopilotSettings).where(AutopilotSettings.user_id == user_id)
-                )
-                settings_obj = result.scalar_one_or_none()
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(AutopilotSettings).where(AutopilotSettings.user_id == user_id)
+            )
+            settings_obj = result.scalar_one_or_none()
 
-                if not settings_obj:
-                    settings_obj = AutopilotSettings(user_id=user_id)
-                    db.add(settings_obj)
+            if not settings_obj:
+                settings_obj = AutopilotSettings(user_id=user_id)
+                db.add(settings_obj)
 
+            if terminal_path:
                 settings_obj.mt5_terminal_path = terminal_path
-                settings_obj.mt5_connected = True
-                await db.commit()
+            settings_obj.mt5_connected = True
+            await db.commit()
 
         return {"success": True, "message": "Connected to MT5 successfully"}
     else:

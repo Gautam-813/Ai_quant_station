@@ -23,6 +23,14 @@ router = APIRouter(prefix="/backtest", tags=["Backtest"])
 
 PARQUET_DIR = Path(__file__).parent.parent.parent.parent / "data_archive" / "parquet_storage"
 
+CONTRACT_MULTIPLIERS = {
+    'XAUUSD': 100, 'XAGUSD': 5000, 'EURUSD': 100000, 'GBPUSD': 100000,
+    'USDJPY': 100000, 'USDCAD': 100000, 'AUDUSD': 100000, 'NZDUSD': 100000,
+    'GBPJPY': 100000, 'EURJPY': 100000, 'BTCUSD': 1, 'ETHUSD': 1,
+    'US30': 10, 'SPX500': 50, 'NAS100': 20, 'DAX40': 25,
+    'UK100': 10, 'JP225': 10,
+}
+
 class BacktestRequest(BaseModel):
     prompt_id: str
     symbol: str
@@ -31,6 +39,7 @@ class BacktestRequest(BaseModel):
     end_date: str = "2024-12-31"
     provider: Optional[str] = "nvidia"
     model: Optional[str] = "qwen/qwen3.5-122b-a10b"
+    lot_size: Optional[float] = 0.01
 
 class BacktestResponse(BaseModel):
     success: bool
@@ -38,6 +47,7 @@ class BacktestResponse(BaseModel):
     equity_curve: Optional[List[float]] = None
     error: Optional[str] = None
     generated_code: Optional[str] = None
+    trades: Optional[List[Dict[str, Any]]] = None
 
 async def generate_strategy_code(prompt_text: str, provider: str = "nvidia", model: str = "qwen/qwen3.5-122b-a10b", error_msg: Optional[str] = None, previous_results: Optional[list] = None):
     api_key = _get_api_key(provider, settings)
@@ -114,7 +124,7 @@ def calculate_signals(df):
         return match.group(1).strip()
     return code_content.strip()
 
-def run_vectorized_backtest(df, strategy_code):
+def run_vectorized_backtest(df, strategy_code, lot_size=0.01, contract_multiplier=100):
     """Execute code and calculate PnL."""
     try:
         # 1. Execute strategy code to define function - RESTRICTED builtins for security
@@ -155,22 +165,57 @@ def run_vectorized_backtest(df, strategy_code):
         # 2. Get signals
         df = df.copy()
         df['signal'] = calculate_signals(df)
-        
-        # 3. Simple vectorized backtest
-        # Calculate log returns
+
+        # 3. Vectorized P&L
         df['returns'] = np.log(df['close'] / df['close'].shift(1))
-        # Strategy returns (signal is for the NEXT candle, so shift it)
         df['strategy_returns'] = df['signal'].shift(1) * df['returns']
-        
-        # Cumulative returns
         df['cum_returns'] = df['strategy_returns'].cumsum().apply(np.exp)
-        
-        # Metrics
+
+        # 4. Extract individual trades from signal transitions
+        position = df['signal'].shift(1).fillna(0)
+        pos_change = position.diff().fillna(0) != 0
+        df['_pos_group'] = pos_change.cumsum()
+
+        trades = []
+        for group_id, group in df[position != 0].groupby('_pos_group'):
+            direction = 'BUY' if group['signal'].iloc[0] == 1 else 'SELL'
+            entry_idx = group.index[0]
+            exit_idx = group.index[-1]
+
+            entry_price = float(df.loc[entry_idx, 'open'])
+            exit_price = float(df.loc[exit_idx, 'close'])
+            entry_time = str(df.loc[entry_idx, 'datetime']) if 'datetime' in df.columns else ''
+            exit_time = str(df.loc[exit_idx, 'datetime']) if 'datetime' in df.columns else ''
+
+            if direction == 'BUY':
+                pnl_points = exit_price - entry_price
+            else:
+                pnl_points = entry_price - exit_price
+
+            pnl_pct = (pnl_points / entry_price) * 100 if entry_price else 0
+            pnl_dollars = pnl_points * contract_multiplier * lot_size
+            holding_period = len(group)
+
+            trades.append({
+                'entry_time': entry_time,
+                'exit_time': exit_time,
+                'direction': direction,
+                'entry_price': round(entry_price, 5),
+                'exit_price': round(exit_price, 5),
+                'pnl_points': round(pnl_points, 2),
+                'pnl_pct': round(pnl_pct, 2),
+                'pnl_dollars': round(pnl_dollars, 2),
+                'holding_period': holding_period,
+            })
+
+        # 5. Metrics
         total_return = (df['cum_returns'].iloc[-1] - 1) * 100
-        win_rate = (df['strategy_returns'] > 0).sum() / (df['strategy_returns'] != 0).sum() * 100 if (df['strategy_returns'] != 0).sum() > 0 else 0
+        winning_trades = sum(1 for t in trades if t['pnl_pct'] > 0)
+        total_trades = len(trades)
+        win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
         max_drawdown = (df['cum_returns'] / df['cum_returns'].cummax() - 1).min() * 100
-        
-        # Equity curve for charting (sample to 100 points to keep it light)
+
+        # Equity curve (sample to 100 points)
         curve = df['cum_returns'].fillna(1.0).tolist()
         step = max(1, len(curve) // 100)
         sampled_curve = curve[::step]
@@ -180,9 +225,10 @@ def run_vectorized_backtest(df, strategy_code):
                 "total_return": round(total_return, 2),
                 "win_rate": round(win_rate, 2),
                 "max_drawdown": round(max_drawdown, 2),
-                "trades": int((df['signal'] != 0).sum())
+                "trades": total_trades,
             },
-            "equity_curve": sampled_curve
+            "equity_curve": sampled_curve,
+            "trades": trades,
         }
     except Exception as e:
         return {"error": str(e)}
@@ -291,14 +337,17 @@ async def run_backtest(request: BacktestRequest, current_user: dict = Depends(ge
             'close': 'last',
             'volume': 'sum'
         }).dropna()
-        full_df = resampled
+        full_df = resampled.reset_index()  # keep datetime as a column
 
     # 4. Run Backtest with Auto-Retry / Self-Correction
     max_retries = 2
     last_error = None
-    
+
+    lot_size = request.lot_size or 0.01
+    contract_multiplier = CONTRACT_MULTIPLIERS.get(request.symbol, 100)
+
     for attempt in range(max_retries):
-        result = run_vectorized_backtest(full_df, strategy_code)
+        result = run_vectorized_backtest(full_df, strategy_code, lot_size, contract_multiplier)
         
         if "error" not in result:
             # Success! Break loop
@@ -352,5 +401,6 @@ async def run_backtest(request: BacktestRequest, current_user: dict = Depends(ge
         success=True,
         metrics=result["metrics"],
         equity_curve=result["equity_curve"],
+        trades=result.get("trades"),
         generated_code=strategy_code
     )

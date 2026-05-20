@@ -153,6 +153,9 @@ export default function AutopilotPage() {
         setTerminalPath(res.data.settings.mt5_terminal_path || '')
         setConnectorUrl(res.data.settings.mt5_connector_url || '')
         setMt5Connected(res.data.settings.mt5_connected || false)
+        if (res.data.settings.selected_prompts) {
+          setSelectedPromptIds(res.data.settings.selected_prompts.map(String))
+        }
       }
     } catch (error) {
       console.error('Failed to fetch status:', error)
