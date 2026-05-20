@@ -14,6 +14,7 @@ import {
   Send, User as UserIcon, Bot, Loader2
 } from 'lucide-react'
 import { useToast } from '@/hooks/use-toast'
+import { useHistoricalLabStore } from '@/store/historicalLabStore'
 import axios from 'axios'
 
 type Mode = 'backtest' | 'analysis'
@@ -78,24 +79,36 @@ const MetricCard = ({ label, value, sub, icon: Icon, color }: any) => (
 
 export default function HistoricalLabPage() {
   const { toast } = useToast()
-  const [mode, setMode] = useState<Mode>('backtest')
-  const [symbol, setSymbol] = useState('XAUUSD')
-  const [startDate, setStartDate] = useState('2015-01-01')
-  const [endDate, setEndDate] = useState('2025-12-31')
-  const [timeframe, setTimeframe] = useState('1T')
-  const [capital, setCapital] = useState('10000')
-  const [leverage, setLeverage] = useState('100')
-  const [includeSpread, setIncludeSpread] = useState(false)
-  const [includeCommission, setIncludeCommission] = useState(false)
-  const [prompt, setPrompt] = useState('')
+  const mode = useHistoricalLabStore((s) => s.mode)
+  const setMode = useHistoricalLabStore((s) => s.setMode)
+  const symbol = useHistoricalLabStore((s) => s.symbol)
+  const setSymbol = useHistoricalLabStore((s) => s.setSymbol)
+  const startDate = useHistoricalLabStore((s) => s.startDate)
+  const setStartDate = useHistoricalLabStore((s) => s.setStartDate)
+  const endDate = useHistoricalLabStore((s) => s.endDate)
+  const setEndDate = useHistoricalLabStore((s) => s.setEndDate)
+  const timeframe = useHistoricalLabStore((s) => s.timeframe)
+  const setTimeframe = useHistoricalLabStore((s) => s.setTimeframe)
+  const capital = useHistoricalLabStore((s) => s.capital)
+  const setCapital = useHistoricalLabStore((s) => s.setCapital)
+  const leverage = useHistoricalLabStore((s) => s.leverage)
+  const setLeverage = useHistoricalLabStore((s) => s.setLeverage)
+  const includeSpread = useHistoricalLabStore((s) => s.includeSpread)
+  const setIncludeSpread = useHistoricalLabStore((s) => s.setIncludeSpread)
+  const includeCommission = useHistoricalLabStore((s) => s.includeCommission)
+  const setIncludeCommission = useHistoricalLabStore((s) => s.setIncludeCommission)
+  const prompt = useHistoricalLabStore((s) => s.prompt)
+  const setPrompt = useHistoricalLabStore((s) => s.setPrompt)
+  const provider = useHistoricalLabStore((s) => s.provider)
+  const setProvider = useHistoricalLabStore((s) => s.setProvider)
+  const model = useHistoricalLabStore((s) => s.model)
+  const setModel = useHistoricalLabStore((s) => s.setModel)
+  const backtestResult = useHistoricalLabStore((s) => s.backtestResult)
+  const setBacktestResult = useHistoricalLabStore((s) => s.setBacktestResult)
+  const analysisResult = useHistoricalLabStore((s) => s.analysisResult)
+  const setAnalysisResult = useHistoricalLabStore((s) => s.setAnalysisResult)
   const [loading, setLoading] = useState(false)
-  const [backtestResult, setBacktestResult] = useState<LabResult | null>(null)
-  const [analysisResult, setAnalysisResult] = useState<LabResult | null>(null)
   const [error, setError] = useState<string | null>(null)
-  
-  // Model Selection
-  const [provider, setProvider] = useState('nvidia')
-  const [model, setModel] = useState('qwen/qwen3.5-122b-a10b')
   const [availableProviders, setAvailableProviders] = useState<any[]>([])
 
   // Fetch providers
@@ -103,7 +116,7 @@ export default function HistoricalLabPage() {
     const fetchProviders = async () => {
       try {
         const res = await axios.get('/api/ai/providers')
-        setAvailableProviders(res.data.providers || [])
+        setAvailableProviders(res.data?.providers || [])
       } catch (e) { console.error("Providers error", e) }
     }
     fetchProviders()
@@ -112,7 +125,7 @@ export default function HistoricalLabPage() {
   // Auto-select first model when provider changes
   useEffect(() => {
     const selectedProv = availableProviders.find(p => p.id === provider)
-    if (selectedProv && selectedProv.models.length > 0) {
+    if (selectedProv && selectedProv.models && selectedProv.models.length > 0) {
       if (!selectedProv.models.includes(model)) {
         setModel(selectedProv.models[0])
       }
@@ -135,7 +148,7 @@ export default function HistoricalLabPage() {
         try {
           const res = await axios.get(`/api/historical-lab/status/${currentResult.id}`)
           setResult(res.data)
-          if (res.data.status === 'completed' || res.data.status === 'failed') {
+          if (res.data?.status === 'completed' || res.data?.status === 'failed') {
             setLoading(false)
             if (res.data.status === 'failed') setError('Processing failed. Please check parameters.')
           }
@@ -408,7 +421,7 @@ export default function HistoricalLabPage() {
                     <AreaChart data={result.equity_curve}>
                       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
                       <XAxis dataKey="time" fontSize={10} hide />
-                      <YAxis fontSize={10} tickLine={false} axisLine={false} tickFormatter={v => `$${(v / 1000).toFixed(0)}k`} />
+                      <YAxis fontSize={10} tickLine={false} axisLine={false} tickFormatter={v => `$${((v || 0) / 1000).toFixed(0)}k`} />
                       <Tooltip />
                       <Area type="monotone" dataKey="balance" stroke="hsl(var(--primary))" fill="hsl(var(--primary))" fillOpacity={0.1} />
                     </AreaChart>
@@ -434,7 +447,7 @@ export default function HistoricalLabPage() {
                     </div>
                     <div className={`p-3 rounded-2xl text-sm max-w-[85%] ${msg.role === 'user' ? 'bg-primary text-primary-foreground rounded-tr-none' : 'bg-muted/50 border border-border/50 rounded-tl-none whitespace-pre-wrap'}`}>
                       {msg.role === 'assistant' 
-                        ? msg.content.replace(/```python[\s\S]*?```/g, '').trim() 
+                        ? (msg.content || '').replace(/```python[\s\S]*?```/g, '').trim() 
                         : msg.content}
                     </div>
                   </div>
@@ -458,13 +471,21 @@ export default function HistoricalLabPage() {
                           </div>
                           <div className="h-[200px] p-2">
                             <ResponsiveContainer width="100%" height="100%">
-                              <AreaChart data={chart.data.map((v: any, idx: number) => ({ idx, value: v }))}>
-                                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
-                                <XAxis dataKey="idx" hide />
-                                <YAxis fontSize={10} tickLine={false} axisLine={false} />
-                                <Tooltip />
-                                <Area type="monotone" dataKey="value" stroke={chart.color || '#2563eb'} fill={chart.color || '#2563eb'} fillOpacity={0.1} />
-                              </AreaChart>
+                              {(() => {
+                                const values = Array.isArray(chart.data)
+                                  ? chart.data
+                                  : (chart.data?.value || [])
+                                const chartData = (values || []).map((v: any, idx: number) => ({ idx, value: v }))
+                                return (
+                                  <AreaChart data={chartData}>
+                                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
+                                    <XAxis dataKey="idx" hide />
+                                    <YAxis fontSize={10} tickLine={false} axisLine={false} />
+                                    <Tooltip />
+                                    <Area type="monotone" dataKey="value" stroke={chart.color || '#2563eb'} fill={chart.color || '#2563eb'} fillOpacity={0.1} />
+                                  </AreaChart>
+                                )
+                              })()}
                             </ResponsiveContainer>
                           </div>
                         </Card>
@@ -478,14 +499,14 @@ export default function HistoricalLabPage() {
                               {table.columns && (
                                 <thead className="bg-muted/10 border-b border-border/20">
                                   <tr>
-                                    {table.columns.map((col: string) => <th key={col} className="p-1.5 font-medium">{col}</th>)}
+                                    {(table.columns || []).map((col: string) => <th key={col} className="p-1.5 font-medium">{col}</th>)}
                                   </tr>
                                 </thead>
                               )}
                               <tbody>
-                                {table.rows.map((row: any[], ri: number) => (
+                                {(table.rows || []).map((row: any[], ri: number) => (
                                   <tr key={ri} className="border-b border-border/10 last:border-0 hover:bg-muted/5 transition-colors">
-                                    {row.map((cell: any, ci: number) => <td key={ci} className="p-1.5">{typeof cell === 'number' ? cell.toFixed(4) : String(cell)}</td>)}
+                                    {(row || []).map((cell: any, ci: number) => <td key={ci} className="p-1.5">{typeof cell === 'number' ? cell.toFixed(4) : String(cell)}</td>)}
                                   </tr>
                                 ))}
                               </tbody>

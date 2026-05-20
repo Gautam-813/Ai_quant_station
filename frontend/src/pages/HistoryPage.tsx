@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useToast } from '@/hooks/use-toast'
+import { useHistoryStore } from '@/store/historyStore'
 import axios from 'axios'
 
 interface Trade { ticket: number; symbol: string; direction: string; volume: number; price: number; profit: number; time: string; comment: string }
@@ -10,13 +11,14 @@ export default function HistoryPage() {
   const { toast } = useToast()
   const [trades, setTrades] = useState<Trade[]>([])
   const [loading, setLoading] = useState(true)
-  const [hours, setHours] = useState('0')
+  const hours = useHistoryStore((s) => s.hours)
+  const setHours = useHistoryStore((s) => s.setHours)
 
   useEffect(() => { fetchHistory() }, [hours])
 
   const fetchHistory = async () => {
     setLoading(true)
-    try { setTrades((await axios.get(`/api/mt5/history?hours=${hours}`)).data.deals || []) }
+    try { setTrades((await axios.get(`/api/mt5/history?hours=${hours}`)).data?.deals || []) }
     catch { toast({ title: "Error", description: "Failed to fetch trade history", variant: 'destructive' }) }
     finally { setLoading(false) }
   }
@@ -108,9 +110,9 @@ export default function HistoryPage() {
                       <td className="py-2 px-1 sm:px-2 font-medium">{trade.symbol}</td>
                       <td className={`py-2 px-1 sm:px-2 hidden sm:table-cell ${trade.direction === 'BUY' ? 'text-green-500' : 'text-red-500'}`}>{trade.direction}</td>
                       <td className="py-2 px-1 sm:px-2 text-right">{trade.volume}</td>
-                      <td className="py-2 px-1 sm:px-2 text-right hidden md:table-cell">{trade.price.toFixed(5)}</td>
-                      <td className={`py-2 px-1 sm:px-2 text-right font-medium ${trade.profit >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                        ${trade.profit.toFixed(2)}
+                      <td className="py-2 px-1 sm:px-2 text-right hidden md:table-cell">{(trade.price || 0).toFixed(5)}</td>
+                      <td className={`py-2 px-1 sm:px-2 text-right font-medium ${(trade.profit ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                        ${(trade.profit ?? 0).toFixed(2)}
                       </td>
                       <td className="py-2 px-1 sm:px-2 text-xs text-muted-foreground truncate max-w-[80px] sm:max-w-[150px] hidden lg:table-cell">{trade.comment}</td>
                     </tr>

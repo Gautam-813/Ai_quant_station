@@ -118,6 +118,14 @@ def run_vectorized_backtest(df, strategy_code):
     """Execute code and calculate PnL."""
     try:
         # 1. Execute strategy code to define function - RESTRICTED builtins for security
+        import builtins as _real_builtins
+        _SAFE_IMPORT_MODULES = {'pandas', 'numpy', 'ta', 'scipy', 'sklearn', 'math', 'json', 'random', 'itertools', 'collections', 'decimal', 'warnings'}
+        def _safe_import(name, *args, **kwargs):
+            base = name.split('.')[0]
+            if base not in _SAFE_IMPORT_MODULES:
+                raise ImportError(f"Module '{name}' is not allowed")
+            return _real_builtins.__import__(name, *args, **kwargs)
+
         safe_builtins = {
             'abs': abs, 'all': all, 'any': any, 'bool': bool, 'True': True,
             'False': False, 'None': None, 'dict': dict, 'enumerate': enumerate,
@@ -128,6 +136,7 @@ def run_vectorized_backtest(df, strategy_code):
             'Exception': Exception, 'ValueError': ValueError,
             'TypeError': TypeError, 'KeyError': KeyError,
             'IndexError': IndexError, 'ZeroDivisionError': ZeroDivisionError,
+            '__import__': _safe_import,
         }
         _extra_libs = {}
         try:

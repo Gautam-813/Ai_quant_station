@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { useAutopilotStore } from '@/store/autopilotStore'
 import axios from 'axios'
 
 interface LogEntry {
@@ -65,7 +66,6 @@ export default function AutopilotPage() {
   // Prompts State
   const [defaultPrompts, setDefaultPrompts] = useState<{id: string, text: string}[]>([])
   const [personalPrompts, setPersonalPrompts] = useState<{id: string, text: string}[]>([])
-  const [selectedPromptIds, setSelectedPromptIds] = useState<string[]>([])
   const [newPromptText, setNewPromptText] = useState('')
   const [editingPromptId, setEditingPromptId] = useState<string | null>(null)
   const [promptSearch, setPromptSearch] = useState('')
@@ -80,13 +80,22 @@ export default function AutopilotPage() {
   const [providerModels, setProviderModels] = useState<string[]>([])
 
   // Settings form
-  const [intervalVal, setIntervalVal] = useState('300')
-  const [lotSize, setLotSize] = useState('0.10')
-  const [symbol, setSymbol] = useState('XAUUSD')
-  const [provider, setProvider] = useState('nvidia')
-  const [model, setModel] = useState('qwen/qwen3.5-122b-a10b')
-  const [terminalPath, setTerminalPath] = useState('')
-  const [connectorUrl, setConnectorUrl] = useState('')
+  const intervalVal = useAutopilotStore((s) => s.intervalVal)
+  const setIntervalVal = useAutopilotStore((s) => s.setIntervalVal)
+  const lotSize = useAutopilotStore((s) => s.lotSize)
+  const setLotSize = useAutopilotStore((s) => s.setLotSize)
+  const symbol = useAutopilotStore((s) => s.symbol)
+  const setSymbol = useAutopilotStore((s) => s.setSymbol)
+  const provider = useAutopilotStore((s) => s.provider)
+  const setProvider = useAutopilotStore((s) => s.setProvider)
+  const model = useAutopilotStore((s) => s.model)
+  const setModel = useAutopilotStore((s) => s.setModel)
+  const terminalPath = useAutopilotStore((s) => s.terminalPath)
+  const setTerminalPath = useAutopilotStore((s) => s.setTerminalPath)
+  const connectorUrl = useAutopilotStore((s) => s.connectorUrl)
+  const setConnectorUrl = useAutopilotStore((s) => s.setConnectorUrl)
+  const selectedPromptIds = useAutopilotStore((s) => s.selectedPromptIds)
+  const setSelectedPromptIds = useAutopilotStore((s) => s.setSelectedPromptIds)
   const [mt5Connected, setMt5Connected] = useState(false)
 
   useEffect(() => {
@@ -114,7 +123,7 @@ export default function AutopilotPage() {
   const fetchProviders = async () => {
     try {
       const res = await axios.get('/api/ai/providers')
-      setProviders(res.data.providers || [])
+      setProviders(res.data?.providers || [])
     } catch (error) {
       console.error('Failed to fetch providers:', error)
     }
@@ -123,9 +132,9 @@ export default function AutopilotPage() {
   const fetchPrompts = async () => {
     try {
       const res = await axios.get('/api/autopilot/prompts')
-      setDefaultPrompts(res.data.default_prompts)
-      setPersonalPrompts(res.data.personal_prompts)
-      setSelectedPromptIds(res.data.selected_ids.map(String))
+      setDefaultPrompts(res.data?.default_prompts || [])
+      setPersonalPrompts(res.data?.personal_prompts || [])
+      setSelectedPromptIds((res.data?.selected_ids || []).map(String))
     } catch (error) {
       console.error('Failed to fetch prompts:', error)
     }
@@ -135,7 +144,7 @@ export default function AutopilotPage() {
     try {
       const res = await axios.get('/api/autopilot/status')
       setStatus(res.data)
-      if (res.data.settings) {
+      if (res.data?.settings) {
         setIntervalVal(String(res.data.settings.interval_seconds))
         setLotSize(String(res.data.settings.default_lot))
         setSymbol(res.data.settings.symbol)
@@ -155,7 +164,7 @@ export default function AutopilotPage() {
   const fetchTrades = async () => {
     try {
       const res = await axios.get('/api/autopilot/results?limit=50')
-      setTrades(res.data)
+      setTrades(res.data || [])
     } catch (error) {
       console.error('Failed to fetch trades:', error)
     }
@@ -249,8 +258,9 @@ export default function AutopilotPage() {
   }
 
   const togglePromptSelection = (id: string) => {
-    setSelectedPromptIds(prev => 
-      prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
+    const current = useAutopilotStore.getState().selectedPromptIds
+    setSelectedPromptIds(
+      current.includes(id) ? current.filter(i => i !== id) : [...current, id]
     )
   }
 
@@ -502,7 +512,7 @@ export default function AutopilotPage() {
             <div className="flex-1 overflow-y-auto pr-2 space-y-2 max-h-[500px]">
               {/* Personal Prompts First */}
               {personalPrompts
-                .filter(p => p.text.toLowerCase().includes(promptSearch.toLowerCase()))
+                .filter(p => (p.text || '').toLowerCase().includes(promptSearch.toLowerCase()))
                 .map(p => (
                 <div key={p.id} className={`p-3 rounded-lg border text-xs transition-colors ${selectedPromptIds.includes(p.id) ? 'bg-purple-500/10 border-purple-500/30' : 'bg-muted/30 border-transparent'}`}>
                   <div className="flex items-start gap-3">
@@ -544,7 +554,7 @@ export default function AutopilotPage() {
 
               {/* Default Prompts */}
               {defaultPrompts
-                .filter(p => p.text.toLowerCase().includes(promptSearch.toLowerCase()) || p.id.includes(promptSearch))
+                .filter(p => (p.text || '').toLowerCase().includes(promptSearch.toLowerCase()) || (p.id || '').includes(promptSearch))
                 .map(p => (
                 <div key={p.id} className={`p-3 rounded-lg border text-xs transition-colors ${selectedPromptIds.includes(p.id) ? 'bg-blue-500/10 border-blue-500/30' : 'bg-muted/30 border-transparent'}`}>
                   <div className="flex items-start gap-3">
@@ -644,8 +654,8 @@ export default function AutopilotPage() {
                       <td className="py-3 px-2 text-right">{trade.lot_size}</td>
                       <td className="py-3 px-2">{trade.mt5_ticket || '-'}</td>
                       <td className="py-3 px-2">{getResultBadge(trade.result)}</td>
-                      <td className={`py-3 px-2 text-right font-medium ${trade.profit !== null && trade.profit >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                        {trade.profit !== null ? `$${trade.profit.toFixed(2)}` : '-'}
+                      <td className={`py-3 px-2 text-right font-medium ${(trade.profit ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                        {trade.profit != null ? `$${trade.profit.toFixed(2)}` : '-'}
                       </td>
                     </tr>
                   ))}

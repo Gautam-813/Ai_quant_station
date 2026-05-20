@@ -392,11 +392,44 @@ Be precise, professional, and mathematically rigorous."""
             def _clean_for_json(obj):
                 from datetime import date, time, datetime
                 import math
-                if isinstance(obj, (datetime, pd.Timestamp)): return obj.isoformat()
+
+                if isinstance(obj, (datetime,)): return obj.isoformat()
                 if isinstance(obj, (date, time)): return str(obj)
-                if isinstance(obj, dict): return {k: _clean_for_json(v) for k, v in obj.items()}
-                if isinstance(obj, (list, tuple)): return [_clean_for_json(i) for i in obj]
-                if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)): return None
+
+                try:
+                    import pandas as _pd
+                    if isinstance(obj, _pd.Timestamp): return obj.isoformat()
+                    if isinstance(obj, _pd.Timedelta): return str(obj)
+                    try:
+                        if _pd.isna(obj):
+                            return None
+                    except (TypeError, ValueError):
+                        pass
+                except ImportError:
+                    pass
+
+                try:
+                    import numpy as _np
+                    if isinstance(obj, (_np.integer,)): return int(obj)
+                    if isinstance(obj, (_np.floating,)):
+                        v = float(obj)
+                        return None if math.isnan(v) or math.isinf(v) else v
+                    if isinstance(obj, _np.bool_): return bool(obj)
+                    if isinstance(obj, _np.ndarray): return _clean_for_json(obj.tolist())
+                except ImportError:
+                    pass
+
+                if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+                    return None
+                if isinstance(obj, dict):
+                    return {k: _clean_for_json(v) for k, v in obj.items()}
+                if isinstance(obj, (list, tuple)):
+                    return [_clean_for_json(i) for i in obj]
+                if hasattr(obj, 'item') and callable(obj.item):
+                    try:
+                        return _clean_for_json(obj.item())
+                    except Exception:
+                        pass
                 return obj
 
             ai_msg_data = _clean_for_json(ai_msg_data)

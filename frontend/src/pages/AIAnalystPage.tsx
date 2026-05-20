@@ -8,6 +8,7 @@ import { createChart, CandlestickSeries, CandlestickData, Time } from 'lightweig
 import { DataPreviewTable } from '@/components/ui/data-preview-table'
 import { MiniChart } from '@/components/ui/mini-chart'
 import { useToast } from '@/hooks/use-toast'
+import { useAIAnalystStore } from '@/store/aiAnalystStore'
 
 interface AIProvider {
   id: string
@@ -39,14 +40,6 @@ interface SymbolOption {
   name?: string
 }
 
-interface LoadedDataInfo {
-  source: string
-  symbol: string
-  startDate: string
-  endDate: string
-  candles: number
-}
-
 interface CandleData {
   time: number
   open: number
@@ -57,37 +50,51 @@ interface CandleData {
 
 export default function AIAnalystPage() {
   const { toast } = useToast()
-  const [messages, setMessages] = useState<Message[]>([])
-  const [input, setInput] = useState('')
-  const [provider, setProvider] = useState('nvidia')
-  const [model, setModel] = useState('qwen/qwen3.5-122b-a10b')
-  const [loading, setLoading] = useState(false)
-  const [feedbackSent, setFeedbackSent] = useState<Set<number>>(new Set())
   const chartContainerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<any>(null)
   const seriesRef = useRef<any>(null)
 
+  // Persisted state (survives tab switches via localStorage)
+  const messages = useAIAnalystStore((s) => s.messages)
+  const addMessage = useAIAnalystStore((s) => s.addMessage)
+  const provider = useAIAnalystStore((s) => s.provider)
+  const setProvider = useAIAnalystStore((s) => s.setProvider)
+  const model = useAIAnalystStore((s) => s.model)
+  const setModel = useAIAnalystStore((s) => s.setModel)
+  const symbol = useAIAnalystStore((s) => s.symbol)
+  const setSymbol = useAIAnalystStore((s) => s.setSymbol)
+  const customSymbol = useAIAnalystStore((s) => s.customSymbol)
+  const setCustomSymbol = useAIAnalystStore((s) => s.setCustomSymbol)
+  const loadData = useAIAnalystStore((s) => s.loadData)
+  const setLoadData = useAIAnalystStore((s) => s.setLoadData)
+  const dataPeriod = useAIAnalystStore((s) => s.dataPeriod)
+  const setDataPeriod = useAIAnalystStore((s) => s.setDataPeriod)
+  const timeframe = useAIAnalystStore((s) => s.timeframe)
+  const setTimeframe = useAIAnalystStore((s) => s.setTimeframe)
+  const loadedData = useAIAnalystStore((s) => s.loadedData)
+  const setLoadedData = useAIAnalystStore((s) => s.setLoadedData)
+  const liveMode = useAIAnalystStore((s) => s.liveMode)
+  const setLiveMode = useAIAnalystStore((s) => s.setLiveMode)
+  const feedbackSet = useAIAnalystStore((s) => s.feedbackSet)
+  const addFeedback = useAIAnalystStore((s) => s.addFeedback)
+
+  // Transient state (does NOT persist)
+  const [input, setInput] = useState('')
+  const [loading, setLoading] = useState(false)
   const [candleData, setCandleData] = useState<CandleData[]>([])
-  
-  const [symbol, setSymbol] = useState<string | undefined>(undefined)
-  const [customSymbol, setCustomSymbol] = useState('')
-  const [loadData, setLoadData] = useState<'yahoo' | 'mt5' | 'none'>('none')
-  const [dataPeriod, setDataPeriod] = useState('1mo')
   const [availableSymbols, setAvailableSymbols] = useState<SymbolOption[]>([])
   const [symbolsLoading, setSymbolsLoading] = useState(false)
-  
-  const [loadedData, setLoadedData] = useState<LoadedDataInfo | null>(null)
   const [dataLoading, setDataLoading] = useState(false)
-  const [liveMode, setLiveMode] = useState(false)
-  const [timeframe, setTimeframe] = useState('1h')
   const [availableProviders, setAvailableProviders] = useState<AIProvider[]>([])
+  const [executingTrade, setExecutingTrade] = useState(false)
+  const [tradeExecMsgIdx, setTradeExecMsgIdx] = useState<number | null>(null)
 
   // Fetch providers from backend on mount
   useEffect(() => {
     const fetchProviders = async () => {
       try {
         const res = await axios.get('/api/ai/providers')
-        if (res.data.providers) {
+        if (res.data?.providers) {
           setAvailableProviders(res.data.providers)
         }
       } catch (error) {
@@ -100,7 +107,7 @@ export default function AIAnalystPage() {
   // Auto-select first model when provider changes
   useEffect(() => {
     const selectedProv = availableProviders.find(p => p.id === provider)
-    if (selectedProv && selectedProv.models.length > 0) {
+    if (selectedProv && selectedProv.models && selectedProv.models.length > 0) {
       if (!selectedProv.models.includes(model)) {
         setModel(selectedProv.models[0])
       }
@@ -226,6 +233,13 @@ export default function AIAnalystPage() {
     }
   }, [candleData])
 
+  // Auto-reload data on re-mount if we have persisted symbol+source
+  useEffect(() => {
+    if (loadData !== 'none' && getSymbolValue() && candleData.length === 0) {
+      handleLoadData()
+    }
+  }, [])
+
   const getSymbolValue = () => {
     if (symbol === 'custom' && customSymbol.trim()) {
       return customSymbol.trim().toUpperCase()
@@ -247,13 +261,13 @@ export default function AIAnalystPage() {
 
       if (loadData === 'yahoo') {
         const res = await axios.get(`/api/data/yahoo/${getSymbolValue()}?period=${dataPeriod}`)
-        if (res.data.success && res.data.data?.length > 0) {
+        if (res.data?.success && res.data.data?.length > 0) {
           data = res.data.data.map((d: any) => ({
             time: typeof d.time === 'number' ? d.time : Math.floor(new Date(d.time).getTime() / 1000),
-            open: d.open,
-            high: d.high,
-            low: d.low,
-            close: d.close
+            open: d.open || 0,
+            high: d.high || 0,
+            low: d.low || 0,
+            close: d.close || 0
           }))
           const startDate = data[0].time
           const endDate = data[data.length - 1].time
@@ -271,13 +285,13 @@ export default function AIAnalystPage() {
           timeframe: timeframe,
           count: 1000
         })
-        if (res.data.success && res.data.data?.length > 0) {
+        if (res.data?.success && res.data.data?.length > 0) {
           data = res.data.data.map((d: any) => ({
             time: typeof d.time === 'number' ? d.time : Math.floor(new Date(d.time).getTime() / 1000),
-            open: d.open,
-            high: d.high,
-            low: d.low,
-            close: d.close
+            open: d.open || 0,
+            high: d.high || 0,
+            low: d.low || 0,
+            close: d.close || 0
           }))
           const startDate = data[0].time
           const endDate = data[data.length - 1].time
@@ -312,11 +326,11 @@ export default function AIAnalystPage() {
       try {
         if (loadData === 'yahoo') {
           const res = await axios.get('/api/data/yahoo/symbols')
-          setAvailableSymbols(res.data.symbols || [])
+          setAvailableSymbols(res.data?.symbols || [])
         } else if (loadData === 'mt5') {
           const res = await axios.get('/api/mt5/symbols')
-          if (res.data.success) {
-            setAvailableSymbols(res.data.symbols || [])
+          if (res.data?.success) {
+            setAvailableSymbols(res.data?.symbols || [])
           } else {
             setAvailableSymbols([])
           }
@@ -336,7 +350,7 @@ export default function AIAnalystPage() {
     if (!input.trim()) return
 
     const userMessage: Message = { role: 'user', content: input }
-    setMessages(prev => [...prev, userMessage])
+    addMessage(userMessage)
     setInput('')
     setLoading(true)
 
@@ -370,36 +384,30 @@ export default function AIAnalystPage() {
         chat_memory_id: res.data.chat_memory_id
       }
 
-
-
-
-      setMessages(prev => [...prev, assistantMessage])
+      addMessage(assistantMessage)
     } catch (error: any) {
       console.error('Chat error:', error)
       const errorMsg = error.response?.data?.detail || error.message || 'An error occurred'
-      setMessages(prev => [...prev, { 
+      addMessage({ 
         role: 'assistant', 
         content: `Error: ${errorMsg}` 
-      }])
+      })
     } finally {
       setLoading(false)
     }
   }
 
   const handleFeedback = async (idx: number, isHelpful: boolean) => {
-    if (feedbackSent.has(idx)) return
+    if (feedbackSet.includes(idx)) return
     try {
       await axios.post('/api/analytics/feedback', {
         is_helpful: isHelpful
       })
-      setFeedbackSent(prev => new Set([...prev, idx]))
+      addFeedback(idx)
     } catch (error) {
       console.error('Feedback submission failed:', error)
     }
   }
-
-  const [executingTrade, setExecutingTrade] = useState(false)
-  const [tradeExecMsgIdx, setTradeExecMsgIdx] = useState<number | null>(null)
 
   const handleTradeExecute = async (setup: any, msgIdx?: number) => {
     if (executingTrade) return
@@ -430,7 +438,7 @@ export default function AIAnalystPage() {
 
   const filterMessageContent = (content: string) => {
     // Remove markdown code blocks (python and json)
-    return content
+    return (content || '')
       .replace(/```python[\s\S]*?(?:```|$)/g, '')
       .replace(/```json[\s\S]*?(?:```|$)/g, '')
       .trim()
@@ -675,9 +683,9 @@ export default function AIAnalystPage() {
                                   </thead>
                                 )}
                                 <tbody>
-                                  {table.rows.map((row, rowIdx) => (
+                                  {(table.rows || []).map((row, rowIdx) => (
                                     <tr key={rowIdx} className="border-b border-border/30 hover:bg-primary/5 transition-colors">
-                                      {row.map((cell, cellIdx) => (
+                                      {(row || []).map((cell, cellIdx) => (
                                         <td
                                           key={cellIdx}
                                           className="border-r border-border/10 px-3 py-1.5 text-foreground last:border-r-0"
@@ -708,7 +716,7 @@ export default function AIAnalystPage() {
                   
                   {msg.role === 'assistant' && (
                     <div className="mt-2 pt-2 border-t border-border/30 flex justify-end gap-2">
-                      {feedbackSent.has(idx) ? (
+                      {feedbackSet.includes(idx) ? (
                         <span className="text-xs text-muted-foreground">Thanks!</span>
                       ) : (
                         <>

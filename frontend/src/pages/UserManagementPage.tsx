@@ -21,11 +21,11 @@ export default function UserManagementPage() {
 
   const API_URL = '/api/auth'
 
-  useEffect(() => { fetchUsers() }, [accessToken])
+  useEffect(() => { if (accessToken) fetchUsers() }, [accessToken])
 
   const fetchUsers = async () => {
-    try { setUsers((await axios.get(`${API_URL}/users`, { headers: { Authorization: `Bearer ${accessToken}` } })).data) }
-    catch { console.error('Error fetching users') }
+    try { setUsers((await axios.get(`${API_URL}/users`)).data || []) }
+    catch (e: any) { console.error('Error fetching users:', e.response?.status, e.response?.data) }
     finally { setLoading(false) }
   }
 
@@ -33,10 +33,10 @@ export default function UserManagementPage() {
     e.preventDefault()
     try {
       if (editingUser) {
-        await axios.put(`${API_URL}/users/${editingUser.id}`, { name: formData.name, role: formData.role, password: formData.password || undefined }, { headers: { Authorization: `Bearer ${accessToken}` } })
+        await axios.put(`${API_URL}/users/${editingUser.id}`, { name: formData.name, role: formData.role, password: formData.password || undefined })
         toast({ title: 'User updated' })
       } else {
-        await axios.post(`${API_URL}/users`, formData, { headers: { Authorization: `Bearer ${accessToken}` } })
+        await axios.post(`${API_URL}/users`, formData)
         toast({ title: 'User created' })
       }
       setShowModal(false); setFormData({ username: '', name: '', password: '', role: 'trader' }); setEditingUser(null); fetchUsers()

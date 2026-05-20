@@ -66,14 +66,14 @@ export function MiniChart({ title, data, color = '#2563eb' }: { title: string; d
     } else if (chartData.type === 'multi' && chartData.multi_series) {
       chartData.multi_series.forEach((s, idx) => {
         const series = chart.addSeries(LineSeries, { color: colors[idx % colors.length], lineWidth: 2 })
-        series.setData(s.data.map((v, i) => ({ time: i as any, value: v })))
+        series.setData((s.data || []).map((v, i) => ({ time: i as any, value: v })))
       })
     } else {
       // Line chart — supports both array and {time:[], value:[]}
       const series = chart.addSeries(LineSeries, { color: chartData.color || color, lineWidth: 2 })
       if (typeof chartData.data === 'object' && !Array.isArray(chartData.data) && 'value' in (chartData.data || {})) {
         const d = chartData.data as { time: number[]; value: number[] }
-        const points = d.time.map((t, i) => ({ time: Number(t) as any, value: d.value[i] }))
+        const points = (d.time || []).map((t, i) => ({ time: Number(t) as any, value: d.value[i] }))
         series.setData(points)
       } else {
         const values = Array.isArray(chartData.data) ? chartData.data : []

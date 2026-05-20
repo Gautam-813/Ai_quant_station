@@ -30,15 +30,16 @@ export default function DashboardPage() {
     const fetchData = async () => {
       try {
         const posRes = await api.get('/mt5/positions')
+        const d = posRes.data || {}
         setAccount({
-          balance: posRes.data.balance,
-          equity: posRes.data.equity,
-          margin: posRes.data.margin,
-          free_margin: posRes.data.free_margin,
-          margin_level: posRes.data.margin_level,
-          profit: posRes.data.total_profit
+          balance: d.balance || 0,
+          equity: d.equity || 0,
+          margin: d.margin || 0,
+          free_margin: d.free_margin || 0,
+          margin_level: d.margin_level || 0,
+          profit: d.total_profit || 0
         })
-        setPositions(posRes.data.positions || [])
+        setPositions(d.positions || [])
       } catch (error) {
         toast({ title: "Connection Error", description: "Could not load MT5 data", variant: 'destructive' })
       } finally {
@@ -135,7 +136,7 @@ export default function DashboardPage() {
                     <span className="ml-1 sm:ml-2 text-xs sm:text-sm text-muted-foreground">x{pos.volume}</span>
                   </div>
                   <div className={`shrink-0 text-sm sm:text-base ${pos.profit >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                    ${pos.profit.toFixed(2)}
+                    ${(pos.profit || 0).toFixed(2)}
                   </div>
                 </div>
               ))}

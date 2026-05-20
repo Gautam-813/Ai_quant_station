@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useToast } from '@/hooks/use-toast'
+import { useTerminalStore } from '@/store/terminalStore'
 import axios from 'axios'
 
 interface SymbolInfo {
@@ -19,13 +20,21 @@ interface Position {
 export default function TerminalPage() {
   const { toast } = useToast()
   const [symbols, setSymbols] = useState<SymbolInfo[]>([])
-  const [selectedSymbol, setSelectedSymbol] = useState('XAUUSD')
-  const [orderType, setOrderType] = useState('market')
-  const [direction, setDirection] = useState('BUY')
-  const [volume, setVolume] = useState(0.1)
-  const [price, setPrice] = useState('')
-  const [sl, setSl] = useState('')
-  const [tp, setTp] = useState('')
+  const selectedSymbol = useTerminalStore((s) => s.selectedSymbol)
+  const setSelectedSymbol = useTerminalStore((s) => s.setSelectedSymbol)
+  const orderType = useTerminalStore((s) => s.orderType)
+  const setOrderType = useTerminalStore((s) => s.setOrderType)
+  const direction = useTerminalStore((s) => s.direction)
+  const setDirection = useTerminalStore((s) => s.setDirection)
+  const volume = useTerminalStore((s) => s.volume)
+  const setVolume = useTerminalStore((s) => s.setVolume)
+  const price = useTerminalStore((s) => s.price)
+  const setPrice = useTerminalStore((s) => s.setPrice)
+  const sl = useTerminalStore((s) => s.sl)
+  const setSl = useTerminalStore((s) => s.setSl)
+  const tp = useTerminalStore((s) => s.tp)
+  const setTp = useTerminalStore((s) => s.setTp)
+  const clearOrder = useTerminalStore((s) => s.clearOrder)
   const [positions, setPositions] = useState<Position[]>([])
   const [loading, setLoading] = useState(true)
   const [orderLoading, setOrderLoading] = useState(false)
@@ -34,12 +43,12 @@ export default function TerminalPage() {
   useEffect(() => { fetchSymbols(); fetchPositions() }, [])
 
   const fetchSymbols = async () => {
-    try { setSymbols((await axios.get('/api/mt5/symbols/all')).data.symbols || []) }
+    try { setSymbols((await axios.get('/api/mt5/symbols/all')).data?.symbols || []) }
     catch { console.error('Failed to fetch symbols') }
   }
 
   const fetchPositions = async () => {
-    try { setPositions((await axios.get('/api/mt5/positions')).data.positions || []) }
+    try { setPositions((await axios.get('/api/mt5/positions')).data?.positions || []) }
     catch { console.error('Failed to fetch positions') }
     finally { setLoading(false) }
   }
@@ -54,7 +63,7 @@ export default function TerminalPage() {
         sl: sl ? parseFloat(sl) : null, tp: tp ? parseFloat(tp) : null
       })
       toast({ title: "Order placed", description: `${direction} ${selectedSymbol} x${volume}` })
-      fetchPositions(); setPrice(''); setSl(''); setTp('')
+      fetchPositions(); clearOrder()
     } catch (error: any) {
       toast({ title: "Order failed", description: error.response?.data?.detail || error.message, variant: 'destructive' })
     } finally { setOrderLoading(false) }
@@ -172,10 +181,10 @@ export default function TerminalPage() {
                         <td className="py-2 px-1 sm:px-2 font-medium">{pos.symbol}</td>
                         <td className={`py-2 px-1 sm:px-2 hidden sm:table-cell ${pos.direction === 'BUY' ? 'text-green-500' : 'text-red-500'}`}>{pos.direction}</td>
                         <td className="text-right py-2 px-1 sm:px-2">{pos.volume}</td>
-                        <td className="text-right py-2 px-1 sm:px-2 hidden md:table-cell">{pos.entry_price.toFixed(2)}</td>
-                        <td className="text-right py-2 px-1 sm:px-2 hidden md:table-cell">{pos.current_price.toFixed(2)}</td>
+                        <td className="text-right py-2 px-1 sm:px-2 hidden md:table-cell">{(pos.entry_price || 0).toFixed(2)}</td>
+                        <td className="text-right py-2 px-1 sm:px-2 hidden md:table-cell">{(pos.current_price || 0).toFixed(2)}</td>
                         <td className={`text-right py-2 px-1 sm:px-2 ${pos.profit >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                          ${pos.profit.toFixed(2)}
+                          ${(pos.profit || 0).toFixed(2)}
                         </td>
                         <td className="text-right py-2 px-1 sm:px-2">
                           <Button size="sm" variant="destructive" onClick={() => handleClose(pos.ticket)} disabled={closeLoading === pos.ticket} className="text-xs h-7 sm:h-8 px-2 sm:px-3">

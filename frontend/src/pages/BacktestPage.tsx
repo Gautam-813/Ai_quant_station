@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 import { useToast } from '@/hooks/use-toast'
+import { useBacktestStore } from '@/store/backtestStore'
 import axios from 'axios'
 
 interface Prompt {
@@ -13,33 +14,28 @@ interface Prompt {
   is_custom: boolean
 }
 
-interface BacktestResults {
-  metrics: {
-    total_return: number
-    win_rate: number
-    max_drawdown: number
-    trades: number
-  }
-  equity_curve: number[]
-  generated_code: string
-}
-
 export default function BacktestPage() {
   const { toast } = useToast()
   const [prompts, setPrompts] = useState<Prompt[]>([])
-  const [selectedPromptId, setSelectedPromptId] = useState('')
-  const [symbol, setSymbol] = useState('XAUUSD')
-  const [timeframe, setTimeframe] = useState('15T')
-  const [startDate, setStartDate] = useState('2024-01-01')
-  const [endDate, setEndDate] = useState('2024-12-31')
-  
+  const selectedPromptId = useBacktestStore((s) => s.selectedPromptId)
+  const setSelectedPromptId = useBacktestStore((s) => s.setSelectedPromptId)
+  const symbol = useBacktestStore((s) => s.symbol)
+  const setSymbol = useBacktestStore((s) => s.setSymbol)
+  const timeframe = useBacktestStore((s) => s.timeframe)
+  const setTimeframe = useBacktestStore((s) => s.setTimeframe)
+  const startDate = useBacktestStore((s) => s.startDate)
+  const setStartDate = useBacktestStore((s) => s.setStartDate)
+  const endDate = useBacktestStore((s) => s.endDate)
+  const setEndDate = useBacktestStore((s) => s.setEndDate)
+  const results = useBacktestStore((s) => s.results)
+  const setResults = useBacktestStore((s) => s.setResults)
+  const provider = useBacktestStore((s) => s.provider)
+  const setProvider = useBacktestStore((s) => s.setProvider)
+  const model = useBacktestStore((s) => s.model)
+  const setModel = useBacktestStore((s) => s.setModel)
+
   const [loading, setLoading] = useState(false)
-  const [results, setResults] = useState<BacktestResults | null>(null)
   const [error, setError] = useState<string | null>(null)
-  
-  // Model Selection
-  const [provider, setProvider] = useState('nvidia')
-  const [model, setModel] = useState('qwen/qwen3.5-122b-a10b')
   const [availableProviders, setAvailableProviders] = useState<any[]>([])
 
   // Fetch providers
@@ -47,7 +43,7 @@ export default function BacktestPage() {
     const fetchProviders = async () => {
       try {
         const res = await axios.get('/api/ai/providers')
-        setAvailableProviders(res.data.providers || [])
+        setAvailableProviders(res.data?.providers || [])
       } catch (e) { console.error("Providers error", e) }
     }
     fetchProviders()
@@ -56,7 +52,7 @@ export default function BacktestPage() {
   // Auto-select first model when provider changes
   useEffect(() => {
     const selectedProv = availableProviders.find(p => p.id === provider)
-    if (selectedProv && selectedProv.models.length > 0) {
+    if (selectedProv && selectedProv.models && selectedProv.models.length > 0) {
       if (!selectedProv.models.includes(model)) {
         setModel(selectedProv.models[0])
       }
@@ -70,7 +66,7 @@ export default function BacktestPage() {
   const fetchPrompts = async () => {
     try {
       const res = await axios.get('/api/autopilot/prompts')
-      const all = [...res.data.default_prompts, ...res.data.personal_prompts]
+      const all = [...(res.data?.default_prompts || []), ...(res.data?.personal_prompts || [])]
       setPrompts(all)
       if (all.length > 0) setSelectedPromptId(all[0].id)
     } catch (err) {
@@ -92,15 +88,12 @@ export default function BacktestPage() {
         provider,
         model
       })
-      if (res.data.success) {
+      if (res.data?.success) {
         setResults(res.data)
         toast({ title: "Backtest Complete", description: `Return: ${res.data.metrics?.total_return}% | ${res.data.metrics?.trades} trades` })
       } else {
-        setError(res.data.error || 'Backtest failed')
-        toast({ title: "Backtest Failed", description: res.data.error, variant: 'destructive' })
-        if (res.data.generated_code) {
-          setResults({ ...res.data, metrics: null, equity_curve: null })
-        }
+        setError(res.data?.error || 'Backtest failed')
+        toast({ title: "Backtest Failed", description: res.data?.error, variant: 'destructive' })
       }
     } catch (err: any) {
       const msg = err.response?.data?.detail || err.message
@@ -138,7 +131,7 @@ export default function BacktestPage() {
                     <SelectItem key={p.id} value={p.id}>
                       <span className={p.is_custom ? "text-purple-400" : "text-blue-400"}>
                         {p.is_custom ? "[Personal]" : `[#${p.id}]`}
-                      </span> {p.text.slice(0, 50)}...
+                      </span> {(p.text || '').slice(0, 50)}...
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -294,17 +287,10 @@ export default function BacktestPage() {
             </Card>
           )}
 
-          {results?.generated_code && (
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm">AI Generated Strategy Logic</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <pre className="bg-muted p-4 rounded-lg text-xs font-mono overflow-x-auto text-blue-300">
-                  {results.generated_code}
-                </pre>
-              </CardContent>
-            </Card>
+          {error && !loading && (
+            <div className="p-3 bg-red-500/10 border border-red-500/30 text-red-400 text-xs rounded">
+              {error}
+            </div>
           )}
 
           {!results && !loading && (

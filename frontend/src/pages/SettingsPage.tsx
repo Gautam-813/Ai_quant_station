@@ -19,7 +19,7 @@ export default function SettingsPage() {
   const [mt5Connector, setMt5Connector] = useState<MT5ConnectorSettings>({ useExternal: 'false', serverIp: '', port: '5000' })
   useEffect(() => {
     const saved = localStorage.getItem('mt5ConnectorSettings')
-    if (saved) setMt5Connector(JSON.parse(saved))
+    if (saved) try { setMt5Connector(JSON.parse(saved)) } catch {}
   }, [])
 
   const [currentPassword, setCurrentPassword] = useState('')
@@ -78,7 +78,7 @@ export default function SettingsPage() {
   const [groqKey, setGroqKey] = useState(() => localStorage.getItem('groq_api_key') || '')
   const [openrouterKey, setOpenrouterKey] = useState(() => localStorage.getItem('openrouter_api_key') || '')
   const [availableProviders, setAvailableProviders] = useState<{id: string, name: string, models: string[]}[]>([])
-  useEffect(() => { axios.get('/api/ai/providers').then(res => setAvailableProviders(res.data.providers || [])).catch(() => {}) }, [])
+  useEffect(() => { axios.get('/api/ai/providers').then(res => setAvailableProviders(res.data?.providers || [])).catch(() => {}) }, [])
   useEffect(() => {
     const prov = availableProviders.find(p => p.id === testProvider)
     if (prov?.models?.length) setTestModel(prov.models[0])

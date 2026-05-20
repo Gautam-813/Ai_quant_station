@@ -89,7 +89,7 @@ async def logout(current_user: dict = Depends(get_current_user)):
     return {"message": "Successfully logged out"}
 
 
-@router.get("/me", response_model=UserResponse)
+@router.get("/me")
 async def get_me(current_user: dict = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.username == current_user["username"]))
     user = result.scalar_one_or_none()
@@ -100,7 +100,7 @@ async def get_me(current_user: dict = Depends(get_current_user), db: AsyncSessio
             detail="User not found"
         )
 
-    return user
+    return UserResponse.model_validate(user).model_dump(mode="json")
 
 
 @router.put("/password")
@@ -145,13 +145,13 @@ class UserUpdate(BaseModel):
     is_active: bool | None = None
 
 
-def require_admin(current_user: dict):
+def require_admin(current_user: dict = Depends(get_current_user)):
     if current_user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
     return current_user
 
 
-@router.get("/users", response_model=list[UserResponse])
+@router.get("/users")
 async def list_users(
     current_user: dict = Depends(require_admin),
     db: AsyncSession = Depends(get_db)
@@ -159,10 +159,10 @@ async def list_users(
     """List all users - Admin only"""
     result = await db.execute(select(User).order_by(User.created_at.desc()))
     users = result.scalars().all()
-    return users
+    return [UserResponse.model_validate(u).model_dump(mode="json") for u in users]
 
 
-@router.post("/users", response_model=UserResponse)
+@router.post("/users")
 async def create_user(
     user_data: UserCreate,
     current_user: dict = Depends(require_admin),
@@ -184,10 +184,10 @@ async def create_user(
     db.add(new_user)
     await db.commit()
     await db.refresh(new_user)
-    return new_user
+    return UserResponse.model_validate(new_user).model_dump(mode="json")
 
 
-@router.put("/users/{user_id}", response_model=UserResponse)
+@router.put("/users/{user_id}")
 async def update_user(
     user_id: int,
     user_data: UserUpdate,
@@ -210,7 +210,7 @@ async def update_user(
     
     await db.commit()
     await db.refresh(user)
-    return user
+    return UserResponse.model_validate(user).model_dump(mode="json")
 
 
 @router.delete("/users/{user_id}")
