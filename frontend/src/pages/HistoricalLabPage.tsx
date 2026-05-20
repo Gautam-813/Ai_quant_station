@@ -13,6 +13,7 @@ import {
   TrendingUp, History as HistoryIcon, FlaskConical, BarChartHorizontal,
   Send, User as UserIcon, Bot, Loader2
 } from 'lucide-react'
+import { useToast } from '@/hooks/use-toast'
 import axios from 'axios'
 
 type Mode = 'backtest' | 'analysis'
@@ -59,7 +60,7 @@ interface LabResult {
 }
 
 const SYMBOLS = ['XAUUSD', 'BTCUSD', 'EURUSD', 'GBPUSD', 'USDJPY', 'XAGUSD']
-const TIMEFRAMES = [{ value: '1T', label: '1 Minute' }, { value: '5T', label: '5 Minutes' }, { value: '1H', label: '1 Hour' }]
+const TIMEFRAMES = [{ value: '1T', label: '1 min' }, { value: '5T', label: '5 min' }, { value: '1H', label: '1 hour' }]
 const LEVERAGES = ['1', '10', '30', '50', '100', '200', '500']
 
 const MetricCard = ({ label, value, sub, icon: Icon, color }: any) => (
@@ -76,6 +77,7 @@ const MetricCard = ({ label, value, sub, icon: Icon, color }: any) => (
 )
 
 export default function HistoricalLabPage() {
+  const { toast } = useToast()
   const [mode, setMode] = useState<Mode>('backtest')
   const [symbol, setSymbol] = useState('XAUUSD')
   const [startDate, setStartDate] = useState('2015-01-01')
@@ -167,7 +169,9 @@ export default function HistoricalLabPage() {
 
       setResult(res.data as LabResult)
     } catch (e: any) {
-      setError(e.response?.data?.detail || e.message || 'An error occurred.')
+      const msg = e.response?.data?.detail || e.message || 'An error occurred.'
+      setError(msg)
+      toast({ title: 'Lab Error', description: msg, variant: 'destructive' })
       setLoading(false)
     }
   }
@@ -196,7 +200,9 @@ export default function HistoricalLabPage() {
       })
       setResult(res.data as LabResult)
     } catch (e: any) {
-      setError(e.response?.data?.detail || e.message || 'Chat error.')
+      const msg = e.response?.data?.detail || e.message || 'Chat error.'
+      setError(msg)
+      toast({ title: 'Chat Error', description: msg, variant: 'destructive' })
     } finally {
       setChatLoading(false)
     }

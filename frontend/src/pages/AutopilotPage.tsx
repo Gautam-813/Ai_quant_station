@@ -644,7 +644,7 @@ export default function AutopilotPage() {
                       <td className="py-3 px-2 text-right">{trade.lot_size}</td>
                       <td className="py-3 px-2">{trade.mt5_ticket || '-'}</td>
                       <td className="py-3 px-2">{getResultBadge(trade.result)}</td>
-                      <td className={`py-3 px-2 text-right font-medium ${trade.profit && trade.profit >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                      <td className={`py-3 px-2 text-right font-medium ${trade.profit !== null && trade.profit >= 0 ? 'text-green-500' : 'text-red-500'}`}>
                         {trade.profit !== null ? `$${trade.profit.toFixed(2)}` : '-'}
                       </td>
                     </tr>

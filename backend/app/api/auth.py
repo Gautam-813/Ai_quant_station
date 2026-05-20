@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from datetime import datetime
+from datetime import datetime, timezone
 
 from ..core.database import get_db
 from ..core.security import (
@@ -40,13 +40,13 @@ async def login(user_data: UserLogin, db: AsyncSession = Depends(get_db)):
         )
 
     try:
-        user.last_login = datetime.utcnow()
+        user.last_login = datetime.now(timezone.utc)
         await db.commit()
     except Exception:
         pass
 
-    access_token = create_access_token(data={"sub": user.username, "user_id": user.id, "role": user.role})
-    refresh_token = create_refresh_token(data={"sub": user.username, "user_id": user.id, "role": user.role})
+    access_token = create_access_token(data={"sub": user.username, "user_id": user.id, "role": user.role, "name": user.name})
+    refresh_token = create_refresh_token(data={"sub": user.username, "user_id": user.id, "role": user.role, "name": user.name})
 
     return Token(access_token=access_token, refresh_token=refresh_token)
 
@@ -77,8 +77,8 @@ async def refresh_token(refresh_data: dict, db: AsyncSession = Depends(get_db)):
             detail="User not found"
         )
 
-    access_token = create_access_token(data={"sub": user.username, "user_id": user.id, "role": user.role})
-    new_refresh_token = create_refresh_token(data={"sub": user.username, "user_id": user.id, "role": user.role})
+    access_token = create_access_token(data={"sub": user.username, "user_id": user.id, "role": user.role, "name": user.name})
+    new_refresh_token = create_refresh_token(data={"sub": user.username, "user_id": user.id, "role": user.role, "name": user.name})
 
     return Token(access_token=access_token, refresh_token=new_refresh_token)
 
@@ -128,23 +128,6 @@ async def change_password(
     await db.commit()
 
     return {"message": "Password changed successfully"}
-
-
-# Helper function to create default admin user
-async def create_default_admin(db: AsyncSession):
-    result = await db.execute(select(User).where(User.username == "admin"))
-    admin = result.scalar_one_or_none()
-
-    if not admin:
-        admin = User(
-            username="admin",
-            name="Administrator",
-            hashed_password=get_password_hash("admin123"),
-            role="admin"
-        )
-        db.add(admin)
-        await db.commit()
-        print("Default admin user created: admin / admin123")
 
 
 # User Management Schemas

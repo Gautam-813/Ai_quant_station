@@ -11,10 +11,7 @@ from typing import Optional
 from functools import lru_cache
 
 import pandas as pd
-try:
-    import pandas_ta as ta
-except ImportError:
-    import ta
+import ta
 from dotenv import load_dotenv
 from huggingface_hub import hf_hub_download
 

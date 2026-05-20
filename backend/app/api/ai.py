@@ -5,7 +5,7 @@ import re
 import asyncio
 import logging
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone
 from time import time
 import httpx
 from openai import AsyncOpenAI
@@ -36,6 +36,7 @@ from ..models.ai_memory import (
     GlobalInsights,
     ModelUsage,
 )
+from ..core.providers import PROVIDERS, get_api_key as _get_api_key, get_base_url
 
 router = APIRouter(prefix="/ai", tags=["AI"])
 
@@ -85,63 +86,6 @@ async def _cache_market_data_internal(symbol: str, timeframe: str, data: List[di
                 logger.warning(f"AI Cache Error: {e}")
 
 
-# AI Provider Configuration
-PROVIDERS = {
-    "nvidia": {
-        "name": "NVIDIA NIM",
-        "base_url": "https://integrate.api.nvidia.com/v1",
-        "models": [
-            "qwen/qwen3.5-122b-a10b",
-            "qwen/qwen2.5-coder-32b-instruct",
-            "deepseek-ai/deepseek-v3.1",
-            "deepseek-ai/deepseek-r1-distill-qwen-32b",
-            "nvidia/llama-3.1-405b-instruct",
-        ],
-    },
-    "groq": {
-        "name": "Groq",
-        "base_url": "https://api.groq.com/openai/v1",
-        "models": [
-            "llama3-70b-8192",
-            "llama3-8b-8192",
-            "mixtral-8x7b-32768",
-            "gemma2-9b-it",
-            "deepseek-r1-distill-llama-70b",
-        ],
-    },
-    "openrouter": {
-        "name": "OpenRouter",
-        "base_url": "https://openrouter.ai/api/v1",
-        "models": [
-            "anthropic/claude-3.5-sonnet",
-            "meta-llama/llama-3.1-70b-instruct",
-            "google/gemini-pro-1.5",
-            "mistralai/mixtral-8x22b-instruct",
-        ],
-    },
-    "gemini": {
-        "name": "Google Gemini",
-        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
-        "models": [
-            "gemini-2.5-flash",
-            "gemini-2.5-pro",
-            "gemini-1.5-flash",
-            "gemini-1.5-pro",
-        ],
-    },
-    "github": {
-        "name": "GitHub Models",
-        "base_url": "https://models.inference.ai.azure.com",
-        "models": ["gpt-4o", "gpt-4o-mini", "meta-llama-3.1-70b-instruct"],
-    },
-    "cerebras": {
-        "name": "Cerebras",
-        "base_url": "https://api.cerebras.ai/v1",
-        "models": ["gpt-oss-120b", "llama3.1-8b"],
-    },
-}
-
-
 _model_cache = {"data": {}, "timestamp": 0}
 MODEL_CACHE_TTL = 300  # 5 minutes
 
@@ -179,7 +123,7 @@ async def get_providers(current_user: dict = Depends(get_current_user)):
 
     providers_list = []
     for key, value in PROVIDERS.items():
-        api_key = _get_api_key(key)
+        api_key = _get_api_key(key, settings)
         live_models = await _fetch_live_models(key, value, api_key)
         providers_list.append(
             AIProvider(
@@ -195,44 +139,17 @@ async def get_providers(current_user: dict = Depends(get_current_user)):
     return AIProvidersResponse(providers=providers_list)
 
 
-def _get_api_key(provider: str) -> str:
-    """Get API key for provider."""
-    key_map = {
-        "nvidia": "NVIDIA_API_KEY",
-        "groq": "GROQ_API_KEY",
-        "openrouter": "OPEN_ROUTER_API_KEY",
-        "gemini": "GEMINI_API_KEY",
-        "github": "GITHUB_API_KEY",
-        "cerebras": "CEREBRAS_API_KEY",
-    }
-    env_key = key_map.get(provider)
-    if env_key:
-        return getattr(settings, env_key, "")
-    return ""
-
-
 @router.post("/test")
 async def test_connection(
     provider: str, model: str, current_user: dict = Depends(get_current_user)
 ):
-    """Test AI provider connection."""
     if provider not in PROVIDERS:
         raise HTTPException(status_code=400, detail="Invalid provider")
-
-    api_key = _get_api_key(provider)
+    api_key = _get_api_key(provider, settings)
     if not api_key:
-        raise HTTPException(
-            status_code=400, detail=f"No API key configured for {provider}"
-        )
-
-    provider_config = PROVIDERS[provider]
-
-    # Add nvapi- prefix for NVIDIA
-    if provider == "nvidia" and not api_key.startswith("nvapi-"):
-        api_key = f"nvapi-{api_key}"
-
+        raise HTTPException(status_code=400, detail=f"No API key configured for {provider}")
     try:
-        client = AsyncOpenAI(base_url=provider_config["base_url"], api_key=api_key)
+        client = AsyncOpenAI(base_url=get_base_url(provider), api_key=api_key)
         await client.models.list()
         return {"success": True, "message": "Connection successful"}
     except Exception as e:
@@ -241,21 +158,12 @@ async def test_connection(
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat(chat_req: ChatRequest, current_user: dict = Depends(get_current_user)):
-    """Send chat message to AI."""
     if chat_req.provider not in PROVIDERS:
         raise HTTPException(status_code=400, detail="Invalid provider")
-
-    api_key = _get_api_key(chat_req.provider)
+    api_key = _get_api_key(chat_req.provider, settings)
     if not api_key:
-        raise HTTPException(
-            status_code=400, detail=f"No API key for {chat_req.provider}"
-        )
-
+        raise HTTPException(status_code=400, detail=f"No API key for {chat_req.provider}")
     provider_config = PROVIDERS[chat_req.provider]
-
-    # Add nvapi- prefix for NVIDIA
-    if chat_req.provider == "nvidia" and not api_key.startswith("nvapi-"):
-        api_key = f"nvapi-{api_key}"
 
     try:
         logger.info(f"[AI] Received - symbol: {chat_req.symbol}, candle_data: {len(chat_req.candle_data) if chat_req.candle_data else 0}")
@@ -480,7 +388,6 @@ Last 10 candles:
             try:
                 logger.info(f"[AI Chat] Attempt {attempt + 1}/{MAX_RETRIES} - Making API call...")
                 
-                # Make the API call (simplified - no wait_for wrapper)
                 response = await client.chat.completions.create(
                     model=chat_req.model,
                     messages=messages,
@@ -582,84 +489,54 @@ Last 10 candles:
 
 
         # Save to database for memory
+        saved_chat_memory_id = None
         async with AsyncSessionLocal() as db:
             try:
-                # Save user message
                 user_msg = ChatMemory(
-                    user_id=current_user["id"],
-                    symbol=chat_req.symbol,
-                    role="user",
-                    content=chat_req.messages[-1].content if chat_req.messages else "",
+                    user_id=current_user["id"], symbol=chat_req.symbol,
+                    role="user", content=chat_req.messages[-1].content if chat_req.messages else "",
                 )
                 db.add(user_msg)
                 await db.commit()
                 await db.refresh(user_msg)
 
-                # Save assistant message
                 assistant_msg = ChatMemory(
-                    user_id=current_user["id"],
-                    symbol=chat_req.symbol,
-                    role="assistant",
-                    content=assistant_message,
-                    detected_setup=detected_setup,
-                    detected_action=detected_action,
+                    user_id=current_user["id"], symbol=chat_req.symbol,
+                    role="assistant", content=assistant_message,
+                    detected_setup=detected_setup, detected_action=detected_action,
                 )
                 db.add(assistant_msg)
                 await db.commit()
+                await db.refresh(assistant_msg)
+                saved_chat_memory_id = assistant_msg.id
 
-                # Update global insights (if there's a detected setup)
                 if chat_req.symbol and detected_setup:
-                    result = await db.execute(
-                        select(GlobalInsights).where(
-                            GlobalInsights.symbol == chat_req.symbol
-                        )
-                    )
+                    result = await db.execute(select(GlobalInsights).where(GlobalInsights.symbol == chat_req.symbol))
                     insight = result.scalar_one_or_none()
-
                     if insight:
                         insight.total_analyzed += 1
-                        if detected_setup.get("direction") == "BUY":
-                            insight.buy_signals += 1
-                        else:
-                            insight.sell_signals += 1
-                        insight.last_updated = datetime.utcnow()
+                        if detected_setup.get("direction") == "BUY": insight.buy_signals += 1
+                        else: insight.sell_signals += 1
+                        insight.last_updated = datetime.now(timezone.utc)
                     else:
-                        insight = GlobalInsights(
-                            symbol=chat_req.symbol,
-                            total_analyzed=1,
-                            buy_signals=1
-                            if detected_setup.get("direction") == "BUY"
-                            else 0,
-                            sell_signals=1
-                            if detected_setup.get("direction") == "SELL"
-                            else 0,
-                        )
+                        insight = GlobalInsights(symbol=chat_req.symbol, total_analyzed=1,
+                            buy_signals=1 if detected_setup.get("direction") == "BUY" else 0,
+                            sell_signals=1 if detected_setup.get("direction") == "SELL" else 0)
                         db.add(insight)
                     await db.commit()
 
-                # Update model usage stats
-                usage_result = await db.execute(
-                    select(ModelUsage).where(
-                        ModelUsage.provider == chat_req.provider,
-                        ModelUsage.model == chat_req.model,
-                        ModelUsage.user_id == current_user["id"],
-                    )
-                )
+                usage_result = await db.execute(select(ModelUsage).where(
+                    ModelUsage.provider == chat_req.provider, ModelUsage.model == chat_req.model,
+                    ModelUsage.user_id == current_user["id"]))
                 usage = usage_result.scalar_one_or_none()
-
                 if usage:
                     usage.total_requests += 1
-                    usage.last_used = datetime.utcnow()
+                    usage.last_used = datetime.now(timezone.utc)
                 else:
-                    usage = ModelUsage(
-                        provider=chat_req.provider,
-                        model=chat_req.model,
-                        user_id=current_user["id"],
-                        total_requests=1,
-                    )
+                    usage = ModelUsage(provider=chat_req.provider, model=chat_req.model,
+                        user_id=current_user["id"], total_requests=1)
                     db.add(usage)
                 await db.commit()
-
             except Exception as e:
                 logger.warning(f"Failed to save chat memory: {e}")
 
@@ -671,7 +548,8 @@ Last 10 candles:
             detected_chart=_detect_chart(assistant_message),
             execution_output=execution_output,
             execution_charts=exec_charts,
-            execution_tables=exec_tables
+            execution_tables=exec_tables,
+            chat_memory_id=saved_chat_memory_id
         )
 
 

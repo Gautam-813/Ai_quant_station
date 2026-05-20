@@ -1,6 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useEffect, useState } from 'react'
-import axios from 'axios'
+import { useToast } from '@/hooks/use-toast'
+import api from '@/lib/api'
 
 interface AccountInfo {
   balance: number
@@ -20,6 +21,7 @@ interface Position {
 }
 
 export default function DashboardPage() {
+  const { toast } = useToast()
   const [account, setAccount] = useState<AccountInfo | null>(null)
   const [positions, setPositions] = useState<Position[]>([])
   const [loading, setLoading] = useState(true)
@@ -27,7 +29,7 @@ export default function DashboardPage() {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const posRes = await axios.get('/api/mt5/positions')
+        const posRes = await api.get('/mt5/positions')
         setAccount({
           balance: posRes.data.balance,
           equity: posRes.data.equity,
@@ -38,7 +40,7 @@ export default function DashboardPage() {
         })
         setPositions(posRes.data.positions || [])
       } catch (error) {
-        console.error('Failed to fetch data:', error)
+        toast({ title: "Connection Error", description: "Could not load MT5 data", variant: 'destructive' })
       } finally {
         setLoading(false)
       }

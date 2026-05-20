@@ -85,7 +85,8 @@ ONLY output the Python code block. No explanation."""
         response = await client.chat.completions.create(
             model=model,
             messages=[{"role": "system", "content": system_prompt}],
-            temperature=0.1
+            temperature=0.1,
+            timeout=30
         )
         code = response.choices[0].message.content or ""
         python_match = re.search(r"```python\s*(.*?)(?:```|$)", code, re.S)
@@ -112,20 +113,13 @@ ONLY output the Python code block. No explanation."""
     return df
 
 async def _get_ai_client(provider: str = "nvidia"):
-    api_key = settings.NVIDIA_API_KEY
-    base_url = "https://integrate.api.nvidia.com/v1"
-    
-    if provider == "groq":
-        api_key = settings.GROQ_API_KEY
-        base_url = "https://api.groq.com/openai/v1"
-    elif provider == "openrouter":
-        api_key = settings.OPEN_ROUTER_API_KEY
-        base_url = "https://openrouter.ai/api/v1"
-        
-    if provider == "nvidia" and not api_key.startswith("nvapi-"): 
-        api_key = f"nvapi-{api_key}"
-        
-    return AsyncOpenAI(base_url=base_url, api_key=api_key)
+    from ..core.providers import PROVIDERS, get_api_key, get_base_url
+    if provider not in PROVIDERS:
+        raise ValueError(f"Unknown provider: {provider}")
+    api_key = get_api_key(provider, settings)
+    if not api_key:
+        raise ValueError(f"No API key configured for {provider}")
+    return AsyncOpenAI(base_url=get_base_url(provider), api_key=api_key)
 
 def _generate_initial_report(mode: str, symbol: str, start: str, end: str,
                              metrics: Optional[dict], analysis: Optional[dict]) -> str:
@@ -248,8 +242,7 @@ async def run_lab(
     await db.commit()
     await db.refresh(backtest_record)
     
-    # 2. Trigger background task
-    background_tasks.add_task(run_backtest_task, backtest_record.id, request.dict())
+    background_tasks.add_task(run_backtest_task, backtest_record.id, request.model_dump())
     
     return {"id": backtest_record.id, "status": "pending"}
 
@@ -339,7 +332,8 @@ Be precise, professional, and mathematically rigorous."""
                 model=request.model,
                 messages=messages,
                 temperature=0.2,
-                max_tokens=4000
+                max_tokens=4000,
+                timeout=30
             )
             
             msg_obj = response.choices[0].message
@@ -349,7 +343,7 @@ Be precise, professional, and mathematically rigorous."""
                 if attempt == 0: continue
                 raise ValueError("Empty AI response")
 
-            # --- Agentic Execution Loop ---
+            # --- Agentic Execution Loop with Self-Correction ---
             execution_results = None
             python_match = re.search(r"```python\s*(.*?)(?:```|$)", ai_content, re.S)
             
@@ -357,16 +351,33 @@ Be precise, professional, and mathematically rigorous."""
                 from .execute import run_python_code
                 from ..core.historical_loader import load_data, add_indicators
                 
-                # Load the data for execution
                 df = load_data(record.symbol, record.start_date.strftime('%Y-%m-%d'), record.end_date.strftime('%Y-%m-%d'), record.timeframe)
                 if df is not None:
                     df = add_indicators(df)
-                    # Convert to records for the executor if needed, 
-                    # but run_python_code can take a df directly if we modify it slightly 
-                    # or pass it as a list of dicts. 
-                    # For Historical Lab, we pass the df directly to safe_globals.
                     code = python_match.group(1)
                     execution_results = await run_python_code(code, df.to_dict('records'), record.symbol)
+
+                    # Self-correction: if code failed, ask AI to fix it
+                    if not execution_results.get("success"):
+                        logger.warning(f"Code execution failed: {execution_results.get('error')}. Attempting self-correction...")
+                        try:
+                            correction_messages = messages + [
+                                {"role": "assistant", "content": ai_content},
+                                {"role": "user", "content": f"The Python code you provided failed with: {execution_results.get('error')}. Please provide a FIXED version."}
+                            ]
+                            response = await client.chat.completions.create(
+                                model=request.model,
+                                messages=correction_messages,
+                                temperature=0.1,
+                                max_tokens=4000,
+                                timeout=30
+                            )
+                            ai_content = response.choices[0].message.content or ""
+                            new_match = re.search(r"```python\s*(.*?)(?:```|$)", ai_content, re.S)
+                            if new_match:
+                                execution_results = await run_python_code(new_match.group(1), df.to_dict('records'), record.symbol)
+                        except Exception as ce:
+                            logger.error(f"Self-correction failed: {ce}")
 
             # Build structured message
             ai_msg_data = {

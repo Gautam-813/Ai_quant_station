@@ -29,6 +29,7 @@ export default function TerminalPage() {
   const [positions, setPositions] = useState<Position[]>([])
   const [loading, setLoading] = useState(true)
   const [orderLoading, setOrderLoading] = useState(false)
+  const [closeLoading, setCloseLoading] = useState<number | null>(null)
 
   useEffect(() => { fetchSymbols(); fetchPositions() }, [])
 
@@ -60,8 +61,17 @@ export default function TerminalPage() {
   }
 
   const handleClose = async (ticket: number) => {
-    try { await axios.post('/api/trade/close', { ticket }); fetchPositions(); toast({ title: "Position closed" }) }
-    catch { toast({ title: "Close failed", variant: 'destructive' }) }
+    if (closeLoading === ticket) return
+    setCloseLoading(ticket)
+    try {
+      await axios.post('/api/trade/close', { ticket })
+      fetchPositions()
+      toast({ title: "Position closed" })
+    } catch {
+      toast({ title: "Close failed", variant: 'destructive' })
+    } finally {
+      setCloseLoading(null)
+    }
   }
 
   return (
@@ -168,8 +178,8 @@ export default function TerminalPage() {
                           ${pos.profit.toFixed(2)}
                         </td>
                         <td className="text-right py-2 px-1 sm:px-2">
-                          <Button size="sm" variant="destructive" onClick={() => handleClose(pos.ticket)} className="text-xs h-7 sm:h-8 px-2 sm:px-3">
-                            Close
+                          <Button size="sm" variant="destructive" onClick={() => handleClose(pos.ticket)} disabled={closeLoading === pos.ticket} className="text-xs h-7 sm:h-8 px-2 sm:px-3">
+                            {closeLoading === pos.ticket ? '...' : 'Close'}
                           </Button>
                         </td>
                       </tr>

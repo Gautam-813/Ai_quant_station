@@ -1,11 +1,13 @@
 import { useState, useEffect } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { useToast } from '@/hooks/use-toast'
 import axios from 'axios'
 
 interface Trade { ticket: number; symbol: string; direction: string; volume: number; price: number; profit: number; time: string; comment: string }
 
 export default function HistoryPage() {
+  const { toast } = useToast()
   const [trades, setTrades] = useState<Trade[]>([])
   const [loading, setLoading] = useState(true)
   const [hours, setHours] = useState('0')
@@ -15,7 +17,7 @@ export default function HistoryPage() {
   const fetchHistory = async () => {
     setLoading(true)
     try { setTrades((await axios.get(`/api/mt5/history?hours=${hours}`)).data.deals || []) }
-    catch { console.error('Failed to fetch history') }
+    catch { toast({ title: "Error", description: "Failed to fetch trade history", variant: 'destructive' }) }
     finally { setLoading(false) }
   }
 

@@ -7,6 +7,7 @@ import axios from 'axios'
 import { createChart, CandlestickSeries, CandlestickData, Time } from 'lightweight-charts'
 import { DataPreviewTable } from '@/components/ui/data-preview-table'
 import { MiniChart } from '@/components/ui/mini-chart'
+import { useToast } from '@/hooks/use-toast'
 
 interface AIProvider {
   id: string
@@ -26,6 +27,7 @@ interface Message {
   execution_output?: string
   execution_charts?: Array<{title: string, data: number[], color: string, type: string}>
   execution_tables?: Array<{title: string, columns?: string[], rows: any[][]}>
+  chat_memory_id?: number
 }
 
 
@@ -54,6 +56,7 @@ interface CandleData {
 }
 
 export default function AIAnalystPage() {
+  const { toast } = useToast()
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [provider, setProvider] = useState('nvidia')
@@ -350,9 +353,7 @@ export default function AIAnalystPage() {
         symbol: loadData !== 'none' ? getSymbolValue() : null,
         load_market_data: loadData !== 'none' ? loadData : null,
         data_period: dataPeriod,
-        candle_count: 1000,
         timeframe: timeframe,
-        // Send loaded candle data directly to AI
         candle_data: candleData.length > 0 ? candleData : null
       })
 
@@ -365,7 +366,8 @@ export default function AIAnalystPage() {
         detected_chart: res.data.detected_chart,
         execution_output: res.data.execution_output,
         execution_charts: res.data.execution_charts,
-        execution_tables: res.data.execution_tables
+        execution_tables: res.data.execution_tables,
+        chat_memory_id: res.data.chat_memory_id
       }
 
 
@@ -396,18 +398,33 @@ export default function AIAnalystPage() {
     }
   }
 
-  const handleTradeExecute = async (setup: any) => {
+  const [executingTrade, setExecutingTrade] = useState(false)
+  const [tradeExecMsgIdx, setTradeExecMsgIdx] = useState<number | null>(null)
+
+  const handleTradeExecute = async (setup: any, msgIdx?: number) => {
+    if (executingTrade) return
+    setExecutingTrade(true)
+    setTradeExecMsgIdx(msgIdx ?? null)
     try {
-      await axios.post('/api/trade/order', {
+      const payload: any = {
         symbol: setup.symbol,
         action: setup.direction,
         volume: setup.lot_size,
         price: setup.order_type === 'market' ? null : setup.entry_price,
         sl: setup.stop_loss,
         tp: setup.take_profit
-      })
-    } catch (error) {
-      console.error('Trade execution failed:', error)
+      }
+      // Link trade to the AI chat message that suggested it
+      if (msgIdx !== undefined && messages[msgIdx]?.chat_memory_id) {
+        payload.chat_memory_id = messages[msgIdx].chat_memory_id
+      }
+      await axios.post('/api/trade/order', payload)
+      toast({ title: "Trade Executed", description: `${setup.direction} ${setup.symbol} x${setup.lot_size}` })
+    } catch (error: any) {
+      toast({ title: "Trade Failed", description: error.response?.data?.detail || error.message, variant: 'destructive' })
+    } finally {
+      setExecutingTrade(false)
+      setTradeExecMsgIdx(null)
     }
   }
 
@@ -600,8 +617,8 @@ export default function AIAnalystPage() {
                       <p className="text-xs text-muted-foreground">
                         Entry: {msg.detected_setup.entry_price} | SL: {msg.detected_setup.stop_loss} | TP: {msg.detected_setup.take_profit}
                       </p>
-                      <Button size="sm" className="mt-2" onClick={() => handleTradeExecute(msg.detected_setup)}>
-                        Execute Trade
+                      <Button size="sm" className="mt-2" onClick={() => handleTradeExecute(msg.detected_setup, idx)} disabled={executingTrade && tradeExecMsgIdx === idx}>
+                        {executingTrade && tradeExecMsgIdx === idx ? 'Executing...' : 'Execute Trade'}
                       </Button>
                     </div>
                   )}
@@ -613,7 +630,7 @@ export default function AIAnalystPage() {
                   {msg.detected_chart && (
                     <MiniChart
                       title={msg.detected_chart.title}
-                      data={msg.detected_chart.data}
+                      data={msg.detected_chart}
                       color={msg.detected_chart.color}
                     />
                   )}
@@ -624,7 +641,7 @@ export default function AIAnalystPage() {
                         <MiniChart
                           key={`exec-chart-${idx}`}
                           title={chart.title}
-                          data={chart.data}
+                          data={chart}
                           color={chart.color || '#2563eb'}
                         />
                       ))}

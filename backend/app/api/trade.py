@@ -1,10 +1,15 @@
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException, Header, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from typing import Optional, Annotated
-from datetime import datetime
+from datetime import datetime, timezone
 
 from ..core.config import settings
+from ..core.security import decode_token
+from ..core.database import AsyncSessionLocal
 from ..models.schemas import OrderRequest, OrderResponse, CloseRequest, ModifyRequest
+from ..models.ai_memory import TradeRecord
 
+_security = HTTPBearer(auto_error=False)
 router = APIRouter(prefix="/trade", tags=["Trading"])
 
 
@@ -16,10 +21,22 @@ def _get_mt5():
         return None
 
 
-def verify_mt5_token(x_mt5_token: Annotated[str, Header()]):
-    if x_mt5_token != settings.MT5_API_TOKEN:
+async def verify_mt5_token(
+    x_mt5_token: Annotated[Optional[str], Header()] = None,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_security),
+):
+    if x_mt5_token:
+        if x_mt5_token == settings.MT5_API_TOKEN:
+            return {"auth_method": "mt5_token"}
         raise HTTPException(status_code=401, detail="Invalid MT5 token")
-    return x_mt5_token
+    if credentials:
+        payload = decode_token(credentials.credentials)
+        if payload and payload.get("type") == "access":
+            return {"auth_method": "jwt", "user": payload.get("sub")}
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail="Missing authentication: provide x-mt5-token header or Authorization Bearer token"
+    )
 
 
 async def _init_mt5():
@@ -161,9 +178,24 @@ async def place_order(order: OrderRequest, token: str = Depends(verify_mt5_token
     result = mt5.order_send(request)
 
     if result is None or result.retcode != getattr(mt5, 'TRADE_RETCODE_DONE', 10009):
-        retcode = result.retcode if result else "None"
-        comment = result.comment if result else "No response"
-        raise HTTPException(status_code=400, detail=f"Order failed: {comment}")
+        raise HTTPException(status_code=400, detail=f"Order failed: {result.comment if result else 'Unknown'}")
+
+    # Save to trade_records for audit trail
+    try:
+        async with AsyncSessionLocal() as db:
+            trade_rec = TradeRecord(
+                user_id=0,  # Will be set when JWT auth is added to trade endpoints
+                symbol=order.symbol, direction="BUY" if "BUY" in order.action else "SELL",
+                entry_price=price, stop_loss=sl, take_profit=tp,
+                volume=volume, order_type="market" if not is_pending else "pending",
+                status="open", mt5_ticket=result.order,
+                executed_at=datetime.now(timezone.utc), comment=order.comment,
+                ai_message=str(order.chat_memory_id) if order.chat_memory_id else None,
+            )
+            db.add(trade_rec)
+            await db.commit()
+    except Exception:
+        pass  # Don't fail the order if audit trail save fails
 
     return OrderResponse(
         success=True,

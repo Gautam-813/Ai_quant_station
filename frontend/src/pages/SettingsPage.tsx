@@ -57,7 +57,9 @@ export default function SettingsPage() {
   const testMt5Connection = async () => {
     setTesting(true); setTestResult(null)
     try {
-      const headers: Record<string, string> = { 'x-mt5-token': 'impulse_secure_2026' }
+      const mt5Token = localStorage.getItem('mt5_api_token') || ''
+      const headers: Record<string, string> = {}
+      if (mt5Token) headers['x-mt5-token'] = mt5Token
       if (mt5Connector.useExternal === 'true') {
         const ip = mt5Connector.serverIp.trim().replace(/^https?:\/\//, '').replace(/\/$/, '')
         headers['x-mt5-connector-url'] = ip ? `http://${ip}:${mt5Connector.port}` : `http://localhost:${mt5Connector.port}`

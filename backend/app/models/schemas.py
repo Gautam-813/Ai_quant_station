@@ -156,6 +156,7 @@ class OrderRequest(BaseModel):
     tp: Optional[float] = None
     comment: str = "[IMPULSE_V2]"
     magic: int = 0
+    chat_memory_id: Optional[int] = None
 
 
 class OrderResponse(BaseModel):
@@ -208,6 +209,7 @@ class ChatResponse(BaseModel):
     execution_output: Optional[str] = None
     execution_charts: Optional[List[dict]] = None
     execution_tables: Optional[List[dict]] = None
+    chat_memory_id: Optional[int] = None
 
 
 

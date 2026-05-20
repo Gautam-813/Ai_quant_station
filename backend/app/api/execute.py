@@ -61,6 +61,20 @@ async def run_python_code(code: str, market_data: Optional[List[Dict[str, Any]]]
     tables = []
 
     # Build execution environment with charting support - RESTRICTED builtins for security
+    import random, itertools, collections, decimal, warnings
+    # Capture real __import__ before replacing builtins
+    import builtins as _real_builtins
+    _SAFE_IMPORT_MODULES = {
+        'pandas', 'numpy', 'math', 'json', 'random', 'itertools', 'collections',
+        'decimal', 'warnings', 'ta', 'scipy', 'statsmodels', 'sklearn', 'seaborn',
+        'tabulate', 'yfinance', 'matplotlib',
+    }
+    def _safe_import(name, *args, **kwargs):
+        base = name.split('.')[0]
+        if base not in _SAFE_IMPORT_MODULES:
+            raise ImportError(f"Module '{name}' is not allowed in sandbox")
+        return _real_builtins.__import__(name, *args, **kwargs)
+
     safe_builtins = {
         'abs': abs, 'all': all, 'any': any, 'bool': bool, 'dict': dict,
         'enumerate': enumerate, 'float': float, 'int': int, 'len': len,
@@ -74,6 +88,7 @@ async def run_python_code(code: str, market_data: Optional[List[Dict[str, Any]]]
         'ValueError': ValueError, 'TypeError': TypeError, 'KeyError': KeyError,
         'IndexError': IndexError, 'ZeroDivisionError': ZeroDivisionError,
         'KeyboardInterrupt': KeyboardInterrupt,
+        '__import__': _safe_import,
     }
     safe_globals = {
         '__builtins__': safe_builtins,
@@ -81,6 +96,11 @@ async def run_python_code(code: str, market_data: Optional[List[Dict[str, Any]]]
         'np': None,
         'math': math,
         'json': json,
+        'random': random,
+        'itertools': itertools,
+        'collections': collections,
+        'decimal': decimal,
+        'warnings': warnings,
         'df': df,
         'symbol': symbol,
         'print': print,
@@ -97,44 +117,98 @@ async def run_python_code(code: str, market_data: Optional[List[Dict[str, Any]]]
         safe_globals['pd'] = pd
         safe_globals['np'] = np
 
-        # Add advanced trading and math libraries
+        # Technical indicators
         try:
-            import pandas_ta as ta
+            import ta
             safe_globals['ta'] = ta
         except: pass
-        
+
+        # Scientific computing
         try:
             import scipy
+            import scipy.stats as stats
+            import scipy.cluster as cluster
             safe_globals['scipy'] = scipy
+            safe_globals['stats'] = stats
+            safe_globals['cluster'] = cluster
         except: pass
-        
+
+        # Statistical modeling (ADF test, cointegration, ARIMA, regression)
         try:
-            from sklearn import linear_model
+            import statsmodels.api as sm
+            from statsmodels.tsa.stattools import adfuller, coint
+            from statsmodels.regression.linear_model import OLS
+            safe_globals['sm'] = sm
+            safe_globals['adfuller'] = adfuller
+            safe_globals['coint'] = coint
+        except: pass
+
+        # Machine learning
+        try:
+            import sklearn
+            from sklearn.model_selection import train_test_split
+            from sklearn.preprocessing import StandardScaler
+            from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
+            from sklearn.linear_model import LinearRegression, LogisticRegression
+            from sklearn.metrics import mean_squared_error, r2_score, accuracy_score
             safe_globals['sklearn'] = sklearn
+            safe_globals['train_test_split'] = train_test_split
+            safe_globals['StandardScaler'] = StandardScaler
+            safe_globals['RandomForestRegressor'] = RandomForestRegressor
+            safe_globals['LinearRegression'] = LinearRegression
+        except: pass
+
+        # Statistical visualizations
+        try:
+            import seaborn as sns
+            safe_globals['sns'] = sns
+        except: pass
+
+        # Pretty table printing
+        try:
+            from tabulate import tabulate
+            safe_globals['tabulate'] = tabulate
+        except: pass
+
+        # Market data fetching within code
+        try:
+            import yfinance as yf
+            safe_globals['yf'] = yf
         except: pass
 
         # Setup matplotlib without display
         import matplotlib
         matplotlib.use('Agg')
         import matplotlib.pyplot as plt
+        import matplotlib.dates as mdates
 
-        # Define show_chart function for code to use
         def show_chart(data, title="Chart", color="#2563eb", chart_type="line"):
-            """Display a chart - stores data for frontend rendering."""
-            if isinstance(data, list):
-                safe_globals['_charts'].append({
-                    "title": title,
-                    "data": data,
-                    "color": color,
-                    "type": chart_type
-                })
+            """Display a chart. Supports:
+            - show_chart([1,2,3])                   → simple line (backward compat)
+            - show_chart({'time':[],'value':[]})      → time-series line
+            - show_chart({'time':[],'open':[],'high':[],'low':[],'close':[]}) → candlestick
+            - show_chart([{'label':'A','data':[]}])   → multi-line overlay
+            """
+            entry = {"title": title, "color": color, "type": chart_type}
+
+            if isinstance(data, dict):
+                entry["data"] = {k: (v.tolist() if hasattr(v, 'tolist') else v) for k, v in data.items()}
+            elif isinstance(data, list):
+                if data and isinstance(data[0], dict) and "label" in data[0]:
+                    entry["type"] = "multi"
+                    entry["multi_series"] = [
+                        {"label": s["label"], "data": s["data"].tolist() if hasattr(s["data"], 'tolist') else s["data"]}
+                        for s in data
+                    ]
+                    entry.pop("data", None)
+                else:
+                    entry["data"] = data
             elif hasattr(data, 'tolist'):
-                safe_globals['_charts'].append({
-                    "title": title,
-                    "data": data.tolist(),
-                    "color": color,
-                    "type": chart_type
-                })
+                entry["data"] = data.tolist()
+            else:
+                return
+
+            safe_globals['_charts'].append(entry)
 
         def show_table(data, title="Data"):
             """Display a table - capped at 50 rows for performance and DB stability."""
@@ -179,16 +253,23 @@ async def run_python_code(code: str, market_data: Optional[List[Dict[str, Any]]]
             except:
                 pass
 
-        # Auto-generate chart from df if no explicit charts
         if not charts and df is not None and len(df) > 0:
             try:
+                has_time = 'time' in df.columns or 'timestamp' in df.columns
+                time_col = 'time' if 'time' in df.columns else ('timestamp' if 'timestamp' in df.columns else None)
                 if 'close' in df.columns:
-                    charts.append({
-                        "title": "Close Price",
-                        "data": df['close'].tail(50).tolist(),
-                        "color": "#22c55e",
-                        "type": "line"
-                    })
+                    if has_time and time_col:
+                        time_data = pd.to_numeric(df[time_col].tail(100), errors='coerce').fillna(0).astype(int).tolist()
+                        close_data = df['close'].tail(100).tolist()
+                        charts.append({
+                            "title": "Close Price", "color": "#22c55e", "type": "line",
+                            "data": {"time": time_data, "value": close_data}
+                        })
+                    else:
+                        charts.append({
+                            "title": "Close Price", "color": "#22c55e", "type": "line",
+                            "data": df['close'].tail(50).tolist()
+                        })
             except:
                 pass
 
@@ -209,7 +290,7 @@ async def run_python_code(code: str, market_data: Optional[List[Dict[str, Any]]]
             "data_preview": data_preview,
             "charts": _sanitize(charts) if charts else None,
             "tables": _sanitize(tables) if tables else None,
-            "modified_data": _sanitize(df.tail(100).to_dict('records')) if df is not None else None
+            "modified_data": _sanitize(df.to_dict('records')) if df is not None else None
         }
 
     except Exception as e:

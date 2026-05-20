@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException, Header, Body
+from fastapi import APIRouter, Depends, HTTPException, Header, Body, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, Annotated, List
@@ -6,8 +7,10 @@ from datetime import datetime, timedelta
 import pytz
 
 from ..core.config import settings
-from ..core.security import get_current_user
+from ..core.security import get_current_user, decode_token
 from ..core.mt5_connector import connector_client
+
+_security = HTTPBearer(auto_error=False)
 from ..models.schemas import (
     MT5SymbolsResponse, MT5Symbol, DataResponse, OHLCData,
     AccountInfo, PositionsResponse, Position, HistoryResponse, Trade, OHLCData
@@ -36,12 +39,26 @@ def _is_using_connector() -> bool:
     return settings.MT5_USE_EXTERNAL_CONNECTOR and bool(settings.MT5_CONNECTOR_URL)
 
 
-def verify_mt5_token(
-    x_mt5_token: Annotated[str, Header()]
+async def verify_mt5_token(
+    x_mt5_token: Annotated[Optional[str], Header()] = None,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_security),
 ):
-    if x_mt5_token != settings.MT5_API_TOKEN:
+    # Try MT5 token first
+    if x_mt5_token:
+        if x_mt5_token == settings.MT5_API_TOKEN:
+            return {"auth_method": "mt5_token"}
         raise HTTPException(status_code=401, detail="Invalid MT5 token")
-    return x_mt5_token
+    
+    # Fall back to JWT auth (frontend users are logged in)
+    if credentials:
+        payload = decode_token(credentials.credentials)
+        if payload and payload.get("type") == "access":
+            return {"auth_method": "jwt", "user": payload.get("sub")}
+    
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail="Missing authentication: provide x-mt5-token header or Authorization Bearer token"
+    )
 
 
 async def _cache_market_data(db: AsyncSession, symbol: str, timeframe: str, data: List[OHLCData], source: str = "mt5"):
@@ -443,7 +460,7 @@ async def get_account_info(token: str = Depends(verify_mt5_token)):
 
     if _is_using_connector():
         try:
-            res = await connector_client.get_account_info()
+            res = await connector_client.get_account()
             if res.get("success"):
                 return AccountInfo(**res.get("data", {}))
             else:

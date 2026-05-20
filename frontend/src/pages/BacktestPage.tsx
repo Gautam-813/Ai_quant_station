@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
+import { useToast } from '@/hooks/use-toast'
 import axios from 'axios'
 
 interface Prompt {
@@ -24,6 +25,7 @@ interface BacktestResults {
 }
 
 export default function BacktestPage() {
+  const { toast } = useToast()
   const [prompts, setPrompts] = useState<Prompt[]>([])
   const [selectedPromptId, setSelectedPromptId] = useState('')
   const [symbol, setSymbol] = useState('XAUUSD')
@@ -92,14 +94,18 @@ export default function BacktestPage() {
       })
       if (res.data.success) {
         setResults(res.data)
+        toast({ title: "Backtest Complete", description: `Return: ${res.data.metrics?.total_return}% | ${res.data.metrics?.trades} trades` })
       } else {
         setError(res.data.error || 'Backtest failed')
+        toast({ title: "Backtest Failed", description: res.data.error, variant: 'destructive' })
         if (res.data.generated_code) {
           setResults({ ...res.data, metrics: null, equity_curve: null })
         }
       }
     } catch (err: any) {
-      setError(err.response?.data?.detail || err.message)
+      const msg = err.response?.data?.detail || err.message
+      setError(msg)
+      toast({ title: "Backtest Error", description: msg, variant: 'destructive' })
     } finally {
       setLoading(false)
     }

@@ -53,7 +53,7 @@ export const useAuthStore = create<AuthState>()(
             user: {
               id: payload.user_id,
               username: payload.sub,
-              name: payload.sub,
+              name: payload.name || payload.sub,
               role: payload.role || 'trader'
             },
             isAuthenticated: true,
@@ -181,7 +181,10 @@ axios.interceptors.request.use((config) => {
   
   // Add MT5 token for MT5 endpoints
   if (config.url?.includes('/mt5')) {
-    config.headers['x-mt5-token'] = 'impulse_secure_2026'
+    const mt5Token = localStorage.getItem('mt5_api_token') || ''
+    if (mt5Token) {
+      config.headers['x-mt5-token'] = mt5Token
+    }
     
     // Add connector URL if configured
     try {

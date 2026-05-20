@@ -53,7 +53,7 @@ async def fetch_ohlc_range(symbol: str, timeframe: str, start_dt: datetime, end_
         
     connector_url = settings.MT5_CONNECTOR_URL
     
-    if connector_url:
+    if connector_url and settings.MT5_USE_EXTERNAL_CONNECTOR:
         try:
             # Note: The connector endpoint for ranges might vary, using latest/data pattern
             res = await connector_client._request("GET", f"/data/range/{symbol}", params={

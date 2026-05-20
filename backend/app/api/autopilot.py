@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List, Dict
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 import asyncio
 import random
 import os
@@ -59,7 +60,7 @@ def _get_state(user_id: int) -> dict:
         }
     return _user_states[user_id]
 
-PROMPT_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "prompt_list.txt")
+PROMPT_FILE = str(Path(__file__).resolve().parent.parent.parent.parent / "backend" / "prompt_list.txt")
 
 
 def load_prompts():
@@ -71,28 +72,7 @@ def load_prompts():
         return []
 
 
-def _get_api_key(provider: str) -> str:
-    """Get API key for provider."""
-    key_map = {
-        "nvidia": "NVIDIA_API_KEY",
-        "groq": "GROQ_API_KEY",
-        "openrouter": "OPEN_ROUTER_API_KEY",
-        "gemini": "GEMINI_API_KEY",
-        "cerebras": "CEREBRAS_API_KEY",
-    }
-    env_key = key_map.get(provider)
-    if env_key:
-        return getattr(settings, env_key, "")
-    return ""
-
-
-PROVIDERS = {
-    "nvidia": {"base_url": "https://integrate.api.nvidia.com/v1"},
-    "groq": {"base_url": "https://api.groq.com/openai/v1"},
-    "openrouter": {"base_url": "https://openrouter.ai/api/v1"},
-    "gemini": {"base_url": "https://generativelanguage.googleapis.com/v1beta/openai/"},
-    "cerebras": {"base_url": "https://api.cerebras.ai/v1"},
-}
+from ..core.providers import PROVIDERS, get_api_key as _get_api_key, get_base_url
 
 
 def add_log(user_id: int, message: str, level: str = "INFO"):
@@ -326,7 +306,7 @@ RULES:
 4. Consider technical indicators (RSI, MACD, moving averages) if helpful
 """
 
-    api_key = _get_api_key(provider)
+    api_key = _get_api_key(provider, settings)
     if not api_key:
         add_log(user_id, "No API key configured", "ERROR")
         state["stats"]["error_count"] += 1
@@ -336,7 +316,7 @@ RULES:
         api_key = f"nvapi-{api_key}"
 
     try:
-        client = AsyncOpenAI(base_url=PROVIDERS[provider]["base_url"], api_key=api_key)
+        client = AsyncOpenAI(base_url=get_base_url(provider), api_key=api_key)
         response = await client.chat.completions.create(
             model=model,
             messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt_text}],
@@ -663,9 +643,9 @@ async def connect_mt5(
         if settings_obj:
             connector_url = settings_obj.mt5_connector_url
 
-    add_log(f"Connecting to MT5 at {connector_url or 'default'}...")
+    add_log(user_id, f"Connecting to MT5 at {connector_url or 'default'}...")
 
-    success = await initialize_mt5_connector(terminal_path, connector_url)
+    success = await initialize_mt5_connector(user_id, terminal_path, connector_url)
 
     if success:
         # Save terminal path if provided
@@ -721,7 +701,8 @@ async def save_settings(
 
         await db.commit()
 
-    autopilot_state["settings"] = config.dict()
+    state = _get_state(user_id)
+    state["settings"] = config.model_dump()
     return {"success": True}
 
 
@@ -832,8 +813,6 @@ async def delete_prompt(prompt_id: str, current_user: dict = Depends(get_current
                 
         await db.commit()
         return {"success": True}
-
-    return {"success": True, "message": "Settings saved"}
 
 
 @router.get("/results", response_model=List[TradeResult])

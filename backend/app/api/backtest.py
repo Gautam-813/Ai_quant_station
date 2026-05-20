@@ -1,6 +1,6 @@
 import os
 import pandas as pd
-import pandas_ta as ta
+import ta
 import numpy as np
 import json
 import re
@@ -15,6 +15,7 @@ from pathlib import Path
 from ..core.config import settings
 from ..core.security import get_current_user
 from ..core.database import AsyncSessionLocal
+from ..core.providers import PROVIDERS, get_api_key as _get_api_key, get_base_url
 from ..models.ai_memory import UserPrompt, DefaultPromptStrategy
 from ..models.historical_lab import HistoricalBacktest
 
@@ -23,7 +24,7 @@ router = APIRouter(prefix="/backtest", tags=["Backtest"])
 PARQUET_DIR = Path(__file__).parent.parent.parent.parent / "data_archive" / "parquet_storage"
 
 class BacktestRequest(BaseModel):
-    prompt_id: str  # e.g., "1" or "custom_1"
+    prompt_id: str
     symbol: str
     timeframe: str = "1T"
     start_date: str = "2024-01-01"
@@ -38,35 +39,11 @@ class BacktestResponse(BaseModel):
     error: Optional[str] = None
     generated_code: Optional[str] = None
 
-def _get_api_key(provider: str = "nvidia") -> str:
-    key_map = {
-        "nvidia": "NVIDIA_API_KEY",
-        "groq": "GROQ_API_KEY",
-        "openrouter": "OPEN_ROUTER_API_KEY",
-        "gemini": "GEMINI_API_KEY",
-    }
-    env_key = key_map.get(provider)
-    if env_key:
-        val = getattr(settings, env_key, "")
-        if provider == "nvidia" and val and not val.startswith("nvapi-"):
-            return f"nvapi-{val}"
-        return val
-    return ""
-
 async def generate_strategy_code(prompt_text: str, provider: str = "nvidia", model: str = "qwen/qwen3.5-122b-a10b", error_msg: Optional[str] = None, previous_results: Optional[list] = None):
-    """Call AI to convert prompt to rule-based Python code."""
-    api_key = _get_api_key(provider)
-    if not api_key:
-        api_key = _get_api_key("nvidia")
-    
+    api_key = _get_api_key(provider, settings)
     if not api_key:
         raise Exception(f"AI API Key for {provider} not configured")
-
-    # Determine base_url based on provider
-    base_url = "https://integrate.api.nvidia.com/v1"
-    if provider == "groq": base_url = "https://api.groq.com/openai/v1"
-    elif provider == "openrouter": base_url = "https://openrouter.ai/api/v1"
-    elif provider == "mistral": base_url = "https://api.mistral.ai/v1"
+    base_url = get_base_url(provider)
 
     client = AsyncOpenAI(
         base_url=base_url,
@@ -91,7 +68,7 @@ OBJECTIVE: Generate an IMPROVED version that outperforms the previous best resul
 
 RULES:
 1. Use the variable 'df' which is a pandas DataFrame with columns: open, high, low, close, volume.
-2. Use 'pandas_ta' (imported as 'ta') for technical indicators.
+2. Use 'ta' library for technical indicators (e.g., ta.momentum.rsi, ta.trend.sma_indicator, ta.trend.ema_indicator).
 3. The function must be named 'calculate_signals(df)'.
 4. It must return a pandas Series named 'signal' where:
    - 1 = Buy Signal
@@ -103,10 +80,11 @@ RULES:
 EXAMPLE:
 ```python
 def calculate_signals(df):
+    close = df['close']
     # RSI(14) < 30
-    rsi = df.ta.rsi(length=14)
+    rsi = ta.momentum.rsi(close, window=14)
     # Price above 200 SMA
-    sma200 = df.ta.sma(length=200)
+    sma200 = ta.trend.sma_indicator(close, window=200)
     
     signal = pd.Series(0, index=df.index)
     signal[(rsi < 30) & (df['close'] > sma200)] = 1
@@ -125,7 +103,8 @@ def calculate_signals(df):
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content}
         ],
-        temperature=0.1
+        temperature=0.1,
+        timeout=60
     )
 
     code_content = response.choices[0].message.content or ""
@@ -150,7 +129,14 @@ def run_vectorized_backtest(df, strategy_code):
             'TypeError': TypeError, 'KeyError': KeyError,
             'IndexError': IndexError, 'ZeroDivisionError': ZeroDivisionError,
         }
-        exec_globals = {"__builtins__": safe_builtins, "pd": pd, "np": np, "ta": ta}
+        _extra_libs = {}
+        try:
+            import scipy
+            import sklearn
+            _extra_libs["scipy"] = scipy
+            _extra_libs["sklearn"] = sklearn
+        except: pass
+        exec_globals = {"__builtins__": safe_builtins, "pd": pd, "np": np, "ta": ta, **_extra_libs}
         exec(strategy_code, exec_globals)
         calculate_signals = exec_globals.get('calculate_signals')
         
@@ -214,7 +200,7 @@ async def run_backtest(request: BacktestRequest, current_user: dict = Depends(ge
             p_num = int(request.prompt_id)
             # Try to get prompt text from file
             try:
-                prompt_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "prompt_list.txt")
+                prompt_file = str(Path(__file__).resolve().parent.parent.parent.parent / "backend" / "prompt_list.txt")
                 with open(prompt_file, "r", encoding="utf-8") as f:
                     lines = f.readlines()
                     for line in lines:
