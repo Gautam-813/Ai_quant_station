@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 from .core.config import settings
-from .core.database import init_db, AsyncSessionLocal
+from .core.database import AsyncSessionLocal
 from .core.security import get_password_hash
 from .api import auth, mt5, trade, ai, yahoo, execute, analytics, autopilot, historical_lab, backtest
 from .core.mt5_sync import start_sync_scheduler
@@ -46,9 +46,25 @@ async def create_default_users():
         except Exception as e:
             print(f"Error creating default users: {e}")
 
+
+def _run_alembic_migrations():
+    """Run Alembic migrations synchronously during startup to bring schema to head."""
+    import subprocess, sys
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=os.path.dirname(os.path.abspath(__file__)),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print(f"Alembic upgrade failed:\n{result.stderr}")
+    else:
+        print("Alembic migrations applied successfully.")
+
 @app.on_event("startup")
 async def startup_event():
-    await init_db()
+    # Run database migrations via Alembic
+    _run_alembic_migrations()
     await create_default_users()
     start_sync_scheduler()
 

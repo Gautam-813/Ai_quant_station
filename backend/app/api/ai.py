@@ -648,8 +648,9 @@ def _detect_chart(text: str) -> Optional[dict]:
 
 # Memory endpoints
 @router.get("/memory", response_model=MemoryResponse)
-async def get_memory(current_user: dict = Depends(get_current_user)):
+async def get_memory(skip: int = 0, limit: int = 20, current_user: dict = Depends(get_current_user)):
     """Get memory/insights."""
+    limit = min(limit, 100)
     async with AsyncSessionLocal() as db:
         try:
             # Get recent conversations
@@ -657,7 +658,8 @@ async def get_memory(current_user: dict = Depends(get_current_user)):
                 select(ChatMemory)
                 .where(ChatMemory.user_id == current_user["id"])
                 .order_by(ChatMemory.created_at.desc())
-                .limit(20)
+                .offset(skip)
+                .limit(limit)
             )
             conversations = result.scalars().all()
 

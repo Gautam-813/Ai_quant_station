@@ -39,6 +39,9 @@ export default function TerminalPage() {
   const [loading, setLoading] = useState(true)
   const [orderLoading, setOrderLoading] = useState(false)
   const [closeLoading, setCloseLoading] = useState<number | null>(null)
+  const [confirmOrder, setConfirmOrder] = useState<{
+    symbol: string; direction: string; volume: number; sl: number | null; tp: number | null; orderType: string
+  } | null>(null)
 
   useEffect(() => { fetchSymbols(); fetchPositions() }, [])
 
@@ -54,20 +57,35 @@ export default function TerminalPage() {
   }
 
   const handleOrder = async () => {
+    setConfirmOrder({
+      symbol: selectedSymbol,
+      direction,
+      volume,
+      sl: sl ? parseFloat(sl) : null,
+      tp: tp ? parseFloat(tp) : null,
+      orderType,
+    })
+  }
+
+  const confirmOrderSubmit = async () => {
+    if (!confirmOrder) return
+    setConfirmOrder(null)
     setOrderLoading(true)
     try {
-      const action = orderType === 'market' ? direction : `${direction}_${orderType.toUpperCase()}`
+      const action = confirmOrder.orderType === 'market' ? confirmOrder.direction : `${confirmOrder.direction}_${confirmOrder.orderType.toUpperCase()}`
       await axios.post('/api/trade/order', {
-        symbol: selectedSymbol, action, volume,
-        price: price ? parseFloat(price) : null,
-        sl: sl ? parseFloat(sl) : null, tp: tp ? parseFloat(tp) : null
+        symbol: confirmOrder.symbol, action, volume: confirmOrder.volume,
+        price: null,
+        sl: confirmOrder.sl, tp: confirmOrder.tp
       })
-      toast({ title: "Order placed", description: `${direction} ${selectedSymbol} x${volume}` })
+      toast({ title: "Order placed", description: `${confirmOrder.direction} ${confirmOrder.symbol} x${confirmOrder.volume}` })
       fetchPositions(); clearOrder()
     } catch (error: any) {
       toast({ title: "Order failed", description: error.response?.data?.detail || error.message, variant: 'destructive' })
     } finally { setOrderLoading(false) }
   }
+
+  const [confirmClose, setConfirmClose] = useState<number | null>(null)
 
   const handleClose = async (ticket: number) => {
     if (closeLoading === ticket) return
@@ -187,7 +205,7 @@ export default function TerminalPage() {
                           ${(pos.profit || 0).toFixed(2)}
                         </td>
                         <td className="text-right py-2 px-1 sm:px-2">
-                          <Button size="sm" variant="destructive" onClick={() => handleClose(pos.ticket)} disabled={closeLoading === pos.ticket} className="text-xs h-7 sm:h-8 px-2 sm:px-3">
+                          <Button size="sm" variant="destructive" onClick={() => setConfirmClose(pos.ticket)} disabled={closeLoading === pos.ticket} className="text-xs h-7 sm:h-8 px-2 sm:px-3">
                             {closeLoading === pos.ticket ? '...' : 'Close'}
                           </Button>
                         </td>
@@ -200,6 +218,63 @@ export default function TerminalPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Order Confirmation Dialog */}
+      {confirmOrder && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={() => setConfirmOrder(null)}>
+          <div className="bg-card border border-border rounded-xl p-6 max-w-sm w-full" onClick={(e) => e.stopPropagation()}>
+            <h2 className="text-lg font-bold mb-4">Confirm Order</h2>
+            <div className="space-y-2 text-sm mb-6">
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Symbol</span>
+                <span className="font-medium">{confirmOrder.symbol}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Direction</span>
+                <span className={`font-bold ${confirmOrder.direction === 'BUY' ? 'text-green-500' : 'text-red-500'}`}>{confirmOrder.direction}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Volume</span>
+                <span className="font-medium">{confirmOrder.volume}</span>
+              </div>
+              {confirmOrder.sl != null && (
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Stop Loss</span>
+                  <span className="font-medium text-red-400">{confirmOrder.sl.toFixed(2)}</span>
+                </div>
+              )}
+              {confirmOrder.tp != null && (
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Take Profit</span>
+                  <span className="font-medium text-green-400">{confirmOrder.tp.toFixed(2)}</span>
+                </div>
+              )}
+            </div>
+            <div className="flex gap-3">
+              <Button variant="outline" className="flex-1" onClick={() => setConfirmOrder(null)}>Cancel</Button>
+              <Button className="flex-1" onClick={confirmOrderSubmit} disabled={orderLoading}>
+                {orderLoading ? 'Placing...' : 'Confirm'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Close Position Confirmation */}
+      {confirmClose != null && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={() => setConfirmClose(null)}>
+          <div className="bg-card border border-border rounded-xl p-6 max-w-sm w-full" onClick={(e) => e.stopPropagation()}>
+            <h2 className="text-lg font-bold mb-2">Close Position</h2>
+            <p className="text-sm text-muted-foreground mb-6">Are you sure you want to close position #{confirmClose}?</p>
+            <div className="flex gap-3">
+              <Button variant="outline" className="flex-1" onClick={() => setConfirmClose(null)}>Cancel</Button>
+              <Button variant="destructive" className="flex-1" onClick={() => { handleClose(confirmClose); setConfirmClose(null) }} disabled={closeLoading === confirmClose}>
+                {closeLoading === confirmClose ? 'Closing...' : 'Close'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

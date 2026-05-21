@@ -3,6 +3,7 @@ Autopilot API - Automatic trading based on AI analysis
 """
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, List, Dict
 from datetime import datetime, timedelta, timezone
@@ -902,10 +903,12 @@ async def get_prompt_stats(current_user: dict = Depends(get_current_user)):
 
 @router.get("/results", response_model=List[TradeResult])
 async def get_trade_results(
+    skip: int = 0,
     limit: int = 50,
     current_user: dict = Depends(get_current_user)
 ):
     """Get trade results history."""
+    limit = min(limit, 500)
     user_id = current_user["id"]
 
     async with AsyncSessionLocal() as db:
@@ -913,6 +916,7 @@ async def get_trade_results(
             select(AutopilotTrade)
             .where(AutopilotTrade.user_id == user_id)
             .order_by(AutopilotTrade.executed_at.desc())
+            .offset(skip)
             .limit(limit)
         )
         trades = result.scalars().all()
@@ -938,3 +942,41 @@ async def get_trade_results(
             )
             for t in trades
         ]
+
+
+@router.get("/results/export")
+async def export_trades_csv(current_user: dict = Depends(get_current_user)):
+    """Export trade history as CSV."""
+    import io, csv
+    user_id = current_user["id"]
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(AutopilotTrade)
+            .where(AutopilotTrade.user_id == user_id)
+            .order_by(AutopilotTrade.executed_at.desc())
+        )
+        trades = result.scalars().all()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["ID", "Prompt #", "Prompt Text", "Symbol", "Direction", "Entry Price",
+                      "Stop Loss", "Take Profit", "Lot Size", "Ticket", "Executed At",
+                      "Result", "Profit", "Closed At", "Duration (min)", "Reasoning", "Confidence"])
+    for t in trades:
+        writer.writerow([
+            t.id, t.prompt_number, t.prompt_text, t.symbol, t.direction,
+            t.entry_price or "", t.stop_loss or "", t.take_profit or "",
+            t.lot_size, t.mt5_ticket or "",
+            t.executed_at.isoformat() if t.executed_at else "",
+            t.result or "", t.profit or "",
+            t.closed_at.isoformat() if t.closed_at else "",
+            t.duration_minutes or "", t.reasoning or "", t.confidence or ""
+        ])
+
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=autopilot_trades.csv"}
+    )

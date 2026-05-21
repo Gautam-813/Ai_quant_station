@@ -9,6 +9,19 @@ from .config import settings
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 security = HTTPBearer()
 
+# JWT token blacklist: set of revoked token JTI/identifier strings
+_token_blacklist: set[str] = set()
+
+def blacklist_token(token: str):
+    """Add a token to the revocation blacklist."""
+    _token_blacklist.add(token)
+    # Clean up expired tokens periodically
+    if len(_token_blacklist) > 1000:
+        _token_blacklist.clear()
+
+def is_token_blacklisted(token: str) -> bool:
+    return token in _token_blacklist
+
 
 import bcrypt
 
@@ -53,6 +66,8 @@ def create_refresh_token(data: dict) -> str:
 
 
 def decode_token(token: str) -> dict | None:
+    if is_token_blacklisted(token):
+        return None
     try:
         payload = jwt.decode(token, settings.effective_secret_key, algorithms=[settings.ALGORITHM])
         return payload

@@ -106,11 +106,13 @@ async def record_calculation(
 async def get_calculation_history(
     symbol: Optional[str] = None,
     indicator: Optional[str] = None,
+    skip: int = 0,
     limit: int = 20,
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Get user's calculation history"""
+    limit = min(limit, 500)
     try:
         from app.models.ai_memory import CalculationHistory
         from sqlalchemy import select, desc
@@ -124,7 +126,7 @@ async def get_calculation_history(
         if indicator:
             query = query.where(CalculationHistory.indicator == indicator)
 
-        query = query.order_by(desc(CalculationHistory.created_at)).limit(limit)
+        query = query.order_by(desc(CalculationHistory.created_at)).offset(skip).limit(limit)
 
         result = await db.execute(query)
         records = result.scalars().all()

@@ -27,12 +27,12 @@ async def verify_mt5_token(
 ):
     if x_mt5_token:
         if x_mt5_token == settings.MT5_API_TOKEN:
-            return {"auth_method": "mt5_token"}
+            return {"auth_method": "mt5_token", "user_id": None}
         raise HTTPException(status_code=401, detail="Invalid MT5 token")
     if credentials:
         payload = decode_token(credentials.credentials)
         if payload and payload.get("type") == "access":
-            return {"auth_method": "jwt", "user": payload.get("sub")}
+            return {"auth_method": "jwt", "user": payload.get("sub"), "user_id": payload.get("user_id")}
     raise HTTPException(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         detail="Missing authentication: provide x-mt5-token header or Authorization Bearer token"
@@ -184,7 +184,7 @@ async def place_order(order: OrderRequest, token: str = Depends(verify_mt5_token
     try:
         async with AsyncSessionLocal() as db:
             trade_rec = TradeRecord(
-                user_id=0,  # Will be set when JWT auth is added to trade endpoints
+                user_id=token.get("user_id") or 0,
                 symbol=order.symbol, direction="BUY" if "BUY" in order.action else "SELL",
                 entry_price=price, stop_loss=sl, take_profit=tp,
                 volume=volume, order_type="market" if not is_pending else "pending",

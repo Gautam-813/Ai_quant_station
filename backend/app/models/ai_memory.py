@@ -16,6 +16,11 @@ class ChatMemory(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
 
+    __table_args__ = (
+        Index("ix_chat_memories_user_symbol", "user_id", "symbol"),
+    )
+
+
 class GlobalInsights(Base):
     __tablename__ = "global_insights"
 
@@ -108,6 +113,7 @@ class CalculationHistory(Base):
 
     __table_args__ = (
         Index("ix_calc_history_user_symbol_indicator", "user_id", "symbol", "indicator"),
+        Index("ix_calc_history_user_created", "user_id", "created_at"),
     )
 
 
@@ -176,6 +182,12 @@ class AutopilotTrade(Base):
     ai_response = Column(Text, nullable=True)
 
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        Index("ix_autopilot_trades_user_executed", "user_id", "executed_at"),
+        Index("ix_autopilot_trades_user_result", "user_id", "result"),
+        Index("ix_autopilot_trades_user_prompt", "user_id", "prompt_number"),
+    )
 
 
 class UserPrompt(Base):

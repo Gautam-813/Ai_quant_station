@@ -1,14 +1,16 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import HTTPAuthorizationCredentials
+from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from datetime import datetime, timezone
+from collections import defaultdict
+import time
 
 from ..core.database import get_db
 from ..core.security import (
     verify_password, get_password_hash,
     create_access_token, create_refresh_token,
-    decode_token, get_current_user
+    decode_token, get_current_user, blacklist_token
 )
 from ..models.user import User
 from ..models.schemas import UserLogin, Token, UserResponse, PasswordChange
@@ -16,9 +18,30 @@ from pydantic import BaseModel
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
+# Simple in-memory rate limiter: {ip: [(timestamp, count)]}
+_login_attempts: dict[str, list[float]] = defaultdict(list)
+_LOGIN_RATE_LIMIT = 5  # max attempts
+_LOGIN_RATE_WINDOW = 60  # seconds
+
+def _check_login_rate(ip: str) -> bool:
+    now = time.time()
+    attempts = _login_attempts[ip]
+    # Remove entries outside the window
+    _login_attempts[ip] = [t for t in attempts if now - t < _LOGIN_RATE_WINDOW]
+    if len(_login_attempts[ip]) >= _LOGIN_RATE_LIMIT:
+        return False
+    _login_attempts[ip].append(now)
+    return True
+
 
 @router.post("/login", response_model=Token)
-async def login(user_data: UserLogin, db: AsyncSession = Depends(get_db)):
+async def login(request: Request, user_data: UserLogin, db: AsyncSession = Depends(get_db)):
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_login_rate(client_ip):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Too many login attempts. Try again in {_LOGIN_RATE_WINDOW} seconds."
+        )
     try:
         result = await db.execute(select(User).where(User.username == user_data.username))
         user = result.scalar_one_or_none()
@@ -84,8 +107,11 @@ async def refresh_token(refresh_data: dict, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/logout")
-async def logout(current_user: dict = Depends(get_current_user)):
-    # In a production app, you would blacklist the token here
+async def logout(
+    credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer()),
+    current_user: dict = Depends(get_current_user)
+):
+    blacklist_token(credentials.credentials)
     return {"message": "Successfully logged out"}
 
 
@@ -153,11 +179,14 @@ def require_admin(current_user: dict = Depends(get_current_user)):
 
 @router.get("/users")
 async def list_users(
+    skip: int = 0,
+    limit: int = 100,
     current_user: dict = Depends(require_admin),
     db: AsyncSession = Depends(get_db)
 ):
     """List all users - Admin only"""
-    result = await db.execute(select(User).order_by(User.created_at.desc()))
+    limit = min(limit, 500)
+    result = await db.execute(select(User).order_by(User.created_at.desc()).offset(skip).limit(limit))
     users = result.scalars().all()
     return [UserResponse.model_validate(u).model_dump(mode="json") for u in users]
 

@@ -731,8 +731,11 @@ export default function AutopilotPage() {
 
       {/* Trade History */}
       <Card className="mt-8">
-        <CardHeader>
+        <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle>Trade History {selectedPromptFilter != null ? `(Prompt #${selectedPromptFilter})` : ''}</CardTitle>
+          <Button variant="outline" size="sm" onClick={() => window.open('/api/autopilot/results/export', '_blank')}>
+            Export CSV
+          </Button>
         </CardHeader>
         <CardContent>
           {(() => {
