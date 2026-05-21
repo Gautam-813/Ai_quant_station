@@ -58,9 +58,22 @@ interface AutopilotStatus {
   logs: LogEntry[]
 }
 
+interface PromptStatsItem {
+  prompt_number: number
+  prompt_text: string
+  total_trades: number
+  wins: number
+  losses: number
+  win_rate: number
+  total_profit: number
+  avg_profit: number
+}
+
 export default function AutopilotPage() {
   const [status, setStatus] = useState<AutopilotStatus | null>(null)
   const [trades, setTrades] = useState<TradeResult[]>([])
+  const [promptStats, setPromptStats] = useState<PromptStatsItem[]>([])
+  const [selectedPromptFilter, setSelectedPromptFilter] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
 
   // Prompts State
@@ -96,12 +109,17 @@ export default function AutopilotPage() {
   const setConnectorUrl = useAutopilotStore((s) => s.setConnectorUrl)
   const selectedPromptIds = useAutopilotStore((s) => s.selectedPromptIds)
   const setSelectedPromptIds = useAutopilotStore((s) => s.setSelectedPromptIds)
+  const maxTradesPerDay = useAutopilotStore((s) => s.maxTradesPerDay)
+  const setMaxTradesPerDay = useAutopilotStore((s) => s.setMaxTradesPerDay)
+  const maxDailyLoss = useAutopilotStore((s) => s.maxDailyLoss)
+  const setMaxDailyLoss = useAutopilotStore((s) => s.setMaxDailyLoss)
   const [mt5Connected, setMt5Connected] = useState(false)
 
   useEffect(() => {
     fetchProviders()
     fetchStatus()
     fetchTrades()
+    fetchPromptStats()
     fetchPrompts()
     // Poll only for status/running state, not settings
     const intervalId: ReturnType<typeof setInterval> = setInterval(() => {
@@ -153,6 +171,8 @@ export default function AutopilotPage() {
         setTerminalPath(res.data.settings.mt5_terminal_path || '')
         setConnectorUrl(res.data.settings.mt5_connector_url || '')
         setMt5Connected(res.data.settings.mt5_connected || false)
+        setMaxTradesPerDay(String(res.data.settings.max_trades_per_day ?? 10))
+        setMaxDailyLoss(String(res.data.settings.max_daily_loss ?? -50))
         if (res.data.settings.selected_prompts) {
           setSelectedPromptIds(res.data.settings.selected_prompts.map(String))
         }
@@ -170,6 +190,15 @@ export default function AutopilotPage() {
       setTrades(res.data || [])
     } catch (error) {
       console.error('Failed to fetch trades:', error)
+    }
+  }
+
+  const fetchPromptStats = async () => {
+    try {
+      const res = await axios.get('/api/autopilot/prompt-stats')
+      setPromptStats(res.data || [])
+    } catch (error) {
+      console.error('Failed to fetch prompt stats:', error)
     }
   }
 
@@ -197,9 +226,9 @@ export default function AutopilotPage() {
       await axios.post('/api/autopilot/settings', {
         interval_seconds: parseInt(intervalVal),
         default_lot: parseFloat(lotSize),
-        max_trades_per_day: 10,
+        max_trades_per_day: parseInt(maxTradesPerDay) || 10,
         cooldown_minutes: 5,
-        max_daily_loss: -50,
+        max_daily_loss: parseFloat(maxDailyLoss) || -50,
         mt5_terminal_path: terminalPath,
         mt5_connector_url: connectorUrl || null,
         symbol: symbol,
@@ -440,6 +469,30 @@ export default function AutopilotPage() {
               </div>
             </div>
 
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="text-sm text-muted-foreground">Max Trades / Day</label>
+                <Input
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={maxTradesPerDay}
+                  onChange={(e) => setMaxTradesPerDay(e.target.value)}
+                  disabled={status?.enabled}
+                />
+              </div>
+              <div>
+                <label className="text-sm text-muted-foreground">Max Daily Loss ($)</label>
+                <Input
+                  type="number"
+                  step="1"
+                  value={maxDailyLoss}
+                  onChange={(e) => setMaxDailyLoss(e.target.value)}
+                  disabled={status?.enabled}
+                />
+              </div>
+            </div>
+
             <div>
               <label className="text-sm text-muted-foreground">Symbol</label>
               <Input
@@ -616,49 +669,56 @@ export default function AutopilotPage() {
         </Card>
       </div>
 
-      {/* Trade History */}
+      {/* Strategy Scoreboard */}
       <Card className="mt-8">
-        <CardHeader>
-          <CardTitle>Trade History</CardTitle>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <CardTitle>Strategy Scoreboard</CardTitle>
+          {selectedPromptFilter != null && (
+            <Button variant="ghost" size="sm" onClick={() => setSelectedPromptFilter(null)}>
+              Clear Filter
+            </Button>
+          )}
         </CardHeader>
         <CardContent>
-          {trades.length === 0 ? (
-            <p className="text-muted-foreground text-center py-8">No trades yet</p>
+          {promptStats.length === 0 ? (
+            <p className="text-muted-foreground text-center py-8">No completed trades yet</p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead>
                   <tr className="border-b border-border">
-                    <th className="text-left py-3 px-2">Time</th>
                     <th className="text-left py-3 px-2">#</th>
-                    <th className="text-left py-3 px-2">Symbol</th>
-                    <th className="text-left py-3 px-2">Dir</th>
-                    <th className="text-right py-3 px-2">Entry</th>
-                    <th className="text-right py-3 px-2">SL</th>
-                    <th className="text-right py-3 px-2">TP</th>
-                    <th className="text-right py-3 px-2">Lot</th>
-                    <th className="text-left py-3 px-2">Ticket</th>
-                    <th className="text-left py-3 px-2">Result</th>
-                    <th className="text-right py-3 px-2">P&L</th>
+                    <th className="text-left py-3 px-2">Strategy</th>
+                    <th className="text-right py-3 px-2">Trades</th>
+                    <th className="text-right py-3 px-2">Wins</th>
+                    <th className="text-right py-3 px-2">Losses</th>
+                    <th className="text-right py-3 px-2">Win Rate</th>
+                    <th className="text-right py-3 px-2">Total P&L</th>
+                    <th className="text-right py-3 px-2">Avg P&L</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {trades.map((trade) => (
-                    <tr key={trade.id} className="border-b border-border/30 hover:bg-muted/50">
-                      <td className="py-3 px-2 text-xs">{trade.executed_at?.slice(11, 19) || '-'}</td>
-                      <td className="py-3 px-2 text-xs">{trade.prompt_number}</td>
-                      <td className="py-3 px-2 font-medium">{trade.symbol}</td>
-                      <td className={`py-3 px-2 ${trade.direction === 'BUY' ? 'text-green-500' : 'text-red-500'}`}>
-                        {trade.direction}
+                  {promptStats.map((s) => (
+                    <tr
+                      key={s.prompt_number}
+                      className={`border-b border-border/30 hover:bg-muted/50 cursor-pointer ${selectedPromptFilter === s.prompt_number ? 'bg-blue-500/10' : ''}`}
+                      onClick={() => setSelectedPromptFilter(selectedPromptFilter === s.prompt_number ? null : s.prompt_number)}
+                    >
+                      <td className="py-3 px-2 font-bold text-blue-400">#{s.prompt_number}</td>
+                      <td className="py-3 px-2 text-xs max-w-[200px] truncate">{s.prompt_text}</td>
+                      <td className="py-3 px-2 text-right">{s.total_trades}</td>
+                      <td className="py-3 px-2 text-right text-green-500">{s.wins}</td>
+                      <td className="py-3 px-2 text-right text-red-500">{s.losses}</td>
+                      <td className="py-3 px-2 text-right">
+                        <span className={s.win_rate >= 60 ? 'text-green-500' : s.win_rate >= 40 ? 'text-yellow-500' : 'text-red-500'}>
+                          {s.win_rate}%
+                        </span>
                       </td>
-                      <td className="py-3 px-2 text-right">{trade.entry_price?.toFixed(2) || '-'}</td>
-                      <td className="py-3 px-2 text-right text-red-400">{trade.stop_loss?.toFixed(2) || '-'}</td>
-                      <td className="py-3 px-2 text-right text-green-400">{trade.take_profit?.toFixed(2) || '-'}</td>
-                      <td className="py-3 px-2 text-right">{trade.lot_size}</td>
-                      <td className="py-3 px-2">{trade.mt5_ticket || '-'}</td>
-                      <td className="py-3 px-2">{getResultBadge(trade.result)}</td>
-                      <td className={`py-3 px-2 text-right font-medium ${(trade.profit ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                        {trade.profit != null ? `$${trade.profit.toFixed(2)}` : '-'}
+                      <td className={`py-3 px-2 text-right font-medium ${s.total_profit >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                        ${s.total_profit.toFixed(2)}
+                      </td>
+                      <td className={`py-3 px-2 text-right ${s.avg_profit >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                        ${s.avg_profit.toFixed(2)}
                       </td>
                     </tr>
                   ))}
@@ -666,6 +726,63 @@ export default function AutopilotPage() {
               </table>
             </div>
           )}
+        </CardContent>
+      </Card>
+
+      {/* Trade History */}
+      <Card className="mt-8">
+        <CardHeader>
+          <CardTitle>Trade History {selectedPromptFilter != null ? `(Prompt #${selectedPromptFilter})` : ''}</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {(() => {
+            const filtered = selectedPromptFilter != null ? trades.filter(t => t.prompt_number === selectedPromptFilter) : trades
+            if (filtered.length === 0) {
+              return <p className="text-muted-foreground text-center py-8">No trades yet</p>
+            }
+            return (
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead>
+                    <tr className="border-b border-border">
+                      <th className="text-left py-3 px-2">Time</th>
+                      <th className="text-left py-3 px-2">#</th>
+                      <th className="text-left py-3 px-2">Symbol</th>
+                      <th className="text-left py-3 px-2">Dir</th>
+                      <th className="text-right py-3 px-2">Entry</th>
+                      <th className="text-right py-3 px-2">SL</th>
+                      <th className="text-right py-3 px-2">TP</th>
+                      <th className="text-right py-3 px-2">Lot</th>
+                      <th className="text-left py-3 px-2">Ticket</th>
+                      <th className="text-left py-3 px-2">Result</th>
+                      <th className="text-right py-3 px-2">P&L</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filtered.map((trade) => (
+                      <tr key={trade.id} className="border-b border-border/30 hover:bg-muted/50">
+                        <td className="py-3 px-2 text-xs">{trade.executed_at?.slice(11, 19) || '-'}</td>
+                        <td className="py-3 px-2 text-xs">{trade.prompt_number}</td>
+                        <td className="py-3 px-2 font-medium">{trade.symbol}</td>
+                        <td className={`py-3 px-2 ${trade.direction === 'BUY' ? 'text-green-500' : 'text-red-500'}`}>
+                          {trade.direction}
+                        </td>
+                        <td className="py-3 px-2 text-right">{trade.entry_price?.toFixed(2) || '-'}</td>
+                        <td className="py-3 px-2 text-right text-red-400">{trade.stop_loss?.toFixed(2) || '-'}</td>
+                        <td className="py-3 px-2 text-right text-green-400">{trade.take_profit?.toFixed(2) || '-'}</td>
+                        <td className="py-3 px-2 text-right">{trade.lot_size}</td>
+                        <td className="py-3 px-2">{trade.mt5_ticket || '-'}</td>
+                        <td className="py-3 px-2">{getResultBadge(trade.result)}</td>
+                        <td className={`py-3 px-2 text-right font-medium ${(trade.profit ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                          {trade.profit != null ? `$${trade.profit.toFixed(2)}` : '-'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )
+          })()}
         </CardContent>
       </Card>
     </div>

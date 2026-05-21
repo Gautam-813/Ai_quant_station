@@ -598,6 +598,17 @@ class TradeResult(BaseModel):
     confidence: Optional[float]
 
 
+class PromptStatsItem(BaseModel):
+    prompt_number: int
+    prompt_text: str
+    total_trades: int
+    wins: int
+    losses: int
+    win_rate: float
+    total_profit: float
+    avg_profit: float
+
+
 # Endpoints
 @router.post("/start")
 async def start_autopilot(current_user: dict = Depends(get_current_user)):
@@ -851,6 +862,42 @@ async def delete_prompt(prompt_id: str, current_user: dict = Depends(get_current
                 
         await db.commit()
         return {"success": True}
+
+
+@router.get("/prompt-stats", response_model=List[PromptStatsItem])
+async def get_prompt_stats(current_user: dict = Depends(get_current_user)):
+    """Get win-rate statistics per prompt."""
+    user_id = current_user["id"]
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(AutopilotTrade).where(
+                AutopilotTrade.user_id == user_id,
+                AutopilotTrade.profit.isnot(None)
+            )
+        )
+        trades = result.scalars().all()
+
+    groups: dict[int, dict] = {}
+    for t in trades:
+        pn = t.prompt_number
+        if pn not in groups:
+            groups[pn] = {"prompt_number": pn, "prompt_text": t.prompt_text, "total_trades": 0, "wins": 0, "total_profit": 0.0}
+        groups[pn]["total_trades"] += 1
+        groups[pn]["total_profit"] += t.profit or 0
+        if (t.profit or 0) > 0:
+            groups[pn]["wins"] += 1
+
+    stats = []
+    for g in groups.values():
+        g["losses"] = g["total_trades"] - g["wins"]
+        g["win_rate"] = round(g["wins"] / g["total_trades"] * 100, 1) if g["total_trades"] > 0 else 0.0
+        g["avg_profit"] = round(g["total_profit"] / g["total_trades"], 2) if g["total_trades"] > 0 else 0.0
+        g["total_profit"] = round(g["total_profit"], 2)
+        stats.append(PromptStatsItem(**g))
+
+    stats.sort(key=lambda x: x.total_profit, reverse=True)
+    return stats
 
 
 @router.get("/results", response_model=List[TradeResult])

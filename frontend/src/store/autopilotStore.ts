@@ -10,6 +10,8 @@ interface AutopilotState {
   terminalPath: string
   connectorUrl: string
   selectedPromptIds: string[]
+  maxTradesPerDay: string
+  maxDailyLoss: string
 
   setIntervalVal: (v: string) => void
   setLotSize: (v: string) => void
@@ -19,6 +21,8 @@ interface AutopilotState {
   setTerminalPath: (v: string) => void
   setConnectorUrl: (v: string) => void
   setSelectedPromptIds: (v: string[]) => void
+  setMaxTradesPerDay: (v: string) => void
+  setMaxDailyLoss: (v: string) => void
 }
 
 export const useAutopilotStore = create<AutopilotState>()(
@@ -32,6 +36,8 @@ export const useAutopilotStore = create<AutopilotState>()(
       terminalPath: '',
       connectorUrl: '',
       selectedPromptIds: [],
+      maxTradesPerDay: '10',
+      maxDailyLoss: '-50',
 
       setIntervalVal: (v) => set({ intervalVal: v }),
       setLotSize: (v) => set({ lotSize: v }),
@@ -41,6 +47,8 @@ export const useAutopilotStore = create<AutopilotState>()(
       setTerminalPath: (v) => set({ terminalPath: v }),
       setConnectorUrl: (v) => set({ connectorUrl: v }),
       setSelectedPromptIds: (v) => set({ selectedPromptIds: v }),
+      setMaxTradesPerDay: (v) => set({ maxTradesPerDay: v }),
+      setMaxDailyLoss: (v) => set({ maxDailyLoss: v }),
     }),
     {
       name: 'autopilot-storage',
@@ -53,6 +61,8 @@ export const useAutopilotStore = create<AutopilotState>()(
         terminalPath: state.terminalPath,
         connectorUrl: state.connectorUrl,
         selectedPromptIds: state.selectedPromptIds,
+        maxTradesPerDay: state.maxTradesPerDay,
+        maxDailyLoss: state.maxDailyLoss,
       }),
     }
   )
