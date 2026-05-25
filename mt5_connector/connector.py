@@ -597,17 +597,16 @@ async def get_data_range(symbol: str, timeframe: str = "1h", start: str = "", en
 
     import pandas as pd
     df = pd.DataFrame(rates)
-    df['time'] = pd.to_datetime(df['time'], unit='s')
 
     data = []
     for _, row in df.iterrows():
         data.append({
-            "time": row['time'].strftime('%Y-%m-%d %H:%M:%S'),
-            "open": row['open'],
-            "high": row['high'],
-            "low": row['low'],
-            "close": row['close'],
-            "tick_volume": row['tick_volume']
+            "time": int(row['time']),
+            "open": float(row['open']),
+            "high": float(row['high']),
+            "low": float(row['low']),
+            "close": float(row['close']),
+            "tick_volume": int(row['tick_volume'])
         })
 
     return {
@@ -649,17 +648,16 @@ async def get_latest_data(symbol: str, timeframe: str = "1h", count: int = 500, 
     
     import pandas as pd
     df = pd.DataFrame(rates)
-    df['time'] = pd.to_datetime(df['time'], unit='s')
-    
+
     data = []
     for _, row in df.iterrows():
         data.append({
-            "time": row['time'].strftime('%Y-%m-%d %H:%M:%S'),
-            "open": row['open'],
-            "high": row['high'],
-            "low": row['low'],
-            "close": row['close'],
-            "tick_volume": row['tick_volume']
+            "time": int(row['time']),
+            "open": float(row['open']),
+            "high": float(row['high']),
+            "low": float(row['low']),
+            "close": float(row['close']),
+            "tick_volume": int(row['tick_volume'])
         })
     
     return {
