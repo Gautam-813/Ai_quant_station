@@ -1,0 +1,20 @@
+[Unit]
+Description=Impulse Analyst Trading Platform
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/impulse_analyst/backend
+Environment="PATH=/opt/impulse_analyst/backend/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart=/opt/impulse_analyst/backend/venv/bin/python /opt/impulse_analyst/backend/run.py
+Restart=always
+RestartSec=10
+StartLimitIntervalSec=0
+
+# Logs
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
