@@ -2,9 +2,17 @@ import logging
 import os
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timezone
-import MetaTrader5 as mt5
 from ..core.config import settings
 from ..core.mt5_connector import connector_client
+
+# Lazy import for MetaTrader5 — only available on Windows
+_mt5 = None
+def _get_mt5():
+    global _mt5
+    if _mt5 is None:
+        import MetaTrader5 as mt5
+        _mt5 = mt5
+    return _mt5
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +36,7 @@ async def init_mt5_connection():
             return True
             
         # 2. Direct MT5 initialization (Windows only)
+        mt5 = _get_mt5()
         terminal_path = settings.MT5_TERMINAL_PATH
         if terminal_path:
             if not mt5.initialize(path=terminal_path):
@@ -67,6 +76,7 @@ async def fetch_ohlc_range(symbol: str, timeframe: str, start_dt: datetime, end_
             logger.error(f"Connector fetch error for {symbol}: {e}")
             return []
     else:
+        mt5 = _get_mt5()
         # Direct MT5 mapping
         tf_map = {
             '1m': mt5.TIMEFRAME_M1,
