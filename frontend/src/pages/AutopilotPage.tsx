@@ -244,7 +244,10 @@ export default function AutopilotPage() {
   const connectMT5 = async () => {
     try {
       const res = await axios.post('/api/autopilot/connect-mt5', null, {
-        params: { terminal_path: terminalPath || null }
+        params: {
+          terminal_path: terminalPath || null,
+          connector_url: connectorUrl || null
+        }
       })
       if (res.data.success) {
         setMt5Connected(true)

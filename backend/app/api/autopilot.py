@@ -763,23 +763,24 @@ async def get_status(current_user: dict = Depends(get_current_user)):
 @router.post("/connect-mt5")
 async def connect_mt5(
     terminal_path: Optional[str] = None,
+    connector_url: Optional[str] = None,
     current_user: dict = Depends(get_current_user)
 ):
     """Connect to MT5 terminal."""
     user_id = current_user["id"]
 
-    # Get connector URL from settings
-    connector_url = None
-    async with AsyncSessionLocal() as db:
-        result = await db.execute(
-            select(AutopilotSettings).where(AutopilotSettings.user_id == user_id)
-        )
-        settings_obj = result.scalar_one_or_none()
-        if settings_obj:
-            connector_url = (settings_obj.mt5_connector_url or "").strip() or None
-            selected = settings_obj.selected_prompts or []
-            if selected:
-                add_log(user_id, f"Active prompts: {len(selected)} selected ({', '.join(str(s) for s in selected)})")
+    # Use URL from request param, or fall back to DB settings, or fall back to .env
+    if not connector_url:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(AutopilotSettings).where(AutopilotSettings.user_id == user_id)
+            )
+            settings_obj = result.scalar_one_or_none()
+            if settings_obj:
+                connector_url = (settings_obj.mt5_connector_url or "").strip() or None
+                selected = settings_obj.selected_prompts or []
+                if selected:
+                    add_log(user_id, f"Active prompts: {len(selected)} selected ({', '.join(str(s) for s in selected)})")
 
     add_log(user_id, f"Connecting to MT5 at {connector_url or 'default'}...")
 
@@ -798,6 +799,8 @@ async def connect_mt5(
 
             if terminal_path:
                 settings_obj.mt5_terminal_path = terminal_path
+            if connector_url:
+                settings_obj.mt5_connector_url = connector_url
             settings_obj.mt5_connected = True
             await db.commit()
 
