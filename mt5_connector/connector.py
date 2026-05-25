@@ -570,6 +570,55 @@ async def get_history(hours: int = 0, authorization: str = ""):
     return {"success": True, "count": len(deal_list), "deals": deal_list}
 
 
+@app.get("/data/range/{symbol}")
+async def get_data_range(symbol: str, timeframe: str = "1h", start: str = "", end: str = "", authorization: str = ""):
+    verify_auth(authorization)
+    """Get OHLC data for a date range."""
+    if not mt5_initialized:
+        raise HTTPException(status_code=400, detail="MT5 not initialized")
+
+    timeframe_map = {
+        '1m': mt5.TIMEFRAME_M1, '5m': mt5.TIMEFRAME_M5, '15m': mt5.TIMEFRAME_M15,
+        '30m': mt5.TIMEFRAME_M30, '1h': mt5.TIMEFRAME_H1, '4h': mt5.TIMEFRAME_H4,
+        '1d': mt5.TIMEFRAME_D1, '1w': mt5.TIMEFRAME_W1, '1M': mt5.TIMEFRAME_MN1
+    }
+    tf = timeframe_map.get(timeframe, mt5.TIMEFRAME_H1)
+
+    if not mt5.symbol_select(symbol, True):
+        raise HTTPException(status_code=404, detail=f"Symbol {symbol} not found")
+
+    from datetime import datetime as dt
+    start_dt = dt.fromisoformat(start) if start else dt(2000, 1, 1)
+    end_dt = dt.fromisoformat(end) if end else dt.now()
+
+    rates = mt5.copy_rates_range(symbol, tf, start_dt, end_dt)
+    if rates is None or len(rates) == 0:
+        return {"success": True, "symbol": symbol, "timeframe": timeframe, "count": 0, "data": []}
+
+    import pandas as pd
+    df = pd.DataFrame(rates)
+    df['time'] = pd.to_datetime(df['time'], unit='s')
+
+    data = []
+    for _, row in df.iterrows():
+        data.append({
+            "time": row['time'].strftime('%Y-%m-%d %H:%M:%S'),
+            "open": row['open'],
+            "high": row['high'],
+            "low": row['low'],
+            "close": row['close'],
+            "tick_volume": row['tick_volume']
+        })
+
+    return {
+        "success": True,
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "count": len(data),
+        "data": data
+    }
+
+
 @app.get("/data/latest/{symbol}")
 async def get_latest_data(symbol: str, timeframe: str = "1h", count: int = 500, authorization: str = ""):
     verify_auth(authorization)
