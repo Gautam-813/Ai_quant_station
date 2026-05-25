@@ -66,3 +66,24 @@ async def init_db():
                     await conn.execute(text("DELETE FROM sqlite_sequence WHERE name='users'"))
             except Exception:
                 pass
+
+        # PostgreSQL-specific migration: convert TIMESTAMP to TIMESTAMPTZ
+        if not _is_sqlite:
+            try:
+                # Find all timestamp without time zone columns and convert them
+                result = await conn.execute(text("""
+                    SELECT table_name, column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND data_type = 'timestamp without time zone'
+                """))
+                rows = result.fetchall()
+                for table_name, column_name in rows:
+                    try:
+                        await conn.execute(text(
+                            f'ALTER TABLE "{table_name}" ALTER COLUMN "{column_name}" TYPE TIMESTAMP WITH TIME ZONE'
+                        ))
+                    except Exception:
+                        pass  # column might have been altered already
+            except Exception:
+                pass

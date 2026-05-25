@@ -13,8 +13,8 @@ class HistoricalBacktest(Base):
     error_message = Column(Text, nullable=True)
     
     symbol = Column(String, nullable=False)
-    start_date = Column(DateTime, nullable=False)
-    end_date = Column(DateTime, nullable=False)
+    start_date = Column(DateTime(timezone=True), nullable=False)
+    end_date = Column(DateTime(timezone=True), nullable=False)
     timeframe = Column(String, default="1m")
     mode = Column(String, nullable=False)
     prompt = Column(Text, nullable=True)
@@ -31,5 +31,5 @@ class HistoricalBacktest(Base):
     
     chat_history = Column(JSON, default=list)
     
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))

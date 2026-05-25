@@ -13,7 +13,7 @@ class ChatMemory(Base):
     content = Column(Text, nullable=False)
     detected_setup = Column(JSON, nullable=True)
     detected_action = Column(JSON, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
 
 
     __table_args__ = (
@@ -36,7 +36,7 @@ class GlobalInsights(Base):
     avg_take_profit = Column(Float, nullable=True)
     
     total_conversations = Column(Integer, default=0)
-    last_updated = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    last_updated = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class ModelUsage(Base):
@@ -51,7 +51,7 @@ class ModelUsage(Base):
     total_tokens = Column(Integer, default=0)
     total_cost = Column(Float, default=0.0)
     
-    last_used = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    last_used = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (
         UniqueConstraint("provider", "model", "user_id", name="uq_model_usage"),
@@ -72,8 +72,8 @@ class TradeRecord(Base):
     order_type = Column(String, default="market")
     status = Column(String, default="open")
     
-    executed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    closed_at = Column(DateTime, nullable=True)
+    executed_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    closed_at = Column(DateTime(timezone=True), nullable=True)
     exit_price = Column(Float, nullable=True)
     profit_loss = Column(Float, nullable=True)
     
@@ -96,7 +96,7 @@ class UserFeedback(Base):
     chat_memory_id = Column(Integer, ForeignKey("chat_memories.id", ondelete="SET NULL"), nullable=True)
     is_helpful = Column(Boolean, nullable=False)
     notes = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class CalculationHistory(Base):
@@ -109,7 +109,7 @@ class CalculationHistory(Base):
     period = Column(Integer, nullable=False)
     value = Column(Float, nullable=False)
     candle_count = Column(Integer, nullable=False)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (
         Index("ix_calc_history_user_symbol_indicator", "user_id", "symbol", "indicator"),
@@ -126,7 +126,7 @@ class IndicatorRequest(Base):
     indicator = Column(String, nullable=False)
     period = Column(Integer, nullable=True)
     request_count = Column(Integer, default=1)
-    last_requested = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    last_requested = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (
         UniqueConstraint("user_id", "symbol", "indicator", "period", name="uq_indicator_request"),
@@ -147,7 +147,7 @@ class UserPreferences(Base):
     
     theme = Column(String, default="dark")
 
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class AutopilotTrade(Base):
@@ -168,20 +168,20 @@ class AutopilotTrade(Base):
     order_type = Column(String, default="market")
 
     mt5_ticket = Column(BigInteger, nullable=True)
-    executed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    executed_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     execution_price = Column(Float, nullable=True)
     execution_status = Column(String, default="pending")
 
     result = Column(String, nullable=True)
     profit = Column(Float, nullable=True)
-    closed_at = Column(DateTime, nullable=True)
+    closed_at = Column(DateTime(timezone=True), nullable=True)
     duration_minutes = Column(Integer, nullable=True)
 
     reasoning = Column(Text, nullable=True)
     confidence = Column(Float, nullable=True)
     ai_response = Column(Text, nullable=True)
 
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (
         Index("ix_autopilot_trades_user_executed", "user_id", "executed_at"),
@@ -197,8 +197,8 @@ class UserPrompt(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     content = Column(Text, nullable=False)
     strategy_code = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class DefaultPromptStrategy(Base):
@@ -207,7 +207,7 @@ class DefaultPromptStrategy(Base):
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     prompt_number = Column(Integer, unique=True, nullable=False)
     strategy_code = Column(Text, nullable=False)
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class AutopilotSettings(Base):
@@ -236,7 +236,7 @@ class AutopilotSettings(Base):
 
     selected_prompts = Column(JSON, default=list)
 
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class RevokedToken(Base):
@@ -244,8 +244,8 @@ class RevokedToken(Base):
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     token_jti = Column(String, nullable=False, unique=True, index=True)
-    expires_at = Column(DateTime, nullable=False, index=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
 
 
 class PositionAudit(Base):
@@ -263,7 +263,7 @@ class PositionAudit(Base):
     new_tp = Column(Float, nullable=True)
     close_volume = Column(Float, nullable=True)
     close_price = Column(Float, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
 
     __table_args__ = (
         Index("ix_position_audits_user_created", "user_id", "created_at"),
