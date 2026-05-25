@@ -218,6 +218,15 @@ async def get_all_symbols(token: str = Depends(verify_mt5_token)):
     if not await _init_mt5():
         raise HTTPException(status_code=400, detail="MT5 not initialized")
 
+    if _is_using_connector():
+        try:
+            res = await connector_client.get_symbols()
+            all_symbols = res.get("symbols", [])
+            symbols = [MT5Symbol(**s) for s in all_symbols]
+            return MT5SymbolsResponse(count=len(symbols), symbols=symbols)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
     mt5 = _get_mt5()
     all_symbols = mt5.symbols_get()
     if not all_symbols:
