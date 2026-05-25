@@ -295,6 +295,15 @@ async def get_symbol_info(symbol: str, token: str = Depends(verify_mt5_token)):
     if not await _init_mt5():
         raise HTTPException(status_code=400, detail="MT5 not initialized")
 
+    if _is_using_connector():
+        try:
+            res = await connector_client.get_symbol(symbol)
+            return MT5Symbol(**res)
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
     mt5 = _get_mt5()
     info = mt5.symbol_info(symbol)
     if info is None:
@@ -327,6 +336,28 @@ async def fetch_data(
     """Fetch OHLC data."""
     if not await _init_mt5():
         raise HTTPException(status_code=400, detail="MT5 not initialized")
+
+    if _is_using_connector():
+        try:
+            res = await connector_client._request("GET", f"/data/range/{symbol}", params={
+                "timeframe": timeframe,
+                "start": start_date,
+                "end": end_date,
+            })
+            if res.get("success"):
+                raw_data = res.get("data", [])
+                ohlc_data = [OHLCData(**item) for item in raw_data]
+                await _cache_market_data(db, symbol, timeframe, ohlc_data, source="mt5_connector")
+                return DataResponse(
+                    success=True,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    rows=len(ohlc_data),
+                    data=ohlc_data
+                )
+            raise HTTPException(status_code=500, detail=res.get("error", "Failed to fetch data from connector"))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
 
     mt5 = _get_mt5()
 
