@@ -57,9 +57,14 @@ async def verify_mt5_token(
         payload = decode_token(credentials.credentials)
         if payload and payload.get("type") == "access":
             return {"auth_method": "jwt", "user": payload.get("sub")}
+        # Token present but invalid/expired → 401 so frontend can refresh
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token"
+        )
     
     raise HTTPException(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Missing authentication: provide x-mt5-token header or Authorization Bearer token"
     )
 
