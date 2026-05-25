@@ -481,10 +481,9 @@ async def get_account_info(token: str = Depends(verify_mt5_token)):
     if _is_using_connector():
         try:
             res = await connector_client.get_account()
-            if res.get("success"):
-                return AccountInfo(**res.get("data", {}))
-            else:
-                raise HTTPException(status_code=500, detail=res.get("error", "Failed to get account info from connector"))
+            if res and isinstance(res, dict):
+                return AccountInfo(**res)
+            raise HTTPException(status_code=500, detail="Empty response from connector")
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
@@ -520,19 +519,18 @@ async def get_positions(token: str = Depends(verify_mt5_token)):
         try:
             res = await connector_client.get_positions()
             if res.get("success"):
-                data = res.get("data", {})
-                positions_raw = data.get("positions", [])
+                positions_raw = res.get("positions", [])
                 position_list = [Position(**p) for p in positions_raw]
                 
                 return PositionsResponse(
                     success=True,
-                    balance=data.get("balance", 0.0),
-                    equity=data.get("equity", 0.0),
-                    margin=data.get("margin", 0.0),
-                    free_margin=data.get("free_margin", 0.0),
-                    margin_level=data.get("margin_level", 0.0),
+                    balance=res.get("balance", 0.0),
+                    equity=res.get("equity", 0.0),
+                    margin=res.get("margin", 0.0),
+                    free_margin=res.get("free_margin", 0.0),
+                    margin_level=res.get("margin_level", 0.0),
                     open_count=len(position_list),
-                    total_profit=data.get("total_profit", 0.0),
+                    total_profit=res.get("total_profit", 0.0),
                     positions=position_list
                 )
             else:
