@@ -51,7 +51,7 @@ interface AutopilotStatus {
   stats: {
     total_runs: number
     trades_executed: number
-    success_count: number
+    skipped_count: number
     error_count: number
     last_run: string | null
   }
@@ -369,10 +369,10 @@ export default function AutopilotPage() {
 
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Success</CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">Skipped</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-green-500">{status?.stats.success_count || 0}</div>
+            <div className="text-2xl font-bold text-yellow-500">{status?.stats.skipped_count || 0}</div>
           </CardContent>
         </Card>
 

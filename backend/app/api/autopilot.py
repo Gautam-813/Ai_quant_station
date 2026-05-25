@@ -21,7 +21,6 @@ from ..core.config import settings
 from ..core.security import get_current_user
 from ..core.database import AsyncSessionLocal
 from ..models.ai_memory import AutopilotTrade, AutopilotSettings, UserPrompt
-from .execute import run_python_code
 
 router = APIRouter(prefix="/autopilot", tags=["Autopilot"])
 
@@ -40,6 +39,7 @@ async def shutdown_http_client():
         _http_client = None
 
 _user_states: Dict[int, dict] = {}
+_user_locks: Dict[int, asyncio.Lock] = {}
 
 def _get_state(user_id: int) -> dict:
     if user_id not in _user_states:
@@ -48,10 +48,11 @@ def _get_state(user_id: int) -> dict:
             "running": False,
             "logs": [],
             "task": None,
+            "last_error_feedback": None,
             "stats": {
                 "total_runs": 0,
                 "trades_executed": 0,
-                "success_count": 0,
+                "skipped_count": 0,
                 "error_count": 0,
                 "last_run": None,
                 "daily_trade_count": 0,
@@ -69,7 +70,7 @@ def load_prompts():
     try:
         with open(PROMPT_FILE, "r", encoding="utf-8") as f:
             return [line.strip() for line in f.readlines() if line.strip() and "." in line]
-    except:
+    except Exception:
         return []
 
 
@@ -125,7 +126,7 @@ def detect_trade_setup(text: str) -> Optional[dict]:
             data = json.loads(block)
             if isinstance(data, dict) and data.get("action") == "TRADE_SETUP":
                 return data
-        except:
+        except Exception:
             pass
     return None
 
@@ -141,9 +142,22 @@ async def get_market_data(user_id: int, symbol: str, timeframe: str = "1m", coun
     return None
 
 
+def _build_order_action(direction: str, order_type: str) -> str:
+    """Build MT5 action string from direction and order type."""
+    d = direction.upper()
+    ot = (order_type or "market").lower()
+    if ot == "market":
+        return d  # "BUY" or "SELL"
+    if ot == "limit":
+        return f"{d}_LIMIT"  # "BUY_LIMIT" or "SELL_LIMIT"
+    if ot == "stop":
+        return f"{d}_STOP"  # "BUY_STOP" or "SELL_STOP"
+    return d
+
+
 async def execute_trade(user_id: int, symbol: str, direction: str, volume: float, entry_price: float = None,
                        sl: float = None, tp: float = None, comment: str = "[AUTOPILOT]", prompt_num: int = None,
-                       connector_url: str = None):
+                       connector_url: str = None, order_type: str = "market"):
     try:
         connector_url = (connector_url or settings.MT5_CONNECTOR_URL or "").strip() or None
         if prompt_num:
@@ -151,7 +165,8 @@ async def execute_trade(user_id: int, symbol: str, direction: str, volume: float
         else:
             trade_comment = comment
 
-        action = direction.upper()
+        action = _build_order_action(direction, order_type)
+        is_pending = order_type.lower() in ("limit", "stop")
 
         # Fetch symbol info for min stop distance + current price
         price = None
@@ -165,38 +180,45 @@ async def execute_trade(user_id: int, symbol: str, direction: str, volume: float
             if stops_level is not None and point:
                 min_dist = max(stops_level, 10) * point
             digits = sym_data.get("digits")
-        except:
-            pass
+        except Exception as e:
+            add_log(user_id, f"Could not fetch symbol info for {symbol}: {str(e)}", "ERROR")
+
+        # Reference price for stop distance checks (current market for pending orders too)
+        ref_price = price or entry_price
 
         # Apply minimum stop distance safeguard to SL
-        if sl and sl > 0 and min_dist and price and digits:
+        if sl and sl > 0 and min_dist and ref_price and digits:
             sl = round(sl, digits)
-            if action == "BUY":
-                if sl >= price - min_dist:
-                    adjusted = round(price - min_dist, digits)
+            is_buy = direction.upper() == "BUY"
+            if is_buy:
+                if sl >= ref_price - min_dist:
+                    adjusted = round(ref_price - min_dist, digits)
                     add_log(user_id, f"SL {sl} too close, adjusted to {adjusted}", "WARNING")
                     sl = adjusted
             else:
-                if sl <= price + min_dist:
-                    adjusted = round(price + min_dist, digits)
+                if sl <= ref_price + min_dist:
+                    adjusted = round(ref_price + min_dist, digits)
                     add_log(user_id, f"SL {sl} too close, adjusted to {adjusted}", "WARNING")
                     sl = adjusted
 
         # Minimum stop distance safeguard to TP
-        if tp and tp > 0 and min_dist and price and digits:
+        if tp and tp > 0 and min_dist and ref_price and digits:
             tp = round(tp, digits)
-            if action == "BUY":
-                if tp <= price + min_dist:
-                    adjusted = round(price + min_dist, digits)
+            is_buy = direction.upper() == "BUY"
+            if is_buy:
+                if tp <= ref_price + min_dist:
+                    adjusted = round(ref_price + min_dist, digits)
                     add_log(user_id, f"TP {tp} too close, adjusted to {adjusted}", "WARNING")
                     tp = adjusted
             else:
-                if tp >= price - min_dist:
-                    adjusted = round(price - min_dist, digits)
+                if tp >= ref_price - min_dist:
+                    adjusted = round(ref_price - min_dist, digits)
                     add_log(user_id, f"TP {tp} too close, adjusted to {adjusted}", "WARNING")
                     tp = adjusted
 
         payload = {"symbol": symbol, "action": action, "volume": volume, "comment": trade_comment}
+        if is_pending:
+            payload["price"] = entry_price
         if sl and sl > 0:
             payload["sl"] = sl
         if tp and tp > 0:
@@ -217,8 +239,9 @@ async def check_open_positions(connector_url: str = None):
         data = await async_request("GET", f"{connector_url}/positions")
         if data.get("success"):
             return data.get("positions", [])
-    except:
-        pass
+    except Exception as e:
+        import traceback as _tb
+        add_log(0, f"check_open_positions error: {e}\n{_tb.format_exc()}", "ERROR")
     return []
 
 
@@ -259,7 +282,7 @@ async def run_autopilot_cycle(user_id: int):
             p_num = int(line.split(".")[0].strip())
             if not selected_ids or p_num in selected_ids:
                 prompt_pool.append({"id": p_num, "text": line.split(".", 1)[1].strip(), "is_custom": False})
-        except:
+        except Exception:
             continue
 
     for p in personal_prompts:
@@ -298,6 +321,7 @@ async def run_autopilot_cycle(user_id: int):
 
     if state["stats"]["daily_trade_count"] >= max_trades:
         add_log(user_id, f"Daily trade limit ({max_trades}) reached. Skipping.", "WARNING")
+        state["stats"]["skipped_count"] += 1
         return
 
     chosen = random.choice(prompt_pool)
@@ -323,23 +347,40 @@ async def run_autopilot_cycle(user_id: int):
     for c in market_data[-20:]:
         samples.append(f"O:{c.get('open', 0):.2f} H:{c.get('high', 0):.2f} L:{c.get('low', 0):.2f} C:{c.get('close', 0):.2f}")
 
+    error_feedback = state.get("last_error_feedback")
+    error_section = ""
+    if error_feedback:
+        error_section = f"""
+PREVIOUS TRADE ERROR FEEDBACK (learn from this):
+{error_feedback}
+- Adjust your stop loss / take profit levels to be further from entry price.
+- Ensure sufficient distance for broker minimum stop requirements.
+- Do NOT repeat the same mistake.
+"""
+
     system_prompt = f"""You are a Lead Quant in 2026. Analyze market data and find trade opportunities.
 
 CURRENT MARKET DATA for {symbol}:
 - Latest: O:{latest.get('open', 0):.2f} H:{latest.get('high', 0):.2f} L:{latest.get('low', 0):.2f} C:{latest.get('close', 0):.2f}
 
 SAMPLES (Last 20 candles): {', '.join(samples)}
+{error_section}
+ORDER TYPES:
+- "market" — execute immediately at current price (for entry_price use null or current price)
+- "limit" — pending order at a BETTER price (BUY_LIMIT below market, SELL_LIMIT above market). Set entry_price to desired level.
+- "stop" — pending order at a WORSE/breakout price (BUY_STOP above market, SELL_STOP below market). Set entry_price to trigger level.
 
 RULES:
 1. Analyze the data and if a high-confidence trade setup exists (>=60% confidence), output a JSON block:
 
 ```json
-{{"action": "TRADE_SETUP", "symbol": "{symbol}", "direction": "BUY", "entry_price": 2345.50, "stop_loss": 2338.00, "take_profit": 2360.00, "lot_size": {lot_size}, "risk_reward": 1.93, "reasoning": "Brief explanation", "confidence": 75}}
+{{"action": "TRADE_SETUP", "symbol": "{symbol}", "direction": "BUY", "order_type": "market", "entry_price": 2345.50, "stop_loss": 2338.00, "take_profit": 2360.00, "lot_size": {lot_size}, "risk_reward": 1.93, "reasoning": "Brief explanation", "confidence": 75}}
 ```
 
 2. If NO clear setup, respond with "NO_SETUP" only
-3. Always consider risk-reward ratio (1:2 or better)
-4. Consider technical indicators (RSI, MACD, moving averages) if helpful
+3. Choose the right order_type for market conditions (limit for pullbacks, stop for breakouts, market for strong momentum)
+4. Always consider risk-reward ratio (1:2 or better)
+5. Consider technical indicators (RSI, MACD, moving averages) if helpful
 """
 
     api_key = _get_api_key(provider, settings)
@@ -374,6 +415,7 @@ RULES:
             break
         if "NO_SETUP" in ai_response:
             add_log(user_id, "AI Response: NO_SETUP - No trade opportunity found", "WARNING")
+            state["stats"]["skipped_count"] += 1
             return
         add_log(user_id, f"Attempt {attempt+1}: No valid trade setup. Retrying...", "WARNING")
         try:
@@ -395,9 +437,11 @@ RULES:
 
     if not setup:
         add_log(user_id, "Failed to get valid setup after retries", "ERROR")
+        state["stats"]["skipped_count"] += 1
         return
 
     direction = setup.get("direction", "BUY").upper()
+    order_type = setup.get("order_type", "market").lower()
     entry_price = setup.get("entry_price")
     sl = setup.get("stop_loss")
     tp = setup.get("take_profit")
@@ -405,22 +449,22 @@ RULES:
     reasoning = setup.get("reasoning", "")
     confidence = setup.get("confidence", 70)
 
-    add_log(user_id, f"TRADE SETUP - {direction} | Entry: {entry_price} SL: {sl} TP: {tp} Lot: {lot} Confidence: {confidence}%")
+    add_log(user_id, f"TRADE SETUP - {direction} ({order_type}) | Entry: {entry_price} SL: {sl} TP: {tp} Lot: {lot} Confidence: {confidence}%")
 
-    result = await execute_trade(user_id, symbol, direction, lot, entry_price, sl, tp, prompt_num=prompt_num, connector_url=connector_url)
+    result = await execute_trade(user_id, symbol, direction, lot, entry_price, sl, tp, prompt_num=prompt_num, connector_url=connector_url, order_type=order_type)
 
     if result.get("success"):
+        state["last_error_feedback"] = None  # Clear any previous error feedback
         ticket = result.get("ticket")
         exec_price = result.get("price")
         add_log(user_id, f"Trade executed - Ticket #{ticket} Price: {exec_price}", "SUCCESS")
         state["stats"]["trades_executed"] += 1
-        state["stats"]["success_count"] += 1
         state["stats"]["daily_trade_count"] += 1
 
         async with AsyncSessionLocal() as db:
             trade = AutopilotTrade(
                 user_id=user_id, prompt_number=prompt_num, prompt_text=prompt_text,
-                symbol=symbol, direction=direction, entry_price=entry_price,
+                symbol=symbol, direction=direction, order_type=order_type, entry_price=entry_price,
                 stop_loss=sl, take_profit=tp, lot_size=lot,
                 mt5_ticket=ticket, execution_price=exec_price, execution_status="executed",
                 reasoning=reasoning, confidence=confidence, ai_response=ai_response[:1000]
@@ -428,7 +472,12 @@ RULES:
             db.add(trade)
             await db.commit()
     else:
-        add_log(user_id, f"Trade failed: {result.get('error')}", "ERROR")
+        error_msg = result.get('error', 'Unknown error')
+        add_log(user_id, f"Trade failed: {error_msg}", "ERROR")
+        state["last_error_feedback"] = (
+            f"OrderType={order_type}, Direction={direction}, Entry={entry_price}, SL={sl}, TP={tp}, Lot={lot}. "
+            f"Error: {error_msg}"
+        )
         state["stats"]["error_count"] += 1
 
 
@@ -504,28 +553,33 @@ async def sync_trade_results(user_id: int, connector_url: str = None):
 
 async def autopilot_loop(user_id: int):
     state = _get_state(user_id)
-    while state["enabled"]:
-        if state["running"]:
-            state["stats"]["daily_pnl"] = state["stats"].get("daily_pnl", 0)
-            max_loss = 0
+    try:
+        while state["enabled"]:
+            if state["running"]:
+                state["stats"]["daily_pnl"] = state["stats"].get("daily_pnl", 0)
+                max_loss = 0
+                async with AsyncSessionLocal() as db:
+                    result = await db.execute(select(AutopilotSettings).where(AutopilotSettings.user_id == user_id))
+                    s = result.scalar_one_or_none()
+                    if s:
+                        max_loss = s.max_daily_loss
+                if state["stats"]["daily_pnl"] <= max_loss:
+                    add_log(user_id, f"Daily loss limit (${max_loss}) reached. Stopping.", "WARNING")
+                    state["running"] = False
+                    continue
+                await sync_trade_results(user_id)
+                await run_autopilot_cycle(user_id)
+
             async with AsyncSessionLocal() as db:
                 result = await db.execute(select(AutopilotSettings).where(AutopilotSettings.user_id == user_id))
                 s = result.scalar_one_or_none()
-                if s:
-                    max_loss = s.max_daily_loss
-            if state["stats"]["daily_pnl"] <= max_loss:
-                add_log(user_id, f"Daily loss limit (${max_loss}) reached. Stopping.", "WARNING")
-                state["running"] = False
-                continue
-            await sync_trade_results(user_id)
-            await run_autopilot_cycle(user_id)
-
-        async with AsyncSessionLocal() as db:
-            result = await db.execute(select(AutopilotSettings).where(AutopilotSettings.user_id == user_id))
-            s = result.scalar_one_or_none()
-            interval = s.interval_seconds if s else 300
-
-        await asyncio.sleep(interval)
+                interval = s.interval_seconds if s else 300
+            # Only sleep if we're still enabled — skip sleep if stop was requested mid-cycle
+            if not state["enabled"]:
+                break
+            await asyncio.sleep(interval)
+    except asyncio.CancelledError:
+        add_log(user_id, "Autopilot loop cancelled.", "INFO")
 
 
 # Pydantic models
@@ -555,7 +609,7 @@ class AutopilotStatus(BaseModel):
 class AutopilotStats(BaseModel):
     total_runs: int
     trades_executed: int
-    success_count: int
+    skipped_count: int
     error_count: int
     last_run: Optional[str] = None
 
@@ -610,6 +664,26 @@ class PromptStatsItem(BaseModel):
     avg_profit: float
 
 
+# ── Internal helper: start autopilot without HTTP auth ────────────────────
+async def _start_autopilot_internal(user_id: int) -> bool:
+    """Start autopilot for a given user_id. Used for auto-restart on server boot."""
+    state = _get_state(user_id)
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(AutopilotSettings).where(AutopilotSettings.user_id == user_id))
+        settings_obj = result.scalar_one_or_none()
+        if not settings_obj or not settings_obj.enabled:
+            return False
+    if user_id not in _user_locks:
+        _user_locks[user_id] = asyncio.Lock()
+    async with _user_locks[user_id]:
+        state["enabled"] = True
+        state["running"] = True
+        if state["task"] is None or state["task"].done():
+            state["task"] = asyncio.create_task(autopilot_loop(user_id))
+    add_log(user_id, "Autopilot auto-restarted after server boot")
+    return True
+
+
 # Endpoints
 @router.post("/start")
 async def start_autopilot(current_user: dict = Depends(get_current_user)):
@@ -627,10 +701,14 @@ async def start_autopilot(current_user: dict = Depends(get_current_user)):
             settings_obj.enabled = True
             await db.commit()
 
-    state["enabled"] = True
-    state["running"] = True
-    if state["task"] is None or state["task"].done():
-        state["task"] = asyncio.create_task(autopilot_loop(user_id))
+    if user_id not in _user_locks:
+        _user_locks[user_id] = asyncio.Lock()
+
+    async with _user_locks[user_id]:
+        state["enabled"] = True
+        state["running"] = True
+        if state["task"] is None or state["task"].done():
+            state["task"] = asyncio.create_task(autopilot_loop(user_id))
 
     add_log(user_id, "Autopilot STARTED")
     return {"success": True, "message": "Autopilot started"}
@@ -648,6 +726,15 @@ async def stop_autopilot(current_user: dict = Depends(get_current_user)):
             await db.commit()
     state["enabled"] = False
     state["running"] = False
+    # Cancel the background asyncio task so it cleanly exits the loop
+    existing_task = state.get("task")
+    if existing_task and not existing_task.done():
+        existing_task.cancel()
+        try:
+            await existing_task
+        except asyncio.CancelledError:
+            pass
+    state["task"] = None
     add_log(user_id, "Autopilot STOPPED")
     return {"success": True, "message": "Autopilot stopped"}
 
@@ -772,7 +859,7 @@ async def get_prompts(current_user: dict = Depends(get_current_user)):
                 text=parts[1].strip(),
                 is_custom=False
             ))
-        except:
+        except Exception:
             continue
             
     # 2. Load personal from DB

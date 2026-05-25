@@ -1,11 +1,48 @@
 from fastapi import APIRouter, Depends, HTTPException
 from typing import Optional
+import re
+import logging
 import yfinance as yf
 from datetime import datetime, timedelta
 
+logger = logging.getLogger(__name__)
 from ..core.security import get_current_user
 
 router = APIRouter(prefix="/data", tags=["Market Data"])
+
+# Yahoo Finance symbol allowlist — blocks path-traversal, file://, etc.
+_SYMBOL_RE = re.compile(r'^[A-Za-z0-9._^=-]+$')
+
+_VALIDATED_SYMBOLS: set[str] | None = None
+
+
+def _get_valid_symbols() -> set[str]:
+    global _VALIDATED_SYMBOLS
+    if _VALIDATED_SYMBOLS is not None:
+        return _VALIDATED_SYMBOLS
+    try:
+        raw = ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "USDCHF=X",
+               "AUDUSD=X", "USDCAD=X", "NZDUSD=X", "EURGBP=X", "EURJPY=X", "GBPJPY=X",
+               "BTC-USD", "ETH-USD", "XRP-USD", "SOL-USD",
+               "DOGE-USD", "ADA-USD", "AVAX-USD", "DOT-USD",
+               "MATIC-USD", "LINK-USD", "UNI-USD", "ATOM-USD",
+               "^GSPC", "^DJI", "^IXIC", "^RUT", "^VIX", "^FTSE", "^GDAXI", "^N225", "^HSI",
+               "XAUUSD=X", "XAGUSD=X", "US30=X", "SPX500=X", "NAS100=X", "DAX40=X"]
+        _VALIDATED_SYMBOLS = set(raw)
+    except Exception:
+        _VALIDATED_SYMBOLS = set()
+    return _VALIDATED_SYMBOLS
+
+
+def _validate_symbol(symbol: str) -> str:
+    """Reject unsafe symbols (path traversal, local files, SSRF attempts)."""
+    if not _SYMBOL_RE.match(symbol):
+        raise HTTPException(status_code=400, detail=f"Invalid symbol format: '{symbol}'")
+    return symbol
+
+
+def _get_available_symbols() -> set[str]:
+    return _get_valid_symbols()
 
 
 @router.get("/yahoo/symbols")
@@ -125,8 +162,8 @@ async def get_forex_pairs(
                 "change": info.get('regularMarketChange'),
                 "change_percent": info.get('regularMarketChangePercent')
             })
-        except:
-            pass
+        except Exception:
+            logger.warning(f"Failed to fetch forex pair {pair}")
     
     return {
         "success": True,
@@ -156,8 +193,8 @@ async def get_crypto_pairs(
                 "change": info.get('regularMarketChange'),
                 "change_percent": info.get('regularMarketChangePercent')
             })
-        except:
-            pass
+        except Exception:
+            logger.warning(f"Failed to fetch crypto pair {pair}")
     
     return {
         "success": True,

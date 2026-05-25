@@ -22,6 +22,36 @@ from openai import AsyncOpenAI
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/historical-lab", tags=["Historical Lab"])
 
+# ── DataFrame cache for chat follow-ups ────────────────────────────────────
+# Cache key: backtest_id, Value: (timestamp, DataFrame with indicators)
+# TTL: 5 minutes after last access
+_df_cache: dict[int, tuple[float, pd.DataFrame]] = {}
+_DF_CACHE_TTL = 300  # seconds
+
+
+def _get_cached_df(backtest_id: int, symbol: str, start: str, end: str, timeframe: str) -> pd.DataFrame:
+    """Return cached DataFrame if fresh, otherwise load and cache it."""
+    import time as _time
+    now = _time.monotonic()
+    if backtest_id in _df_cache:
+        ts, df = _df_cache[backtest_id]
+        if now - ts < _DF_CACHE_TTL:
+            return df
+    df = load_data(symbol, start, end, timeframe)
+    if df is not None:
+        df = add_indicators(df)
+        _df_cache[backtest_id] = (_time.monotonic(), df)
+    return df
+
+
+def _prune_df_cache():
+    """Remove expired entries from the DataFrame cache."""
+    import time as _time
+    now = _time.monotonic()
+    expired = [k for k, v in _df_cache.items() if now - v[0] > _DF_CACHE_TTL]
+    for k in expired:
+        _df_cache.pop(k, None)
+
 # ─────────────────────────────────────────────
 # Request/Response Models
 # ─────────────────────────────────────────────
@@ -65,11 +95,14 @@ class ChatMessageRequest(BaseModel):
 # Utility & AI Helpers
 # ─────────────────────────────────────────────
 
-async def _generate_signals_from_prompt(df: pd.DataFrame, prompt: str, symbol: str, provider: str = "nvidia", model: str = "qwen/qwen3.5-122b-a10b"):
-    """Use AI to generate a signal column (1, -1, 0) based on natural language strategy."""
+async def _generate_signals_from_prompt(df: pd.DataFrame, prompt: str, symbol: str, provider: str = "nvidia", model: str = "qwen/qwen3.5-122b-a10b", user_id: int = 0):
+    """Use AI to generate a signal column (1, -1, 0) based on natural language strategy.
+    
+    Returns (df_with_signals, generated_code)."""
+    generated_code = ""
     if not prompt:
         df["signal"] = 0
-        return df
+        return df, generated_code
         
     system_prompt = f"""You are a Strategy Developer. Given a dataset 'df' for {symbol} and a strategy description, write Python code to:
 1. Calculate necessary indicators.
@@ -92,16 +125,15 @@ ONLY output the Python code block. No explanation."""
         python_match = re.search(r"```python\s*(.*?)(?:```|$)", code, re.S)
         if python_match:
             code_clean = python_match.group(1)
-            # Execute in a safe environment
+            generated_code = code_clean
+            # Execute in safe sandbox — inject DataFrame directly to avoid serialization
             from .execute import run_python_code
-            res = await run_python_code(code_clean, df.to_dict('records'), symbol)
+            res = await run_python_code(code_clean, symbol=symbol, inject_df=df.copy(), user_id=user_id)
             
             if res.get("success") and res.get("modified_data"):
-                # Convert modified records back to DataFrame
                 df_mod = pd.DataFrame(res["modified_data"])
                 if "signal" in df_mod.columns:
-                    # Ensure same index and merge signal
-                    df["signal"] = df_mod["signal"].values
+                    df["signal"] = df_mod["signal"].reindex(df.index).fillna(0)
                     logger.info(f"Successfully integrated AI signals for {symbol}")
                 else:
                     logger.warning("AI code executed but no 'signal' column found.")
@@ -110,7 +142,7 @@ ONLY output the Python code block. No explanation."""
     except Exception as e:
         logger.error(f"Signal generation error: {e}")
     
-    return df
+    return df, generated_code
 
 async def _get_ai_client(provider: str = "nvidia"):
     from ..core.providers import PROVIDERS, get_api_key, get_base_url
@@ -143,7 +175,7 @@ def _generate_initial_report(mode: str, symbol: str, start: str, end: str,
 # Background Task Engine
 # ─────────────────────────────────────────────
 
-async def run_backtest_task(backtest_id: int, request_data: dict):
+async def run_backtest_task(backtest_id: int, request_data: dict, user_id: int = 0):
     """Heavy mathematical processing runs here in the background."""
     async with AsyncSessionLocal() as db:
         try:
@@ -162,13 +194,18 @@ async def run_backtest_task(backtest_id: int, request_data: dict):
                 
             df = add_indicators(df)
             
+            # Seed the DataFrame cache so chat follow-ups don't reload from disk
+            import time as _time
+            _df_cache[backtest_id] = (_time.monotonic(), df.copy())
+            
             equity_curve = None
             metrics = None
             analysis = None
             
             if record.mode == "backtest":
                 # AI-driven strategy translation
-                df = await _generate_signals_from_prompt(df, record.prompt or "", record.symbol)
+                df, generated_code = await _generate_signals_from_prompt(df, record.prompt or "", record.symbol, user_id=user_id)
+                record.generated_code = generated_code
                 
                 engine = BacktestEngine(
                     initial_capital=record.initial_capital,
@@ -242,7 +279,7 @@ async def run_lab(
     await db.commit()
     await db.refresh(backtest_record)
     
-    background_tasks.add_task(run_backtest_task, backtest_record.id, request.model_dump())
+    background_tasks.add_task(run_backtest_task, backtest_record.id, request.model_dump(), current_user["id"])
     
     return {"id": backtest_record.id, "status": "pending"}
 
@@ -293,6 +330,9 @@ async def chat_followup(
     
     if not record or record.status != "completed":
         raise HTTPException(status_code=400, detail="Backtest not ready for chat.")
+    
+    # Prune stale cache entries before using cache
+    _prune_df_cache()
     
     # Build Context
     context = f"Context: Market {record.symbol} from {record.start_date.date()} to {record.end_date.date()} on {record.timeframe} timeframe. "
@@ -349,13 +389,11 @@ Be precise, professional, and mathematically rigorous."""
             
             if python_match:
                 from .execute import run_python_code
-                from ..core.historical_loader import load_data, add_indicators
                 
-                df = load_data(record.symbol, record.start_date.strftime('%Y-%m-%d'), record.end_date.strftime('%Y-%m-%d'), record.timeframe)
+                df = _get_cached_df(request.backtest_id, record.symbol, record.start_date.strftime('%Y-%m-%d'), record.end_date.strftime('%Y-%m-%d'), record.timeframe)
                 if df is not None:
-                    df = add_indicators(df)
                     code = python_match.group(1)
-                    execution_results = await run_python_code(code, df.to_dict('records'), record.symbol)
+                    execution_results = await run_python_code(code, symbol=record.symbol, inject_df=df.copy(), user_id=current_user["id"])
 
                     # Self-correction: if code failed, ask AI to fix it
                     if not execution_results.get("success"):
@@ -375,7 +413,7 @@ Be precise, professional, and mathematically rigorous."""
                             ai_content = response.choices[0].message.content or ""
                             new_match = re.search(r"```python\s*(.*?)(?:```|$)", ai_content, re.S)
                             if new_match:
-                                execution_results = await run_python_code(new_match.group(1), df.to_dict('records'), record.symbol)
+                                execution_results = await run_python_code(new_match.group(1), symbol=record.symbol, inject_df=df.copy(), user_id=current_user["id"])
                         except Exception as ce:
                             logger.error(f"Self-correction failed: {ce}")
 

@@ -7,11 +7,28 @@ env_file_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__f
 
 
 class Settings(BaseSettings):
-    # JWT Settings
+    # ── Environment ──────────────────────────────────────────────────────────
+    # Set APP_ENV=production when deploying. Defaults to "development".
+    APP_ENV: str = "development"
+
+    @property
+    def is_production(self) -> bool:
+        return self.APP_ENV.lower() == "production"
+
+    # ── JWT Settings ─────────────────────────────────────────────────────────
     SECRET_KEY: str = ""
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+
+    # ── Validate SECRET_KEY is set ───────────────────────────────────────────
+    def validate_secret_key(self) -> None:
+        """Raise ValueError if SECRET_KEY is not set in production."""
+        if self.is_production and not self.SECRET_KEY:
+            raise ValueError(
+                "SECRET_KEY must be explicitly set in .env when APP_ENV=production. "
+                "Randomly generated keys are lost on restart and invalidate all active sessions."
+            )
 
     # MT5 Settings
     MT5_SERVER_PORT: int = 5001
@@ -44,6 +61,13 @@ class Settings(BaseSettings):
 
     # Database
     DATABASE_URL: str = "sqlite+aiosqlite:///./finance_engine.db"
+    DATABASE_URL_SYNC: str | None = None  # auto-derived from DATABASE_URL if not set
+
+    @property
+    def database_url_sync(self) -> str:
+        if self.DATABASE_URL_SYNC:
+            return self.DATABASE_URL_SYNC
+        return str(settings.DATABASE_URL).replace("+aiosqlite", "").replace("+asyncpg", "")
 
     # MT5 broker UTC offset (brokers often return timestamps in local time)
     # Examples: UTC+2 = 2, UTC+3 = 3, UTC = 0. Set to 0 if your broker returns UTC.
@@ -62,11 +86,12 @@ class Settings(BaseSettings):
 
     @property
     def effective_secret_key(self) -> str:
-        if self.SECRET_KEY:
-            return self.SECRET_KEY
-        key = secrets.token_hex(32)
-        print("WARNING: SECRET_KEY not set in .env. Generated a temporary key. Set SECRET_KEY in .env for persistence.")
-        return key
+        """Return SECRET_KEY — validated by validate_secret_key() at startup."""
+        if not self.SECRET_KEY:
+            # Development fallback — will be caught by validate_secret_key() in prod
+            import secrets as _secrets
+            return _secrets.token_hex(32)
+        return self.SECRET_KEY
 
     class Config:
         env_file = env_file_path

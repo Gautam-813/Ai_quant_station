@@ -4,6 +4,7 @@ import ta
 import numpy as np
 import json
 import re
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
@@ -11,6 +12,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import select, update
 from openai import AsyncOpenAI
 from pathlib import Path
+import logging
 
 from ..core.config import settings
 from ..core.security import get_current_user
@@ -22,6 +24,7 @@ from ..models.historical_lab import HistoricalBacktest
 router = APIRouter(prefix="/backtest", tags=["Backtest"])
 
 PARQUET_DIR = Path(__file__).parent.parent.parent.parent / "data_archive" / "parquet_storage"
+PROMPT_FILE = str(Path(__file__).resolve().parent.parent.parent.parent / "backend" / "prompt_list.txt")
 
 CONTRACT_MULTIPLIERS = {
     'XAUUSD': 100, 'XAGUSD': 5000, 'EURUSD': 100000, 'GBPUSD': 100000,
@@ -63,13 +66,27 @@ async def generate_strategy_code(prompt_text: str, provider: str = "nvidia", mod
     # Build context from previous runs
     improvement_context = ""
     if previous_results:
-        best = max(previous_results, key=lambda r: r.get("total_return", -999))
-        worst = min(previous_results, key=lambda r: r.get("total_return", 999))
+        def _get_metric(m: dict, *keys):
+            for k in keys:
+                v = m.get(k)
+                if v is not None:
+                    return v
+            return None
+
+        best = max(previous_results, key=lambda r: _get_metric(r, "total_return", "total_return_pct") or -999)
+        worst = min(previous_results, key=lambda r: _get_metric(r, "total_return", "total_return_pct") or 999)
+
+        def _fmt(m):
+            return (
+                f"{_get_metric(m, 'total_return', 'total_return_pct') or 'N/A'}% return, "
+                f"{_get_metric(m, 'win_rate', 'win_rate_pct') or 'N/A'}% win rate, "
+                f"{_get_metric(m, 'max_drawdown', 'max_drawdown_pct') or 'N/A'}% max drawdown"
+            )
         improvement_context = f"""
 PREVIOUS RESULTS for this strategy:
 - Total runs: {len(previous_results)}
-- Best result: {best.get('total_return', 'N/A')}% return, {best.get('win_rate', 'N/A')}% win rate, {best.get('max_drawdown', 'N/A')}% max drawdown
-- Worst result: {worst.get('total_return', 'N/A')}% return, {worst.get('win_rate', 'N/A')}% win rate, {worst.get('max_drawdown', 'N/A')}% max drawdown
+- Best result: {_fmt(best)}
+- Worst result: {_fmt(worst)}
 
 OBJECTIVE: Generate an IMPROVED version that outperforms the previous best result. Try different parameters, add filters, or combine indicators to increase return while reducing drawdown.
 """
@@ -154,7 +171,9 @@ def run_vectorized_backtest(df, strategy_code, lot_size=0.01, contract_multiplie
             import sklearn
             _extra_libs["scipy"] = scipy
             _extra_libs["sklearn"] = sklearn
-        except: pass
+        except Exception:
+            import traceback as _tb
+            print(f"[backtest] Optional libs unavailable: {_tb.format_exc()}")
         exec_globals = {"__builtins__": safe_builtins, "pd": pd, "np": np, "ta": ta, **_extra_libs}
         exec(strategy_code, exec_globals)
         calculate_signals = exec_globals.get('calculate_signals')
@@ -162,9 +181,21 @@ def run_vectorized_backtest(df, strategy_code, lot_size=0.01, contract_multiplie
         if not calculate_signals:
             return {"error": "Function calculate_signals not found in generated code"}
 
+        import pandas as pd
+        if not callable(calculate_signals):
+            return {"error": f"calculate_signals is not callable (got {type(calculate_signals).__name__})"}
+
         # 2. Get signals
+        try:
+            signal = calculate_signals(df.copy())
+        except Exception as sig_err:
+            return {"error": f"calculate_signals() raised on execution:\n{traceback.format_exc()}"}
+
+        if not isinstance(signal, pd.Series):
+            return {"error": f"calculate_signals() must return a pandas Series, got {type(signal).__name__}"}
+
         df = df.copy()
-        df['signal'] = calculate_signals(df)
+        df['signal'] = signal
 
         # 3. Vectorized P&L
         df['returns'] = np.log(df['close'] / df['close'].shift(1))
@@ -178,7 +209,10 @@ def run_vectorized_backtest(df, strategy_code, lot_size=0.01, contract_multiplie
 
         trades = []
         for group_id, group in df[position != 0].groupby('_pos_group'):
-            direction = 'BUY' if group['signal'].iloc[0] == 1 else 'SELL'
+            first_signal = int(group['signal'].iloc[0])
+            if first_signal not in (1, -1):
+                continue  # skip signal=0 transitions
+            direction = 'BUY' if first_signal == 1 else 'SELL'
             entry_idx = group.index[0]
             exit_idx = group.index[-1]
 
@@ -255,14 +289,14 @@ async def run_backtest(request: BacktestRequest, current_user: dict = Depends(ge
             p_num = int(request.prompt_id)
             # Try to get prompt text from file
             try:
-                prompt_file = str(Path(__file__).resolve().parent.parent.parent.parent / "backend" / "prompt_list.txt")
-                with open(prompt_file, "r", encoding="utf-8") as f:
+                with open(PROMPT_FILE, "r", encoding="utf-8") as f:
                     lines = f.readlines()
                     for line in lines:
                         if line.startswith(f"{p_num}."):
                             prompt_text = line.split(".", 1)[1].strip()
                             break
-            except: pass
+            except Exception:
+                pass
             
             # Check default strategy cache
             result = await db.execute(select(DefaultPromptStrategy).where(DefaultPromptStrategy.prompt_number == p_num))
@@ -346,8 +380,15 @@ async def run_backtest(request: BacktestRequest, current_user: dict = Depends(ge
     lot_size = request.lot_size or 0.01
     contract_multiplier = CONTRACT_MULTIPLIERS.get(request.symbol, 100)
 
+    loop = asyncio.get_event_loop()
     for attempt in range(max_retries):
-        result = run_vectorized_backtest(full_df, strategy_code, lot_size, contract_multiplier)
+        try:
+            result = await asyncio.wait_for(
+                loop.run_in_executor(None, run_vectorized_backtest, full_df, strategy_code, lot_size, contract_multiplier),
+                timeout=30.0
+            )
+        except asyncio.TimeoutError:
+            result = {"error": "Code execution timed out (30s limit). Simplify the strategy logic."}
         
         if "error" not in result:
             # Success! Break loop
@@ -372,7 +413,8 @@ async def run_backtest(request: BacktestRequest, current_user: dict = Depends(ge
                 else:
                     await db.execute(update(DefaultPromptStrategy).where(DefaultPromptStrategy.prompt_number == int(request.prompt_id)).values(strategy_code=strategy_code))
                 await db.commit()
-        except:
+        except Exception:
+            logging.getLogger("backtest").error("AI retry generation failed", exc_info=True)
             # If AI generation fails during retry, stop
             break
     

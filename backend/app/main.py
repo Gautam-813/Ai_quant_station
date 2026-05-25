@@ -3,14 +3,54 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import os
+import logging
+import logging.config
+import json
 from pathlib import Path
 
 from .core.config import settings
 from .core.database import AsyncSessionLocal
 from .core.security import get_password_hash
+from .core.blacklist import init_blacklist_table
+from .core.blacklist import cleanup_expired_tokens
 from .api import auth, mt5, trade, ai, yahoo, execute, analytics, autopilot, historical_lab, backtest
 from .core.mt5_sync import start_sync_scheduler
 from .models.user import User
+
+
+def _setup_logging():
+    """Configure structured logging — JSON formatter for production, human-readable for dev."""
+    if os.getenv("APP_ENV", "development") != "production":
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+        return
+
+    class JsonFormatter(logging.Formatter):
+        def format(self, record):
+            log_entry = {
+                "timestamp": self.formatTime(record),
+                "level": record.levelname,
+                "logger": record.name,
+                "message": record.getMessage(),
+                "module": record.module,
+                "funcName": record.funcName,
+                "lineno": record.lineno,
+            }
+            if record.exc_info:
+                log_entry["traceback"] = self.formatException(record.exc_info)
+            return json.dumps(log_entry)
+
+    handler = logging.StreamHandler()
+    handler.setFormatter(JsonFormatter())
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    root.addHandler(handler)
+
+
+_setup_logging()
 
 # Import all models to register them with SQLAlchemy Base before database creation
 from . import models  # noqa: F401
@@ -63,9 +103,34 @@ def _run_alembic_migrations():
 
 @app.on_event("startup")
 async def startup_event():
+    # Fail fast if secrets are not configured for production
+    settings.validate_secret_key()
     # Run database migrations via Alembic
     _run_alembic_migrations()
+    # Ensure revoked-token table exists (Alembic is canonical; this is just a safety net)
+    init_blacklist_table()
+    # Initial cleanup of stale revoked tokens
+    removed = await cleanup_expired_tokens()
+    if removed:
+        print(f"Cleaned up {removed} expired revoked-token entries.")
     await create_default_users()
+
+    # Auto-restart autopilot for users who had it enabled before reboot
+    try:
+        from .core.database import AsyncSessionLocal
+        from .models.ai_memory import AutopilotSettings
+        from sqlalchemy import select
+        async with AsyncSessionLocal() as _db:
+            result = await _db.execute(
+                select(AutopilotSettings).where(AutopilotSettings.enabled == True)
+            )
+            for row in result.scalars().all():
+                from .api.autopilot import _start_autopilot_internal
+                await _start_autopilot_internal(row.user_id)
+                print(f"  Autopilot auto-restarted for user #{row.user_id}")
+    except Exception as e:
+        print(f"  Autopilot auto-restart check: {e}")
+
     start_sync_scheduler()
 
 @app.on_event("shutdown")

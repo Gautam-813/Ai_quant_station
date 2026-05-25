@@ -5,6 +5,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, Annotated, List
 from datetime import datetime, timedelta
 import pytz
+import asyncio
+import traceback
 
 from ..core.config import settings
 from ..core.security import get_current_user, decode_token
@@ -17,7 +19,7 @@ from ..models.schemas import (
 )
 from ..core.database import get_db
 from ..models.market_data import MarketData
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy import insert
 from sqlalchemy import select
 
 router = APIRouter(prefix="/mt5", tags=["MT5"])
@@ -25,6 +27,7 @@ router = APIRouter(prefix="/mt5", tags=["MT5"])
 # MT5 Connection State
 _mt5_initialized = False
 _mt5_terminal_path = None
+_mt5_reconnect_attempts = 0
 
 
 def _get_mt5():
@@ -95,42 +98,59 @@ async def _cache_market_data(db: AsyncSession, symbol: str, timeframe: str, data
         if not records:
             return
 
-        # Use SQLite's ON CONFLICT DO NOTHING
-        stmt = sqlite_insert(MarketData).values(records)
-        stmt = stmt.on_conflict_do_nothing()
+        stmt = insert(MarketData).values(records).on_conflict_do_nothing()
         
         await db.execute(stmt)
         await db.commit()
     except Exception as e:
-        print(f"Error caching market data: {e}")
-        # Don't fail the request just because caching failed
-        pass
+        import traceback
+        print(f"Error caching market data: {e}\n{traceback.format_exc()}")
 
 
 async def _init_mt5():
-    global _mt5_initialized, _mt5_terminal_path
+    global _mt5_initialized, _mt5_terminal_path, _mt5_reconnect_attempts
+
+    if _is_using_connector():
+        if not _mt5_initialized:
+            _mt5_initialized = True
+        return True
 
     if _mt5_initialized:
-        return True
-
-    try:
-        mt5 = _get_mt5()
-        
-        if _is_using_connector():
-            connector_url = settings.MT5_CONNECTOR_URL
-            _mt5_initialized = True
+        # Health-check: try a lightweight call (run in thread to not block event loop)
+        mt5_compat = _get_mt5()
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, mt5_compat.version)
+            _mt5_reconnect_attempts = 0
             return True
-        
-        if settings.MT5_TERMINAL_PATH:
-            if not mt5.initialize(path=settings.MT5_TERMINAL_PATH):
-                return False
-        else:
-            if not mt5.initialize():
-                return False
-        _mt5_initialized = True
-        return True
-    except Exception:
-        return False
+        except Exception:
+            _mt5_initialized = False
+            _mt5_reconnect_attempts += 1
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            delay = min(2 ** attempt, 10)
+            await asyncio.sleep(delay)
+            mt5_compat = _get_mt5()
+            if mt5_compat is None:
+                _mt5_reconnect_attempts += 1
+                continue
+            if settings.MT5_TERMINAL_PATH:
+                ok = await asyncio.get_running_loop().run_in_executor(
+                    None, mt5_compat.initialize, settings.MT5_TERMINAL_PATH
+                )
+            else:
+                ok = await asyncio.get_running_loop().run_in_executor(
+                    None, mt5_compat.initialize
+                )
+            if ok:
+                _mt5_initialized = True
+                _mt5_reconnect_attempts = 0
+                return True
+            _mt5_reconnect_attempts += 1
+        except Exception:
+            _mt5_reconnect_attempts += 1
+    return False
 
 
 @router.get("/health")

@@ -7,7 +7,7 @@ from ..core.config import settings
 from ..core.security import decode_token
 from ..core.database import AsyncSessionLocal
 from ..models.schemas import OrderRequest, OrderResponse, CloseRequest, ModifyRequest
-from ..models.ai_memory import TradeRecord
+from ..models.ai_memory import TradeRecord, PositionAudit
 
 _security = HTTPBearer(auto_error=False)
 router = APIRouter(prefix="/trade", tags=["Trading"])
@@ -195,7 +195,9 @@ async def place_order(order: OrderRequest, token: str = Depends(verify_mt5_token
             db.add(trade_rec)
             await db.commit()
     except Exception:
-        pass  # Don't fail the order if audit trail save fails
+        import traceback as _tb
+        print(f"WARNING: Failed to save trade record for ticket {result.order}:\n{_tb.format_exc()}")
+        # Order still succeeds — don't fail MT5 order if audit trail save fails
 
     return OrderResponse(
         success=True,
@@ -264,6 +266,21 @@ async def close_position(close_req: CloseRequest, token: str = Depends(verify_mt
     if result is None or result.retcode != getattr(mt5, 'TRADE_RETCODE_DONE', 10009):
         raise HTTPException(status_code=400, detail=f"Close failed: {result.comment if result else 'Unknown error'}")
 
+    # Write audit trail
+    try:
+        uid = token.get("user_id") if isinstance(token, dict) else None
+        async with AsyncSessionLocal() as db:
+            db.add(PositionAudit(
+                user_id=uid, mt5_ticket=close_req.ticket,
+                action="close", symbol=position.symbol,
+                original_sl=position.sl, original_tp=position.tp,
+                close_volume=close_volume, close_price=price,
+            ))
+            await db.commit()
+    except Exception:
+        import traceback as _tb
+        print(f"[trade] PositionAudit close failed for ticket {close_req.ticket}:\n{_tb.format_exc()}")
+
     return {
         "success": True,
         "ticket": close_req.ticket,
@@ -307,6 +324,21 @@ async def modify_position(mod_req: ModifyRequest, token: str = Depends(verify_mt
 
     if result is None or result.retcode != getattr(mt5, 'TRADE_RETCODE_DONE', 10009):
         raise HTTPException(status_code=400, detail=f"Modify failed: {result.comment if result else 'Unknown error'}")
+
+    # Write audit trail
+    try:
+        uid = token.get("user_id") if isinstance(token, dict) else None
+        async with AsyncSessionLocal() as db:
+            db.add(PositionAudit(
+                user_id=uid, mt5_ticket=mod_req.ticket,
+                action="modify", symbol=position.symbol,
+                original_sl=position.sl, original_tp=position.tp,
+                new_sl=new_sl, new_tp=new_tp,
+            ))
+            await db.commit()
+    except Exception:
+        import traceback as _tb
+        print(f"[trade] PositionAudit modify failed for ticket {mod_req.ticket}:\n{_tb.format_exc()}")
 
     return {
         "success": True,

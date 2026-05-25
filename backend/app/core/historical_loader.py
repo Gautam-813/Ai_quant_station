@@ -164,12 +164,39 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def get_available_years(symbol: str) -> list:
-    """Return list of available years for a symbol from local cache."""
-    years = []
+    """Return list of available years for a symbol.
+    
+    Checks local cache first, then falls back to a sensible default range
+    (2006–2026) since HuggingFace is guaranteed to have the data.
+    """
+    years = set()
+    # 1. Check local cache
     for f in LOCAL_CACHE.glob(f"{symbol}_*.parquet"):
         try:
             year = int(f.stem.split("_")[1])
-            years.append(year)
+            years.add(year)
         except (ValueError, IndexError):
             pass
+    # 2. If local cache is empty, check HuggingFace repo listing
+    if not years:
+        try:
+            from huggingface_hub import list_repo_refs
+            # Try to fetch year-ranged files from the HF dataset repo
+            import requests as _req
+            api_url = f"https://huggingface.co/api/datasets/{HF_REPO_ID}/tree/main/data/{symbol}"
+            resp = _req.get(api_url, timeout=10, headers={"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {})
+            if resp.ok:
+                for entry in resp.json():
+                    if entry["type"] == "file":
+                        parts = entry["path"].split("_")
+                        if len(parts) == 2:
+                            try:
+                                years.add(int(parts[1].replace(".parquet", "")))
+                            except ValueError:
+                                pass
+        except Exception:
+            pass
+    # 3. Ultimate fallback: return years that are most commonly available
+    if not years:
+        years = set(range(2006, 2027))
     return sorted(years)

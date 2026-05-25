@@ -180,11 +180,17 @@ class DeepAnalysisEngine:
         df["daily_return"] = df["close"].pct_change() * 100
 
         # Summary stats
+        daily_return_clean = df["daily_return"].dropna()
+        best_day = "N/A"
+        worst_day = "N/A"
+        if not daily_return_clean.empty:
+            best_day = df.loc[daily_return_clean.idxmax(), "datetime"].strftime("%Y-%m-%d") if daily_return_clean.idxmax() in df.index else "N/A"
+            worst_day = df.loc[daily_return_clean.idxmin(), "datetime"].strftime("%Y-%m-%d") if daily_return_clean.idxmin() in df.index else "N/A"
         stats = {
             "mean_return_pct": round(float(df["daily_return"].mean()), 4),
             "std_return_pct": round(float(df["daily_return"].std()), 4),
-            "best_day": df.loc[df["daily_return"].idxmax(), "datetime"].strftime("%Y-%m-%d"),
-            "worst_day": df.loc[df["daily_return"].idxmin(), "datetime"].strftime("%Y-%m-%d"),
+            "best_day": best_day,
+            "worst_day": worst_day,
             "avg_atr_14": round(float(df["atr_14"].mean()), 5) if "atr_14" in df.columns else 0,
             "total_bars": len(df),
         }

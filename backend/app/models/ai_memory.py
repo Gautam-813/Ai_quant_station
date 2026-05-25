@@ -237,3 +237,34 @@ class AutopilotSettings(Base):
     selected_prompts = Column(JSON, default=list)
 
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
+class RevokedToken(Base):
+    __tablename__ = "revoked_tokens"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    token_jti = Column(String, nullable=False, unique=True, index=True)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class PositionAudit(Base):
+    """Audit trail for position close/modify actions via the API."""
+    __tablename__ = "position_audits"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    mt5_ticket = Column(BigInteger, nullable=False, index=True)
+    action = Column(String, nullable=False)  # "close" or "modify"
+    symbol = Column(String, nullable=False)
+    original_sl = Column(Float, nullable=True)
+    original_tp = Column(Float, nullable=True)
+    new_sl = Column(Float, nullable=True)
+    new_tp = Column(Float, nullable=True)
+    close_volume = Column(Float, nullable=True)
+    close_price = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+    __table_args__ = (
+        Index("ix_position_audits_user_created", "user_id", "created_at"),
+    )

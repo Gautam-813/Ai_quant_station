@@ -57,7 +57,7 @@ async def _cache_market_data_internal(symbol: str, timeframe: str, data: List[di
                 if isinstance(dt_time, str):
                     try:
                         dt_time = datetime.strptime(dt_time, '%Y-%m-%d %H:%M:%S')
-                    except:
+                    except Exception:
                         dt_time = datetime.fromisoformat(dt_time.replace('Z', '+00:00'))
                 elif isinstance(dt_time, (int, float)):
                     # Handle Unix timestamp
@@ -443,7 +443,7 @@ Last 10 candles:
             code = python_match.group(1)
             logger.info(f"[AI Chat] Detected Python code block - executing...")
             
-            exec_res = await run_python_code(code, candle_data_for_ai, chat_req.symbol)
+            exec_res = await run_python_code(code, candle_data_for_ai, chat_req.symbol, user_id=current_user["id"])
             
             # Self-Correction Loop
             if not exec_res.get("success"):
@@ -469,7 +469,7 @@ Last 10 candles:
                     new_match = re.search(r"```python\s*(.*?)(?:```|$)", assistant_message, re.S)
                     if new_match:
                         code = new_match.group(1)
-                        exec_res = await run_python_code(code, candle_data_for_ai, chat_req.symbol)
+                        exec_res = await run_python_code(code, candle_data_for_ai, chat_req.symbol, user_id=current_user["id"])
                 except Exception as e:
                     logger.error(f"[AI Chat] Self-correction failed: {str(e)}")
 
@@ -583,7 +583,7 @@ def _detect_trade_setup(text: str) -> Optional[dict]:
         data = json.loads(text)
         if isinstance(data, dict) and data.get("action") == "TRADE_SETUP":
             return data
-    except:
+    except (json.JSONDecodeError, ValueError):
         pass
 
     return None

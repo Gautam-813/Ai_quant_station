@@ -1,6 +1,11 @@
 """
 Code Execution Endpoint
 Executes Python code safely with market data and returns charts + tables
+
+Multi-user isolation:
+  - When user_id is provided, sandbox runs in an isolated subprocess
+  - Session state is keyed by user_id:symbol to prevent cross-user leaks
+  - Each subprocess exits after one execution (no state persistence risk)
 """
 
 from fastapi import APIRouter, HTTPException
@@ -12,6 +17,13 @@ import traceback
 import math
 import json
 import base64
+import asyncio
+import time
+import hashlib
+import os
+import sys
+import subprocess
+import uuid
 
 router = APIRouter(prefix="/execute", tags=["AI"])
 
@@ -20,6 +32,8 @@ class ExecuteCodeRequest(BaseModel):
     code: str
     market_data: Optional[List[Dict[str, Any]]] = None
     symbol: Optional[str] = None
+    session_id: Optional[str] = None   # client-generated id to isolate sessions
+    user_id: int = 0                   # 0 = anonymous/unauthenticated
 
 
 class ExecuteCodeResponse(BaseModel):
@@ -31,44 +45,158 @@ class ExecuteCodeResponse(BaseModel):
     tables: Optional[List[Dict[str, Any]]] = None
 
 
-@router.post("/code", response_model=ExecuteCodeResponse)
-async def execute_code(request: ExecuteCodeRequest):
-    """Execute Python code with market data (df) and common libraries."""
-    result = await run_python_code(request.code, request.market_data, request.symbol)
-    return ExecuteCodeResponse(**result)
+# ── Sandbox session state ──────────────────────────────────────────────────
+_SESSION_TTL = 300
+_sandbox_state: dict[str, dict] = {}
+
+# Keys excluded from session persistence (modules, internals, helpers)
+_SESSION_EXCLUDE = {
+    "__builtins__", "builtins", "_real_builtins", "_SAFE_IMPORT_MODULES",
+    "_safe_import", "safe_builtins", "safe_globals",
+    "show_chart", "show_table",
+    "_charts", "_tables",
+    "pd", "np", "ta", "scipy", "stats", "cluster",
+    "sm", "sklearn", "sns", "tabulate", "yf", "plt",
+    "math", "json", "random", "itertools",
+    "collections", "decimal", "warnings",
+}
 
 
-async def run_python_code(code: str, market_data: Optional[List[Dict[str, Any]]] = None, symbol: Optional[str] = None):
-    """Core logic to execute Python code safely with market data."""
-    # Create DataFrame from market data
-    df = None
-    if market_data:
+def _session_key(symbol: Optional[str], user_id: int = 0) -> str:
+    """Session key isolated by user_id to prevent cross-user data leaks."""
+    raw = (symbol or "default").strip().lower()
+    if user_id:
+        return f"u{user_id}:sess:{raw}"
+    return f"sess:{raw}"
+
+
+def _prune_expired() -> None:
+    now = time.monotonic()
+    expired = [k for k, v in _sandbox_state.items() if now - v["_ts"] > _SESSION_TTL]
+    for k in expired:
+        del _sandbox_state[k]
+
+
+def _get_session(symbol: Optional[str], user_id: int = 0) -> dict:
+    _prune_expired()
+    key = _session_key(symbol, user_id)
+    if key not in _sandbox_state:
+        _sandbox_state[key] = {"_ts": time.monotonic()}
+    else:
+        _sandbox_state[key]["_ts"] = time.monotonic()
+    return _sandbox_state[key]
+
+
+def _capture_json_safe_state(safe_globals: dict) -> dict:
+    """Capture user-defined variables that are JSON-serializable only."""
+    state = {}
+    for k, v in safe_globals.items():
+        if k.startswith("_") or k in _SESSION_EXCLUDE:
+            continue
         try:
-            import pandas as pd
-            df = pd.DataFrame(market_data)
-            # Ensure numeric columns
+            json.dumps(v)
+            state[k] = v
+        except (TypeError, OverflowError):
+            pass
+    return state
+
+
+def _restore_state(safe_globals: dict, session: dict) -> None:
+    for k, v in session.items():
+        if k == "_ts":
+            continue
+        safe_globals[k] = v
+
+
+# ── Universal JSON Sanitizer ───────────────────────────────────────────────
+def _sanitize(obj):
+    from datetime import date, time, datetime
+
+    if isinstance(obj, (datetime,)):
+        return obj.isoformat()
+    if isinstance(obj, (date, time)):
+        return str(obj)
+
+    try:
+        import pandas as _pd
+        if isinstance(obj, _pd.Timestamp):
+            return obj.isoformat()
+        if isinstance(obj, _pd.Timedelta):
+            return str(obj)
+        try:
+            if _pd.isna(obj):
+                return None
+        except (TypeError, ValueError):
+            pass
+    except ImportError:
+        pass
+
+    try:
+        import numpy as _np
+        if isinstance(obj, (_np.integer,)):
+            return int(obj)
+        if isinstance(obj, (_np.floating,)):
+            v = float(obj)
+            return None if math.isnan(v) or math.isinf(v) else v
+        if isinstance(obj, _np.bool_):
+            return bool(obj)
+        if isinstance(obj, _np.ndarray):
+            return _sanitize(obj.tolist())
+    except ImportError:
+        pass
+
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize(i) for i in obj]
+    if hasattr(obj, 'item') and callable(obj.item):
+        try:
+            return _sanitize(obj.item())
+        except Exception:
+            pass
+    return obj
+
+
+# ── Core Sandbox (Synchronous) ─────────────────────────────────────────────
+def _execute_sandbox_sync(
+    code: str,
+    market_data: Optional[List[Dict[str, Any]]] = None,
+    symbol: Optional[str] = None,
+    session_state: Optional[dict] = None,
+    inject_df=None,
+) -> dict:
+    """Synchronous sandbox execution. Safe to run in a subprocess.
+
+    Returns a JSON-serializable dict with keys:
+      success, output, error, data_preview, charts, tables,
+      modified_data, session_state
+    """
+    # Create DataFrame from market data or use injected DataFrame
+    df = None
+    if inject_df is not None:
+        df = inject_df
+    elif market_data:
+        try:
+            import pandas as _pd
+            df = _pd.DataFrame(market_data)
             for col in ['open', 'high', 'low', 'close', 'volume']:
                 if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                    df[col] = _pd.to_numeric(df[col], errors='coerce')
         except Exception as e:
-            return {
-                "success": False,
-                "error": f"Failed to create DataFrame: {str(e)}"
-            }
+            return {"success": False, "error": f"Failed to create DataFrame: {str(e)}"}
 
-    # Charts and tables storage
-    charts = []
-    tables = []
-
-    # Build execution environment with charting support - RESTRICTED builtins for security
+    # Build execution environment with RESTRICTED builtins
     import random, itertools, collections, decimal, warnings
-    # Capture real __import__ before replacing builtins
     import builtins as _real_builtins
+
     _SAFE_IMPORT_MODULES = {
         'pandas', 'numpy', 'math', 'json', 'random', 'itertools', 'collections',
         'decimal', 'warnings', 'ta', 'scipy', 'statsmodels', 'sklearn', 'seaborn',
         'tabulate', 'yfinance', 'matplotlib',
     }
+
     def _safe_import(name, *args, **kwargs):
         base = name.split('.')[0]
         if base not in _SAFE_IMPORT_MODULES:
@@ -90,25 +218,22 @@ async def run_python_code(code: str, market_data: Optional[List[Dict[str, Any]]]
         'KeyboardInterrupt': KeyboardInterrupt,
         '__import__': _safe_import,
     }
+
     safe_globals = {
         '__builtins__': safe_builtins,
-        'pd': None,
-        'np': None,
-        'math': math,
-        'json': json,
-        'random': random,
-        'itertools': itertools,
-        'collections': collections,
-        'decimal': decimal,
-        'warnings': warnings,
-        'df': df,
-        'symbol': symbol,
+        'pd': None, 'np': None,
+        'math': math, 'json': json, 'random': random,
+        'itertools': itertools, 'collections': collections,
+        'decimal': decimal, 'warnings': warnings,
+        'df': df, 'symbol': symbol,
         'print': print,
-        'show_chart': None,
-        'show_table': None,
-        '_charts': [],
-        '_tables': [],
+        'show_chart': None, 'show_table': None,
+        '_charts': [], '_tables': [],
     }
+
+    # Restore previous session variables
+    if session_state:
+        _restore_state(safe_globals, session_state)
 
     # Import commonly needed libraries
     try:
@@ -117,13 +242,12 @@ async def run_python_code(code: str, market_data: Optional[List[Dict[str, Any]]]
         safe_globals['pd'] = pd
         safe_globals['np'] = np
 
-        # Technical indicators
         try:
             import ta
             safe_globals['ta'] = ta
-        except: pass
+        except Exception:
+            traceback.print_exc()
 
-        # Scientific computing
         try:
             import scipy
             import scipy.stats as stats
@@ -131,9 +255,9 @@ async def run_python_code(code: str, market_data: Optional[List[Dict[str, Any]]]
             safe_globals['scipy'] = scipy
             safe_globals['stats'] = stats
             safe_globals['cluster'] = cluster
-        except: pass
+        except Exception:
+            traceback.print_exc()
 
-        # Statistical modeling (ADF test, cointegration, ARIMA, regression)
         try:
             import statsmodels.api as sm
             from statsmodels.tsa.stattools import adfuller, coint
@@ -141,9 +265,9 @@ async def run_python_code(code: str, market_data: Optional[List[Dict[str, Any]]]
             safe_globals['sm'] = sm
             safe_globals['adfuller'] = adfuller
             safe_globals['coint'] = coint
-        except: pass
+        except Exception:
+            traceback.print_exc()
 
-        # Machine learning
         try:
             import sklearn
             from sklearn.model_selection import train_test_split
@@ -156,41 +280,34 @@ async def run_python_code(code: str, market_data: Optional[List[Dict[str, Any]]]
             safe_globals['StandardScaler'] = StandardScaler
             safe_globals['RandomForestRegressor'] = RandomForestRegressor
             safe_globals['LinearRegression'] = LinearRegression
-        except: pass
+        except Exception:
+            traceback.print_exc()
 
-        # Statistical visualizations
         try:
             import seaborn as sns
             safe_globals['sns'] = sns
-        except: pass
+        except Exception:
+            traceback.print_exc()
 
-        # Pretty table printing
         try:
             from tabulate import tabulate
             safe_globals['tabulate'] = tabulate
-        except: pass
+        except Exception:
+            traceback.print_exc()
 
-        # Market data fetching within code
         try:
             import yfinance as yf
             safe_globals['yf'] = yf
-        except: pass
+        except Exception:
+            traceback.print_exc()
 
-        # Setup matplotlib without display
         import matplotlib
         matplotlib.use('Agg')
         import matplotlib.pyplot as plt
         import matplotlib.dates as mdates
 
         def show_chart(data, title="Chart", color="#2563eb", chart_type="line"):
-            """Display a chart. Supports:
-            - show_chart([1,2,3])                   → simple line (backward compat)
-            - show_chart({'time':[],'value':[]})      → time-series line
-            - show_chart({'time':[],'open':[],'high':[],'low':[],'close':[]}) → candlestick
-            - show_chart([{'label':'A','data':[]}])   → multi-line overlay
-            """
             entry = {"title": title, "color": color, "type": chart_type}
-
             if isinstance(data, dict):
                 entry["data"] = {k: (v.tolist() if hasattr(v, 'tolist') else v) for k, v in data.items()}
             elif isinstance(data, list):
@@ -207,11 +324,9 @@ async def run_python_code(code: str, market_data: Optional[List[Dict[str, Any]]]
                 entry["data"] = data.tolist()
             else:
                 return
-
             safe_globals['_charts'].append(entry)
 
         def show_table(data, title="Data"):
-            """Display a table - capped at 50 rows for performance and DB stability."""
             if isinstance(data, pd.DataFrame):
                 safe_globals['_tables'].append({
                     "title": title,
@@ -228,31 +343,32 @@ async def run_python_code(code: str, market_data: Optional[List[Dict[str, Any]]]
         safe_globals['show_table'] = show_table
         safe_globals['plt'] = plt
 
-    except ImportError as e:
-        pass
+    except ImportError:
+        traceback.print_exc()
 
     # Output capture
     output = io.StringIO()
 
     try:
-        # Execute code with captured output
         with contextlib.redirect_stdout(output):
             exec(code, safe_globals)
 
         output_text = output.getvalue()
-
-        # Get charts from execution
         charts = safe_globals.get('_charts', [])
         tables = safe_globals.get('_tables', [])
 
-        # Get data preview if df exists
+        # Capture new session state (JSON-safe only)
+        new_session = _capture_json_safe_state(safe_globals)
+
+        # Data preview
         data_preview = None
         if df is not None and len(df) > 0:
             try:
                 data_preview = f"DataFrame shape: {df.shape}\nLast 5 rows:\n{df.tail(5).to_string()}"
-            except:
-                pass
+            except Exception:
+                traceback.print_exc()
 
+        # Auto-chart if none created
         if not charts and df is not None and len(df) > 0:
             try:
                 has_time = 'time' in df.columns or 'timestamp' in df.columns
@@ -270,56 +386,8 @@ async def run_python_code(code: str, market_data: Optional[List[Dict[str, Any]]]
                             "title": "Close Price", "color": "#22c55e", "type": "line",
                             "data": df['close'].tail(50).tolist()
                         })
-            except:
-                pass
-
-        # Universal JSON Sanitization
-        def _sanitize(obj):
-            import math
-            from datetime import date, time, datetime
-
-            # Handle dates first
-            if isinstance(obj, (datetime,)): return obj.isoformat()
-            if isinstance(obj, (date, time)): return str(obj)
-
-            # Pandas types
-            try:
-                import pandas as _pd
-                if isinstance(obj, _pd.Timestamp): return obj.isoformat()
-                if isinstance(obj, _pd.Timedelta): return str(obj)
-                try:
-                    if _pd.isna(obj):
-                        return None
-                except (TypeError, ValueError):
-                    pass
-            except ImportError:
-                pass
-
-            # Numpy types
-            try:
-                import numpy as _np
-                if isinstance(obj, (_np.integer,)): return int(obj)
-                if isinstance(obj, (_np.floating,)):
-                    v = float(obj)
-                    return None if math.isnan(v) or math.isinf(v) else v
-                if isinstance(obj, _np.bool_): return bool(obj)
-                if isinstance(obj, _np.ndarray): return _sanitize(obj.tolist())
-            except ImportError:
-                pass
-
-            if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
-                return None
-            if isinstance(obj, dict):
-                return {k: _sanitize(v) for k, v in obj.items()}
-            if isinstance(obj, (list, tuple)):
-                return [_sanitize(i) for i in obj]
-            # Fallback: try .item() for other numpy/scipy types
-            if hasattr(obj, 'item') and callable(obj.item):
-                try:
-                    return _sanitize(obj.item())
-                except Exception:
-                    pass
-            return obj
+            except Exception:
+                traceback.print_exc()
 
         return {
             "success": True,
@@ -327,7 +395,8 @@ async def run_python_code(code: str, market_data: Optional[List[Dict[str, Any]]]
             "data_preview": data_preview,
             "charts": _sanitize(charts) if charts else None,
             "tables": _sanitize(tables) if tables else None,
-            "modified_data": _sanitize(df.to_dict('records')) if df is not None else None
+            "modified_data": _sanitize(df.to_dict('records')) if df is not None else None,
+            "session_state": new_session,
         }
 
     except Exception as e:
@@ -335,10 +404,143 @@ async def run_python_code(code: str, market_data: Optional[List[Dict[str, Any]]]
         return {
             "success": False,
             "error": error_msg,
-            "output": output.getvalue() if output.getvalue() else ""
+            "output": output.getvalue() if output.getvalue() else "",
+            "session_state": {},
         }
 
 
+# ── Subprocess Worker Path ─────────────────────────────────────────────────
+def _get_worker_path() -> str:
+    """Return absolute path to sandbox_worker.py."""
+    base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.join(base, "sandbox_worker.py")
+
+
+async def run_python_code(
+    code: str,
+    market_data: Optional[List[Dict[str, Any]]] = None,
+    symbol: Optional[str] = None,
+    session_id: Optional[str] = None,
+    inject_df: Optional[Any] = None,
+    user_id: int = 0,
+):
+    """Execute Python code safely with market data.
+
+    When user_id > 0, execution runs in an isolated subprocess.
+    Session state is keyed by user_id:symbol to prevent cross-user data leaks.
+    """
+    # ── Session key (user-isolated) ─────────────────────────────────────────
+    if session_id:
+        sess_key = session_id
+    else:
+        sess_key = _session_key(symbol, user_id)
+
+    # ── Load previous session state ─────────────────────────────────────────
+    _prune_expired()
+    if sess_key not in _sandbox_state:
+        _sandbox_state[sess_key] = {"_ts": time.monotonic()}
+    else:
+        _sandbox_state[sess_key]["_ts"] = time.monotonic()
+    session = _sandbox_state[sess_key]
+    session_state = {k: v for k, v in session.items() if k != "_ts"}
+
+    # ── Convert inject_df to market_data for serialization ──────────────────
+    md = market_data
+    if inject_df is not None and md is None:
+        try:
+            md = inject_df.to_dict('records') if hasattr(inject_df, 'to_dict') else inject_df
+        except Exception:
+            md = None
+
+    # ── Decide execution mode ───────────────────────────────────────────────
+    use_subprocess = user_id > 0
+
+    if use_subprocess:
+        worker_path = _get_worker_path()
+        request_data = {
+            "code": code,
+            "market_data": md,
+            "symbol": symbol,
+            "session_state": session_state,
+        }
+
+        try:
+            proc = subprocess.run(
+                [sys.executable, worker_path],
+                input=json.dumps(request_data),
+                capture_output=True,
+                text=True,
+                timeout=25,
+                encoding='utf-8',
+            )
+            if proc.returncode != 0:
+                stderr = proc.stderr or ""
+                return {
+                    "success": False,
+                    "error": f"Sandbox worker crashed (exit {proc.returncode}): {stderr[:500]}",
+                    "output": "",
+                }
+            result = json.loads(proc.stdout)
+        except subprocess.TimeoutExpired:
+            result = {
+                "success": False,
+                "error": "Execution timed out (25s limit). Simplify your code or reduce loop iterations.",
+                "output": "",
+            }
+        except json.JSONDecodeError as e:
+            result = {
+                "success": False,
+                "error": f"Sandbox response parse error: {e}",
+                "output": proc.stdout[:500] if proc.stdout else "",
+            }
+        except Exception as e:
+            result = {
+                "success": False,
+                "error": f"Subprocess error: {str(e)}",
+                "output": "",
+            }
+    else:
+        # Inline mode (same process) — backward compat for anonymous calls
+        result = _execute_sandbox_sync(code, md, symbol, session_state)
+
+    # ── Update session state ────────────────────────────────────────────────
+    new_state = result.get("session_state", {})
+    if isinstance(new_state, dict):
+        new_state["_ts"] = time.monotonic()
+        _sandbox_state[sess_key] = new_state
+
+    # ── Add session_id to response ──────────────────────────────────────────
+    result["session_id"] = sess_key
+    return result
+
+
+# ── API Endpoint ───────────────────────────────────────────────────────────
+@router.post("/code", response_model=ExecuteCodeResponse)
+async def execute_code(request: ExecuteCodeRequest):
+    """Execute Python code with market data (df) and common libraries."""
+    try:
+        result = await asyncio.wait_for(
+            run_python_code(
+                request.code,
+                request.market_data,
+                request.symbol,
+                request.session_id,
+                user_id=request.user_id,
+            ),
+            timeout=30.0,
+        )
+    except asyncio.TimeoutError:
+        result = {
+            "success": False,
+            "error": "Execution timed out (30s limit). Simplify your code or reduce loop iterations.",
+            "output": "",
+        }
+    return ExecuteCodeResponse(**result)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Calculate Indicator Endpoint (unchanged)
+# ═══════════════════════════════════════════════════════════════════════════
 
 class CalculateIndicatorRequest(BaseModel):
     indicator: str
@@ -348,23 +550,11 @@ class CalculateIndicatorRequest(BaseModel):
 
 @router.post("/calculate-indicator")
 async def calculate_indicator(request: CalculateIndicatorRequest):
-    """
-    Calculate a technical indicator on market data.
-    
-    Supported indicators:
-    - ATR (Average True Range)
-    - SMA (Simple Moving Average)
-    - EMA (Exponential Moving Average)
-    - RSI (Relative Strength Index)
-    """
     try:
         import pandas as pd
-        
-        # Create DataFrame
         df = pd.DataFrame(request.market_data)
-        
+
         if request.indicator.upper() == 'ATR':
-            # Calculate ATR
             df['tr'] = df.apply(
                 lambda row: max(
                     row['high'] - row['low'],
@@ -374,64 +564,29 @@ async def calculate_indicator(request: CalculateIndicatorRequest):
             )
             df['atr'] = df['tr'].rolling(window=request.period).mean()
             current_atr = round(df['atr'].iloc[-1], 2) if not pd.isna(df['atr'].iloc[-1]) else None
-            
-            return {
-                "success": True,
-                "indicator": "ATR",
-                "period": request.period,
-                "current_value": current_atr,
-                "values": df['atr'].dropna().tolist()[-20:]
-            }
-            
+            return {"success": True, "indicator": "ATR", "period": request.period, "current_value": current_atr, "values": df['atr'].dropna().tolist()[-20:]}
+
         elif request.indicator.upper() == 'SMA':
             df['sma'] = df['close'].rolling(window=request.period).mean()
             current_sma = round(df['sma'].iloc[-1], 2) if not pd.isna(df['sma'].iloc[-1]) else None
-            
-            return {
-                "success": True,
-                "indicator": "SMA",
-                "period": request.period,
-                "current_value": current_sma,
-                "values": df['sma'].dropna().tolist()[-20:]
-            }
-            
+            return {"success": True, "indicator": "SMA", "period": request.period, "current_value": current_sma, "values": df['sma'].dropna().tolist()[-20:]}
+
         elif request.indicator.upper() == 'EMA':
             df['ema'] = df['close'].ewm(span=request.period).mean()
             current_ema = round(df['ema'].iloc[-1], 2) if not pd.isna(df['ema'].iloc[-1]) else None
-            
-            return {
-                "success": True,
-                "indicator": "EMA",
-                "period": request.period,
-                "current_value": current_ema,
-                "values": df['ema'].dropna().tolist()[-20:]
-            }
-            
+            return {"success": True, "indicator": "EMA", "period": request.period, "current_value": current_ema, "values": df['ema'].dropna().tolist()[-20:]}
+
         elif request.indicator.upper() == 'RSI':
-            # Calculate RSI
             delta = df['close'].diff()
             gain = (delta.where(delta > 0, 0)).rolling(window=request.period).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(window=request.period).mean()
             rs = gain / loss
             df['rsi'] = 100 - (100 / (1 + rs))
             current_rsi = round(df['rsi'].iloc[-1], 2) if not pd.isna(df['rsi'].iloc[-1]) else None
-            
-            return {
-                "success": True,
-                "indicator": "RSI",
-                "period": request.period,
-                "current_value": current_rsi,
-                "values": df['rsi'].dropna().tolist()[-20:]
-            }
-        
+            return {"success": True, "indicator": "RSI", "period": request.period, "current_value": current_rsi, "values": df['rsi'].dropna().tolist()[-20:]}
+
         else:
-            return {
-                "success": False,
-                "error": f"Unsupported indicator: {request.indicator}"
-            }
-            
+            return {"success": False, "error": f"Unsupported indicator: {request.indicator}"}
+
     except Exception as e:
-        return {
-            "success": False,
-            "error": str(e)
-        }
+        return {"success": False, "error": str(e)}

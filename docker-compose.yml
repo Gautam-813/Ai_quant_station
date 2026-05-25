@@ -46,22 +46,25 @@ services:
         limits:
           memory: 1G
 
-  nginx:
-    image: nginx:alpine
-    container_name: impulse_nginx
-    volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
-    ports:
-      - "80:80"
-    depends_on:
-      - backend
-    networks:
-      - impulse_network
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 128M
+  # nginx:
+  #   Disabled — nginx.conf is not present in the repo.
+  #   The backend is exposed directly on port 8000.
+  #   To add a reverse proxy: create nginx.conf and uncomment this block.
+  #   image: nginx:alpine
+  #   container_name: impulse_nginx
+  #   volumes:
+  #     - ./nginx.conf:/etc/nginx/nginx.conf:ro
+  #   ports:
+  #     - "80:80"
+  #   depends_on:
+  #     - backend
+  #   networks:
+  #     - impulse_network
+  #   restart: unless-stopped
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         memory: 128M
 
 volumes:
   postgres_data:
