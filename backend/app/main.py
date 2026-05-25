@@ -105,9 +105,18 @@ def _run_alembic_migrations():
 async def startup_event():
     # Fail fast if secrets are not configured for production
     settings.validate_secret_key()
-    # Run database migrations via Alembic
-    _run_alembic_migrations()
-    # Ensure revoked-token table exists (Alembic is canonical; this is just a safety net)
+
+    # Create all database tables directly (works with both SQLite and PostgreSQL)
+    from .core.database import init_db
+    await init_db()
+
+    # Run Alembic migrations (optional — may fail on first deploy, tables already exist)
+    try:
+        _run_alembic_migrations()
+    except Exception as e:
+        print(f"Alembic migration note: {e}")
+
+    # Ensure revoked-token table exists
     init_blacklist_table()
     # Initial cleanup of stale revoked tokens
     removed = await cleanup_expired_tokens()

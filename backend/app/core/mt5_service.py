@@ -10,9 +10,12 @@ _mt5 = None
 def _get_mt5():
     global _mt5
     if _mt5 is None:
-        import MetaTrader5 as mt5
-        _mt5 = mt5
-    return _mt5
+        try:
+            import MetaTrader5 as mt5
+            _mt5 = mt5
+        except ImportError:
+            _mt5 = False  # Sentinel: not available on this platform
+    return _mt5 if _mt5 else None
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +40,9 @@ async def init_mt5_connection():
             
         # 2. Direct MT5 initialization (Windows only)
         mt5 = _get_mt5()
+        if mt5 is None:
+            logger.warning("MetaTrader5 not available on this platform. Use MT5_CONNECTOR_URL for remote trading.")
+            return False
         terminal_path = settings.MT5_TERMINAL_PATH
         if terminal_path:
             if not mt5.initialize(path=terminal_path):
