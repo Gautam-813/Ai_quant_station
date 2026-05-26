@@ -7,7 +7,7 @@ const api = axios.create({
 api.interceptors.request.use((config) => {
   // JWT token for auth (from zustand persist store)
   try {
-    const stored = localStorage.getItem('auth-storage')
+    const stored = sessionStorage.getItem('auth-storage')
     if (stored) {
       const parsed = JSON.parse(stored)
       const accessToken = parsed.state?.accessToken
@@ -30,7 +30,7 @@ api.interceptors.response.use(
   async (error) => {
     if (error.response?.status === 401) {
       try {
-        const stored = localStorage.getItem('auth-storage')
+        const stored = sessionStorage.getItem('auth-storage')
         if (!stored) return Promise.reject(error)
         const parsed = JSON.parse(stored)
         const refreshToken = parsed.state?.storedRefreshToken
@@ -40,14 +40,14 @@ api.interceptors.response.use(
           refreshPromise = axios.post('/api/auth/refresh', { refresh_token: refreshToken })
             .then(res => {
               const { access_token, refresh_token } = res.data
-              const updated = JSON.parse(localStorage.getItem('auth-storage') || '{}')
+              const updated = JSON.parse(sessionStorage.getItem('auth-storage') || '{}')
               if (!updated.state) updated.state = {}
               updated.state.accessToken = access_token
               updated.state.storedRefreshToken = refresh_token
-              localStorage.setItem('auth-storage', JSON.stringify(updated))
+              sessionStorage.setItem('auth-storage', JSON.stringify(updated))
             })
             .catch(() => {
-              localStorage.removeItem('auth-storage')
+              sessionStorage.removeItem('auth-storage')
               window.location.href = '/login'
             })
             .finally(() => { refreshPromise = null })
