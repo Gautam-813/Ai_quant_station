@@ -218,8 +218,8 @@ class ChatResponse(BaseModel):
 class AIProvider(BaseModel):
     id: str
     name: str
-    base_url: str
     models: List[str]
+    has_key: bool = False
 
 
 class AIProvidersResponse(BaseModel):

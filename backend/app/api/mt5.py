@@ -165,9 +165,8 @@ async def health_check(token: str = Depends(verify_mt5_token)):
             result = await connector_client.health()
             return {
                 "status": "running",
-                "connector": settings.MT5_CONNECTOR_URL,
+                "source": "connector",
                 "mt5_initialized": result.get("mt5_initialized", False),
-                "server": settings.MT5_CONNECTOR_URL
             }
         except Exception as e:
             error_msg = f"Connector unavailable: {str(e)}"
@@ -176,8 +175,8 @@ async def health_check(token: str = Depends(verify_mt5_token)):
     initialized = await _init_mt5()
     return {
         "status": "running",
+        "source": "direct_mt5",
         "mt5_initialized": initialized,
-        "server": settings.MT5_SERVER_PORT
     }
 
 

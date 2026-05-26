@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Body
 from typing import Optional, List
 import json
 import re
@@ -129,8 +129,8 @@ async def get_providers(current_user: dict = Depends(get_current_user)):
             AIProvider(
                 id=key,
                 name=value["name"],
-                base_url=value["base_url"],
                 models=live_models if live_models else value["models"],
+                has_key=bool(api_key),
             )
         )
 
@@ -141,7 +141,7 @@ async def get_providers(current_user: dict = Depends(get_current_user)):
 
 @router.post("/test")
 async def test_connection(
-    provider: str, model: str, current_user: dict = Depends(get_current_user)
+    provider: str = Body(...), model: str = Body(...), current_user: dict = Depends(get_current_user)
 ):
     if provider not in PROVIDERS:
         raise HTTPException(status_code=400, detail="Invalid provider")

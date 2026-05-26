@@ -57,9 +57,7 @@ export default function SettingsPage() {
   const testMt5Connection = async () => {
     setTesting(true); setTestResult(null)
     try {
-      const mt5Token = localStorage.getItem('mt5_api_token') || ''
       const headers: Record<string, string> = {}
-      if (mt5Token) headers['x-mt5-token'] = mt5Token
       if (mt5Connector.useExternal === 'true') {
         const ip = mt5Connector.serverIp.trim().replace(/^https?:\/\//, '').replace(/\/$/, '')
         headers['x-mt5-connector-url'] = ip ? `http://${ip}:${mt5Connector.port}` : `http://localhost:${mt5Connector.port}`
@@ -74,10 +72,7 @@ export default function SettingsPage() {
     } finally { setTesting(false) }
   }
 
-  const [nvidiaKey, setNvidiaKey] = useState(() => localStorage.getItem('nvidia_api_key') || '')
-  const [groqKey, setGroqKey] = useState(() => localStorage.getItem('groq_api_key') || '')
-  const [openrouterKey, setOpenrouterKey] = useState(() => localStorage.getItem('openrouter_api_key') || '')
-  const [availableProviders, setAvailableProviders] = useState<{id: string, name: string, models: string[]}[]>([])
+  const [availableProviders, setAvailableProviders] = useState<{id: string, name: string, models: string[], has_key: boolean}[]>([])
   useEffect(() => { axios.get('/api/ai/providers').then(res => setAvailableProviders(res.data?.providers || [])).catch(() => {}) }, [])
   useEffect(() => {
     const prov = availableProviders.find(p => p.id === testProvider)
@@ -129,17 +124,17 @@ export default function SettingsPage() {
             <CardDescription className="text-xs sm:text-sm">Configure your AI API keys</CardDescription>
           </CardHeader>
           <CardContent className="px-3 sm:px-4 md:px-6 pb-3 sm:pb-4 md:pb-6 space-y-3 sm:space-y-4">
-            <div className="space-y-3 sm:space-y-4">
-              {[
-                { label: 'NVIDIA API Key', value: nvidiaKey, setter: setNvidiaKey, placeholder: 'nvapi-xxxxx' },
-                { label: 'Groq API Key', value: groqKey, setter: setGroqKey, placeholder: 'gsk_xxxxx' },
-                { label: 'OpenRouter API Key', value: openrouterKey, setter: setOpenrouterKey, placeholder: 'sk-xxxxx' },
-              ].map(({ label, value, setter, placeholder }) => (
-                <div key={label}>
-                  <Label className="text-xs sm:text-sm">{label}</Label>
-                  <Input type="password" value={value} onChange={(e) => setter(e.target.value)} placeholder={placeholder} className="text-sm h-9 sm:h-10 bg-background" />
-                </div>
-              ))}
+            <div className="space-y-2">
+              <p className="text-xs text-muted-foreground">API keys are configured via environment variables on the server. No keys are stored in the browser.</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {availableProviders.map(p => (
+                  <div key={p.id} className="flex items-center gap-2 text-xs sm:text-sm">
+                    <span className={`inline-block w-2 h-2 rounded-full ${p.has_key ? 'bg-green-500' : 'bg-red-500'}`} />
+                    <span className="font-medium">{p.name}</span>
+                    <span className="text-muted-foreground">{p.has_key ? 'Configured' : 'Not configured'}</span>
+                  </div>
+                ))}
+              </div>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
               <div>
@@ -164,7 +159,6 @@ export default function SettingsPage() {
               </div>
             </div>
             <div className="flex flex-col sm:flex-row gap-2">
-              <Button onClick={() => { localStorage.setItem('nvidia_api_key', nvidiaKey); localStorage.setItem('groq_api_key', groqKey); localStorage.setItem('openrouter_api_key', openrouterKey); toast({ title: 'Success', description: 'API keys saved locally' }) }} size="sm" className="text-xs sm:text-sm">Save Keys</Button>
               <Button onClick={testConnection} disabled={testing} variant="outline" size="sm" className="text-xs sm:text-sm">{testing ? 'Testing...' : 'Test Connection'}</Button>
             </div>
             {testResult && (

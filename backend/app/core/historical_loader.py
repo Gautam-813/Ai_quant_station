@@ -12,18 +12,15 @@ from functools import lru_cache
 
 import pandas as pd
 import ta
-from dotenv import load_dotenv
 from huggingface_hub import hf_hub_download
+
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-_env_path = Path(__file__).resolve().parent.parent.parent.parent / ".env"
-if _env_path.exists():
-    load_dotenv(dotenv_path=str(_env_path))
-
 LOCAL_CACHE = Path(__file__).resolve().parent.parent.parent.parent / "data_archive" / "parquet_storage"
-HF_REPO_ID = os.getenv("HF_REPO_ID", "TheFinanceEngineer/impulse-market-data")
-HF_TOKEN = os.getenv("HUGGINGFACE_API_KEY")
+HF_REPO_ID = settings.HF_REPO_ID or "TheFinanceEngineer/impulse-market-data"
+HF_TOKEN = settings.HUGGINGFACE_API_KEY
 
 AVAILABLE_SYMBOLS = ["XAUUSD", "XAGUSD", "EURUSD", "USDJPY", "GBPUSD", "BTCUSD"]
 

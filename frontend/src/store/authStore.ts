@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
+import { persist, createJSONStorage } from 'zustand/middleware'
 import axios from 'axios'
 
 interface User {
@@ -125,6 +125,7 @@ export const useAuthStore = create<AuthState>()(
     }),
     {
       name: 'auth-storage',
+      storage: createJSONStorage(() => sessionStorage),
       partialize: (state) => ({
         accessToken: state.accessToken,
         storedRefreshToken: state.storedRefreshToken,
@@ -145,10 +146,10 @@ function decodeBase64Url(str: string): string {
   }
 }
 
-// Helper to get token from localStorage directly
+// Helper to get token from sessionStorage directly
 const getTokenFromStorage = (): string | null => {
   try {
-    const stored = localStorage.getItem('auth-storage')
+    const stored = sessionStorage.getItem('auth-storage')
     if (stored) {
       const parsed = JSON.parse(stored)
       return parsed.state?.accessToken || null
@@ -179,14 +180,8 @@ axios.interceptors.request.use((config) => {
     config.headers.Authorization = `Bearer ${accessToken}`
   }
   
-  // Add MT5 token for MT5 endpoints
+  // Add connector URL if configured for MT5 endpoints
   if (config.url?.includes('/mt5')) {
-    const mt5Token = localStorage.getItem('mt5_api_token') || ''
-    if (mt5Token) {
-      config.headers['x-mt5-token'] = mt5Token
-    }
-    
-    // Add connector URL if configured
     try {
       const savedSettings = localStorage.getItem('mt5ConnectorSettings')
       if (savedSettings) {

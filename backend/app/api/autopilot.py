@@ -752,7 +752,7 @@ async def get_status(current_user: dict = Depends(get_current_user)):
                 "enabled": settings_obj.enabled, "interval_seconds": settings_obj.interval_seconds,
                 "default_lot": settings_obj.default_lot, "max_trades_per_day": settings_obj.max_trades_per_day,
                 "cooldown_minutes": settings_obj.cooldown_minutes, "max_daily_loss": settings_obj.max_daily_loss,
-                "mt5_terminal_path": settings_obj.mt5_terminal_path, "mt5_connector_url": settings_obj.mt5_connector_url,
+                "mt5_connector_url": settings_obj.mt5_connector_url,
                 "symbol": settings_obj.symbol, "provider": settings_obj.provider, "model": settings_obj.model,
                 "mt5_connected": settings_obj.mt5_connected,
                 "selected_prompts": settings_obj.selected_prompts or []

@@ -19,11 +19,6 @@ api.interceptors.request.use((config) => {
     // Ignore parse errors
   }
 
-  // MT5 API token
-  const mt5Token = localStorage.getItem('mt5_api_token') || ''
-  if (mt5Token) {
-    config.headers['X-MT5-Token'] = mt5Token
-  }
   return config
 })
 
