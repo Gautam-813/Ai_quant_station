@@ -48,7 +48,7 @@ def check_connector():
     try:
         r = urllib.request.urlopen(f"{CONNECTOR_URL}/health", timeout=10)
         data = json.loads(r.read())
-        return data.get("mt5_initialized", False)
+        return data.get("mt5_connected", False) or data.get("mt5_initialized", False)
     except Exception as e:
         print(f"[MONITOR] Connector check failed: {e}")
         return False
