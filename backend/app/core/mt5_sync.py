@@ -1,4 +1,5 @@
 import logging
+import asyncio
 import pandas as pd
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,6 +10,29 @@ from .historical_loader import LOCAL_CACHE, AVAILABLE_SYMBOLS, _read_parquet_cac
 from .mt5_service import fetch_ohlc_range
 
 logger = logging.getLogger(__name__)
+
+def _upload_parquet_to_hf():
+    """Upload current-year parquet files to HuggingFace (runs in thread pool)."""
+    from .historical_loader import HF_REPO_ID
+    from huggingface_hub import HfApi, login
+    token = settings.HUGGINGFACE_API_KEY
+    if not token:
+        logger.info("[Sync] No HUGGINGFACE_API_KEY, skipping parquet upload")
+        return
+    current_year = datetime.now().year
+    files = sorted(Path(LOCAL_CACHE).glob(f"*_{current_year}.parquet"))
+    if not files:
+        logger.info("[Sync] No parquet files to upload")
+        return
+    login(token=token)
+    api = HfApi()
+    for fpath in files:
+        remote = f"data/{fpath.name}"
+        try:
+            api.upload_file(path_or_fileobj=str(fpath), path_in_repo=remote, repo_id=HF_REPO_ID, repo_type="dataset")
+            logger.info(f"[Sync] Uploaded {fpath.name} to HF")
+        except Exception as e:
+            logger.warning(f"[Sync] HF upload failed for {fpath.name}: {e}")
 
 async def sync_mt5_to_parquet():
     """
@@ -100,6 +124,12 @@ async def sync_mt5_to_parquet():
             
         except Exception as e:
             logger.error(f"[Sync] CRITICAL ERROR for {symbol}: {e}")
+
+    if sync_count_total > 0:
+        try:
+            await asyncio.to_thread(_upload_parquet_to_hf)
+        except Exception as e:
+            logger.error(f"[Sync] Failed to upload parquet to HF: {e}")
 
 # Global scheduler instance
 scheduler = AsyncIOScheduler()
