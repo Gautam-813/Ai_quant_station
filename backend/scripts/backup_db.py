@@ -18,7 +18,7 @@ from huggingface_hub import HfApi, login
 
 DB_NAME = os.getenv("DB_NAME", "finance_engine")
 DB_USER = os.getenv("DB_USER", "admin_user")
-HF_REPO = os.getenv("HF_BACKUP_REPO", "Gautam-813/impulse-analyst-backups")
+HF_REPO = os.getenv("HF_BACKUP_REPO", "TheFinanceEngineer/impulse-analyst-backups")
 RETENTION_DAYS = int(os.getenv("BACKUP_RETENTION_DAYS", "30"))
 
 def _run(cmd: list[str]) -> str:
