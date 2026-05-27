@@ -6,7 +6,7 @@ Cron:  0 3 * * * cd /opt/impulse_analyst && backend/venv/bin/python backend/scri
 import os
 import sys
 import gzip
-import shutil
+import re
 import subprocess
 import tempfile
 from datetime import datetime
@@ -16,8 +16,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.core.config import settings
 from huggingface_hub import HfApi, login
 
-DB_NAME = os.getenv("DB_NAME", "finance_engine")
-DB_USER = os.getenv("DB_USER", "admin_user")
 HF_REPO = os.getenv("HF_BACKUP_REPO", "TheFinanceEngineer/impulse-analyst-backups")
 RETENTION_DAYS = int(os.getenv("BACKUP_RETENTION_DAYS", "30"))
 
@@ -29,7 +27,11 @@ def _run(cmd: list[str]) -> str:
 
 def dump_db() -> bytes:
     print("[BACKUP] Dumping database...")
-    out = _run(["pg_dump", f"--dbname=postgresql://{DB_USER}@{settings.DB_HOST}:{settings.DB_PORT}/{DB_NAME}"])
+    # Parse the DATABASE_URL to build a pg_dump connection string
+    db_url = settings.DATABASE_URL
+    # Handle async drivers: postgresql+asyncpg:// -> postgresql://
+    db_url = re.sub(r"\+asyncpg|\+aiosqlite", "", db_url)
+    out = _run(["pg_dump", f"--dbname={db_url}"])
     compressed = gzip.compress(out.encode())
     print(f"[BACKUP] Dumped {len(out)} chars -> {len(compressed)} bytes gzipped")
     return compressed
