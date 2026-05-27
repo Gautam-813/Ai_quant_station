@@ -73,7 +73,11 @@ export default function SettingsPage() {
   }
 
   const [availableProviders, setAvailableProviders] = useState<{id: string, name: string, models: string[], has_key: boolean}[]>([])
+  const [userKeyInputs, setUserKeyInputs] = useState<Record<string, string>>({})
+  const [userKeyStatus, setUserKeyStatus] = useState<Record<string, boolean>>({})
+  const [savingKeys, setSavingKeys] = useState(false)
   useEffect(() => { axios.get('/api/ai/providers').then(res => setAvailableProviders(res.data?.providers || [])).catch(() => {}) }, [])
+  useEffect(() => { axios.get('/api/ai/user-keys').then(res => setUserKeyStatus(res.data?.providers || {})).catch(() => {}) }, [])
   useEffect(() => {
     const prov = availableProviders.find(p => p.id === testProvider)
     if (prov?.models?.length) setTestModel(prov.models[0])
@@ -124,17 +128,23 @@ export default function SettingsPage() {
             <CardDescription className="text-xs sm:text-sm">Configure your AI API keys</CardDescription>
           </CardHeader>
           <CardContent className="px-3 sm:px-4 md:px-6 pb-3 sm:pb-4 md:pb-6 space-y-3 sm:space-y-4">
-            <div className="space-y-2">
-              <p className="text-xs text-muted-foreground">API keys are configured via environment variables on the server. No keys are stored in the browser.</p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                {availableProviders.map(p => (
-                  <div key={p.id} className="flex items-center gap-2 text-xs sm:text-sm">
-                    <span className={`inline-block w-2 h-2 rounded-full ${p.has_key ? 'bg-green-500' : 'bg-red-500'}`} />
-                    <span className="font-medium">{p.name}</span>
-                    <span className="text-muted-foreground">{p.has_key ? 'Configured' : 'Not configured'}</span>
+            <div className="space-y-3 sm:space-y-4">
+              <p className="text-xs text-muted-foreground">Your API keys are encrypted and stored on the server. They are never saved in the browser.</p>
+              {availableProviders.map(p => (
+                <div key={p.id}>
+                  <Label className="text-xs sm:text-sm">{p.name}</Label>
+                  <div className="flex gap-2 items-center">
+                    <Input
+                      type="password"
+                      placeholder={userKeyStatus[p.id] ? "•••••••• (saved)" : "Enter your API key..."}
+                      value={userKeyInputs[p.id] || ''}
+                      onChange={(e) => setUserKeyInputs({...userKeyInputs, [p.id]: e.target.value})}
+                      className="text-sm h-9 sm:h-10 bg-background flex-1"
+                    />
+                    {userKeyStatus[p.id] && <span className="text-xs text-green-500 shrink-0">Saved</span>}
                   </div>
-                ))}
-              </div>
+                </div>
+              ))}
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
               <div>
@@ -159,6 +169,27 @@ export default function SettingsPage() {
               </div>
             </div>
             <div className="flex flex-col sm:flex-row gap-2">
+              <Button
+                onClick={async () => {
+                  setSavingKeys(true)
+                  try {
+                    const keys: Record<string, string> = {}
+                    availableProviders.forEach(p => {
+                      if (userKeyInputs[p.id]) keys[p.id] = userKeyInputs[p.id]
+                    })
+                    if (Object.keys(keys).length === 0) { toast({ title: 'No keys to save', variant: 'destructive' }); return }
+                    await axios.post('/api/ai/user-keys', keys)
+                    setUserKeyInputs({})
+                    const res = await axios.get('/api/ai/user-keys')
+                    setUserKeyStatus(res.data?.providers || {})
+                    toast({ title: 'Success', description: 'API keys saved securely' })
+                  } catch { toast({ title: 'Error', description: 'Failed to save keys', variant: 'destructive' }) }
+                  finally { setSavingKeys(false) }
+                }}
+                disabled={savingKeys}
+                size="sm"
+                className="text-xs sm:text-sm"
+              >{savingKeys ? 'Saving...' : 'Save Keys'}</Button>
               <Button onClick={testConnection} disabled={testing} variant="outline" size="sm" className="text-xs sm:text-sm">{testing ? 'Testing...' : 'Test Connection'}</Button>
             </div>
             {testResult && (

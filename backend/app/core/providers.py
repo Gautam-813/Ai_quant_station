@@ -3,7 +3,9 @@ Central AI Provider Registry
 All provider configuration lives here. Imported by ai.py, autopilot.py,
 historical_lab.py, backtest.py — single source of truth.
 """
-from typing import Dict, Any
+from typing import Dict, Any, Optional
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 
 # Each provider entry:
@@ -111,3 +113,28 @@ def validate_provider(provider_id: str) -> bool:
 def get_provider_names() -> list:
     """Return list of provider IDs for API responses."""
     return list(PROVIDERS.keys())
+
+
+async def resolve_api_key(
+    provider: str,
+    settings_obj,
+    user_id: Optional[int] = None,
+    db_session_factory=None,
+) -> str:
+    """Check user's saved key (encrypted in DB) first, fall back to server .env key."""
+    if user_id and db_session_factory:
+        from .encryption import decrypt_api_key
+        from ..models.user import UserApiKey
+        async with db_session_factory() as db:
+            result = await db.execute(
+                select(UserApiKey).where(
+                    UserApiKey.user_id == user_id, UserApiKey.provider == provider
+                )
+            )
+            row = result.scalar_one_or_none()
+            if row:
+                return decrypt_api_key(
+                    row.encrypted_key,
+                    settings_obj.SECRET_KEY or settings_obj.effective_secret_key,
+                )
+    return get_api_key(provider, settings_obj)

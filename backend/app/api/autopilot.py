@@ -74,7 +74,7 @@ def load_prompts():
         return []
 
 
-from ..core.providers import PROVIDERS, get_api_key as _get_api_key, get_base_url
+from ..core.providers import PROVIDERS, get_api_key as _get_api_key, get_base_url, resolve_api_key
 
 
 def add_log(user_id: int, message: str, level: str = "INFO"):
@@ -383,7 +383,7 @@ RULES:
 5. Consider technical indicators (RSI, MACD, moving averages) if helpful
 """
 
-    api_key = _get_api_key(provider, settings)
+    api_key = await resolve_api_key(provider, settings, user_id, AsyncSessionLocal)
     if not api_key:
         add_log(user_id, "No API key configured", "ERROR")
         state["stats"]["error_count"] += 1

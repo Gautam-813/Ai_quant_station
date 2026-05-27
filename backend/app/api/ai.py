@@ -18,7 +18,7 @@ from ..core.security import get_current_user
 from ..core.database import AsyncSessionLocal
 from ..models.market_data import MarketData
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-from sqlalchemy import select, func
+from sqlalchemy import select, func, delete
 from ..models.schemas import (
     ChatRequest,
     ChatResponse,
@@ -36,7 +36,9 @@ from ..models.ai_memory import (
     GlobalInsights,
     ModelUsage,
 )
-from ..core.providers import PROVIDERS, get_api_key as _get_api_key, get_base_url
+from ..core.providers import PROVIDERS, get_api_key as _get_api_key, get_base_url, resolve_api_key
+from ..models.user import UserApiKey
+from ..core.encryption import encrypt_api_key
 
 router = APIRouter(prefix="/ai", tags=["AI"])
 
@@ -139,6 +141,33 @@ async def get_providers(current_user: dict = Depends(get_current_user)):
     return AIProvidersResponse(providers=providers_list)
 
 
+@router.post("/user-keys")
+async def save_user_keys(
+    keys: dict = Body(...), current_user: dict = Depends(get_current_user)
+):
+    user_id = current_user["user_id"]
+    async with AsyncSessionLocal() as db:
+        await db.execute(delete(UserApiKey).where(UserApiKey.user_id == user_id))
+        for provider, api_key in keys.items():
+            if provider not in PROVIDERS:
+                continue
+            if not api_key:
+                continue
+            encrypted = encrypt_api_key(api_key, settings.SECRET_KEY or settings.effective_secret_key)
+            db.add(UserApiKey(user_id=user_id, provider=provider, encrypted_key=encrypted))
+        await db.commit()
+    return {"status": "ok"}
+
+
+@router.get("/user-keys")
+async def get_user_keys(current_user: dict = Depends(get_current_user)):
+    user_id = current_user["user_id"]
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(UserApiKey).where(UserApiKey.user_id == user_id))
+        keys = result.scalars().all()
+    return {"providers": {k.provider: True for k in keys}}
+
+
 @router.post("/test")
 async def test_connection(
     provider: str = Body(...), model: str = Body(...), current_user: dict = Depends(get_current_user)
@@ -160,7 +189,7 @@ async def test_connection(
 async def chat(chat_req: ChatRequest, current_user: dict = Depends(get_current_user)):
     if chat_req.provider not in PROVIDERS:
         raise HTTPException(status_code=400, detail="Invalid provider")
-    api_key = _get_api_key(chat_req.provider, settings)
+    api_key = await resolve_api_key(chat_req.provider, settings, current_user["user_id"], AsyncSessionLocal)
     if not api_key:
         raise HTTPException(status_code=400, detail=f"No API key for {chat_req.provider}")
     provider_config = PROVIDERS[chat_req.provider]
