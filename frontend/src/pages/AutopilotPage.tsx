@@ -126,7 +126,7 @@ export default function AutopilotPage() {
       axios.get('/api/autopilot/status').then(res => {
         const data = res.data
         setStatus(data)
-        // Only update runtime state, not form settings
+        setMt5Connected(data.settings?.mt5_connected || false)
       }).catch(console.error)
     }, 5000)
     return () => clearInterval(intervalId)

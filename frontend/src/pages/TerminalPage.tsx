@@ -40,7 +40,7 @@ export default function TerminalPage() {
   const [orderLoading, setOrderLoading] = useState(false)
   const [closeLoading, setCloseLoading] = useState<number | null>(null)
   const [confirmOrder, setConfirmOrder] = useState<{
-    symbol: string; direction: string; volume: number; sl: number | null; tp: number | null; orderType: string
+    symbol: string; direction: string; volume: string; sl: number | null; tp: number | null; orderType: string
   } | null>(null)
 
   useEffect(() => { fetchSymbols(); fetchPositions() }, [])
@@ -74,7 +74,7 @@ export default function TerminalPage() {
     try {
       const action = confirmOrder.orderType === 'market' ? confirmOrder.direction : `${confirmOrder.direction}_${confirmOrder.orderType.toUpperCase()}`
       await axios.post('/api/trade/order', {
-        symbol: confirmOrder.symbol, action, volume: confirmOrder.volume,
+        symbol: confirmOrder.symbol, action, volume: parseFloat(confirmOrder.volume) || 0.01,
         price: null,
         sl: confirmOrder.sl, tp: confirmOrder.tp
       })
@@ -144,7 +144,7 @@ export default function TerminalPage() {
             <div className="grid grid-cols-2 gap-2 sm:gap-3">
               <div>
                 <Label className="text-xs sm:text-sm">Volume</Label>
-                <Input type="number" step="0.01" value={volume} onChange={(e) => { const v = parseFloat(e.target.value); setVolume(isNaN(v) ? 0 : v) }} className="text-sm h-9 sm:h-10" />
+                <Input type="number" step="0.01" value={volume} onChange={(e) => setVolume(e.target.value)} className="text-sm h-9 sm:h-10" />
               </div>
               {orderType !== 'market' && (
                 <div>

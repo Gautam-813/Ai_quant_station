@@ -11,8 +11,10 @@ interface MT5ConnectorSettings { useExternal: string; serverIp: string; port: st
 
 export default function SettingsPage() {
   const { toast } = useToast()
-  const [testing, setTesting] = useState(false)
-  const [testResult, setTestResult] = useState<{success: boolean, message: string} | null>(null)
+  const [mt5Testing, setMt5Testing] = useState(false)
+  const [mt5TestResult, setMt5TestResult] = useState<{success: boolean, message: string} | null>(null)
+  const [aiTesting, setAiTesting] = useState(false)
+  const [aiTestResult, setAiTestResult] = useState<{success: boolean, message: string} | null>(null)
   const [testProvider, setTestProvider] = useState('nvidia')
   const [testModel, setTestModel] = useState('qwen/qwen3.5-122b-a10b')
 
@@ -39,23 +41,13 @@ export default function SettingsPage() {
     } finally { setPasswordLoading(false) }
   }
 
-  const [autoLot, setAutoLot] = useState('0.10')
-  const [autoInterval, setAutoInterval] = useState('300')
-
-  const handleSaveAutopilot = async () => {
-    try {
-      await axios.post('/api/autopilot/settings', { default_lot: parseFloat(autoLot), interval_seconds: parseInt(autoInterval), max_trades_per_day: 10, cooldown_minutes: 5, max_daily_loss: -50, symbol: 'XAUUSD', provider: 'nvidia', model: 'qwen/qwen3.5-122b-a10b' })
-      toast({ title: 'Success', description: 'Autopilot settings saved' })
-    } catch (error: any) { toast({ title: 'Error', description: error.response?.data?.detail || 'Failed to save settings', variant: 'destructive' }) }
-  }
-
   const saveMt5ConnectorSettings = () => {
     localStorage.setItem('mt5ConnectorSettings', JSON.stringify(mt5Connector))
     toast({ title: 'MT5 Connector Settings Saved', description: mt5Connector.useExternal === 'true' ? `Using external: ${mt5Connector.serverIp || 'localhost'}:${mt5Connector.port}` : 'Using direct MT5' })
   }
 
   const testMt5Connection = async () => {
-    setTesting(true); setTestResult(null)
+    setMt5Testing(true); setMt5TestResult(null)
     try {
       const headers: Record<string, string> = {}
       if (mt5Connector.useExternal === 'true') {
@@ -63,13 +55,13 @@ export default function SettingsPage() {
         headers['x-mt5-connector-url'] = ip ? `http://${ip}:${mt5Connector.port}` : `http://localhost:${mt5Connector.port}`
       }
       await axios.get('/api/mt5/health', { headers })
-      setTestResult({ success: true, message: 'MT5 connection successful!' })
+      setMt5TestResult({ success: true, message: 'MT5 connection successful!' })
       toast({ title: 'Success', description: 'MT5 connected successfully' })
     } catch (error: any) {
       const msg = error.response?.data?.detail || 'MT5 connection failed'
-      setTestResult({ success: false, message: msg })
+      setMt5TestResult({ success: false, message: msg })
       toast({ title: 'Error', description: msg, variant: 'destructive' })
-    } finally { setTesting(false) }
+    } finally { setMt5Testing(false) }
   }
 
   const [availableProviders, setAvailableProviders] = useState<{id: string, name: string, models: string[], has_key: boolean}[]>([])
@@ -84,13 +76,13 @@ export default function SettingsPage() {
   }, [testProvider, availableProviders])
 
   const testConnection = async () => {
-    setTesting(true); setTestResult(null)
+    setAiTesting(true); setAiTestResult(null)
     try {
       await axios.post('/api/ai/test', { provider: testProvider, model: testModel })
-      setTestResult({ success: true, message: `Connection to ${testProvider} successful!` })
+      setAiTestResult({ success: true, message: `Connection to ${testProvider} successful!` })
       toast({ title: 'Success', description: 'AI connection working' })
-    } catch (error: any) { setTestResult({ success: false, message: error.response?.data?.detail || 'Connection failed' }); toast({ title: 'Error', description: 'Connection failed', variant: 'destructive' }) }
-    finally { setTesting(false) }
+    } catch (error: any) { setAiTestResult({ success: false, message: error.response?.data?.detail || 'Connection failed' }); toast({ title: 'Error', description: 'Connection failed', variant: 'destructive' }) }
+    finally { setAiTesting(false) }
   }
 
   return (
@@ -190,11 +182,11 @@ export default function SettingsPage() {
                 size="sm"
                 className="text-xs sm:text-sm"
               >{savingKeys ? 'Saving...' : 'Save Keys'}</Button>
-              <Button onClick={testConnection} disabled={testing} variant="outline" size="sm" className="text-xs sm:text-sm">{testing ? 'Testing...' : 'Test Connection'}</Button>
+              <Button onClick={testConnection} disabled={aiTesting} variant="outline" size="sm" className="text-xs sm:text-sm">{aiTesting ? 'Testing...' : 'Test Connection'}</Button>
             </div>
-            {testResult && (
-              <div className={`p-2 sm:p-3 rounded text-xs sm:text-sm ${testResult.success ? 'bg-green-500/10 text-green-500' : 'bg-red-500/10 text-red-500'}`}>
-                {testResult.message}
+            {aiTestResult && (
+              <div className={`p-2 sm:p-3 rounded text-xs sm:text-sm ${aiTestResult.success ? 'bg-green-500/10 text-green-500' : 'bg-red-500/10 text-red-500'}`}>
+                {aiTestResult.message}
               </div>
             )}
           </CardContent>
@@ -231,50 +223,17 @@ export default function SettingsPage() {
             )}
             <div className="flex flex-col sm:flex-row gap-2">
               <Button onClick={saveMt5ConnectorSettings} size="sm" className="text-xs sm:text-sm">Save MT5 Settings</Button>
-              <Button variant="outline" onClick={testMt5Connection} disabled={testing} size="sm" className="text-xs sm:text-sm">{testing ? 'Testing...' : 'Test Connection'}</Button>
+              <Button variant="outline" onClick={testMt5Connection} disabled={mt5Testing} size="sm" className="text-xs sm:text-sm">{mt5Testing ? 'Testing...' : 'Test Connection'}</Button>
             </div>
+            {mt5TestResult && (
+              <div className={`p-2 sm:p-3 rounded text-xs sm:text-sm ${mt5TestResult.success ? 'bg-green-500/10 text-green-500' : 'bg-red-500/10 text-red-500'}`}>
+                {mt5TestResult.message}
+              </div>
+            )}
           </CardContent>
         </Card>
 
-        {/* Autopilot */}
-        <Card>
-          <CardHeader className="px-3 sm:px-4 md:px-6 pt-3 sm:pt-4 md:pt-6 pb-2 sm:pb-3">
-            <CardTitle className="text-sm sm:text-base md:text-lg">Autopilot</CardTitle>
-            <CardDescription className="text-xs sm:text-sm">Automated trading settings</CardDescription>
-          </CardHeader>
-          <CardContent className="px-3 sm:px-4 md:px-6 pb-3 sm:pb-4 md:pb-6 space-y-3 sm:space-y-4">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
-              <div>
-                <Label className="text-xs sm:text-sm">Lot Size</Label>
-                <Input type="number" step="0.01" value={autoLot} onChange={(e) => setAutoLot(e.target.value)} className="text-sm h-9 sm:h-10" />
-              </div>
-              <div>
-                <Label className="text-xs sm:text-sm">Interval (seconds)</Label>
-                <Input type="number" value={autoInterval} onChange={(e) => setAutoInterval(e.target.value)} className="text-sm h-9 sm:h-10" />
-              </div>
-            </div>
-            <Button onClick={handleSaveAutopilot} size="sm" className="text-xs sm:text-sm w-full sm:w-auto">Save Autopilot Settings</Button>
-          </CardContent>
-        </Card>
 
-        {/* Data Sync */}
-        <Card>
-          <CardHeader className="px-3 sm:px-4 md:px-6 pt-3 sm:pt-4 md:pt-6 pb-2 sm:pb-3">
-            <CardTitle className="text-sm sm:text-base md:text-lg">Data Sync</CardTitle>
-            <CardDescription className="text-xs sm:text-sm">HuggingFace data synchronization</CardDescription>
-          </CardHeader>
-          <CardContent className="px-3 sm:px-4 md:px-6 pb-3 sm:pb-4 md:pb-6 space-y-3 sm:space-y-4">
-            <div>
-              <Label className="text-xs sm:text-sm">HuggingFace Repo ID</Label>
-              <Input placeholder="username/repo" className="text-sm h-9 sm:h-10" />
-            </div>
-            <div>
-              <Label className="text-xs sm:text-sm">HuggingFace Token</Label>
-              <Input type="password" placeholder="hf_xxxxx" className="text-sm h-9 sm:h-10" />
-            </div>
-            <Button variant="outline" size="sm" className="text-xs sm:text-sm">Sync Now</Button>
-          </CardContent>
-        </Card>
       </div>
     </div>
   )

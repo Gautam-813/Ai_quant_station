@@ -164,9 +164,20 @@ def _generate_initial_report(mode: str, symbol: str, start: str, end: str,
         )
     elif mode == "analysis" and analysis:
         stats = analysis.get("stats", {})
+        hourly = analysis.get("hourly_volatility", [])
+        dow = analysis.get("day_of_week_volatility", [])
+        peak_hour = max(hourly, key=lambda h: h["avg_range"]) if hourly else {}
+        peak_day = max(dow, key=lambda d: d["avg_range"]) if dow else {}
         return (
             f"**Deep Market Analysis ({symbol})**\n\n"
-            f"Analyzed {stats.get('total_bars', 0):,} bars. How can I help you interpret these patterns?"
+            f"**Total Bars Analyzed:** {stats.get('total_bars', 0):,}\n"
+            f"**Mean Daily Return:** {stats.get('mean_return_pct', 0):+.4f}% (Std: {stats.get('std_return_pct', 0):.4f}%)\n"
+            f"**Average ATR (14):** {stats.get('avg_atr_14', 0):.2f}\n"
+            f"**Best Day:** {stats.get('best_day', 'N/A')} | **Worst Day:** {stats.get('worst_day', 'N/A')}\n"
+            f"**Peak Volatility Hour:** UTC {peak_hour.get('hour_utc', 'N/A')}h (range: {peak_hour.get('avg_range', 0):.2f})\n"
+            f"**Peak Volatility Day:** {peak_day.get('day', 'N/A')} (range: {peak_day.get('avg_range', 0):.2f})\n\n"
+            f"Charts are displayed above with hourly and day-of-week volatility breakdowns. "
+            f"What specific aspect would you like to explore further?"
         )
     return "Analysis complete."
 

@@ -13,6 +13,7 @@ from sqlalchemy import select, update
 from openai import AsyncOpenAI
 from pathlib import Path
 import logging
+import traceback
 
 from ..core.config import settings
 from ..core.security import get_current_user
@@ -181,7 +182,6 @@ def run_vectorized_backtest(df, strategy_code, lot_size=0.01, contract_multiplie
         if not calculate_signals:
             return {"error": "Function calculate_signals not found in generated code"}
 
-        import pandas as pd
         if not callable(calculate_signals):
             return {"error": f"calculate_signals is not callable (got {type(calculate_signals).__name__})"}
 

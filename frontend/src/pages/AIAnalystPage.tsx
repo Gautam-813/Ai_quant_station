@@ -124,7 +124,7 @@ export default function AIAnalystPage() {
     return () => {
       if (interval) clearInterval(interval)
     }
-  }, [liveMode, loadData, symbol, customSymbol])
+  }, [liveMode, loadData, symbol, customSymbol, dataPeriod, timeframe])
 
   useEffect(() => {
     if (!chartContainerRef.current) return

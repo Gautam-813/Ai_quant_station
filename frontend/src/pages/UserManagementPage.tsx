@@ -18,6 +18,7 @@ export default function UserManagementPage() {
   const [showModal, setShowModal] = useState(false)
   const [editingUser, setEditingUser] = useState<User | null>(null)
   const [formData, setFormData] = useState({ username: '', name: '', password: '', role: 'trader' })
+  const [submitting, setSubmitting] = useState(false)
 
   const API_URL = '/api/auth'
 
@@ -31,6 +32,8 @@ export default function UserManagementPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (submitting) return
+    setSubmitting(true)
     try {
       if (editingUser) {
         await axios.put(`${API_URL}/users/${editingUser.id}`, { name: formData.name, role: formData.role, password: formData.password || undefined })
@@ -41,6 +44,7 @@ export default function UserManagementPage() {
       }
       setShowModal(false); setFormData({ username: '', name: '', password: '', role: 'trader' }); setEditingUser(null); fetchUsers()
     } catch (error: any) { toast({ title: 'Failed', description: error.response?.data?.detail || 'Error', variant: 'destructive' }) }
+    finally { setSubmitting(false) }
   }
 
   return (
@@ -94,7 +98,14 @@ export default function UserManagementPage() {
                         <div className="flex justify-end gap-1">
                           <Button size="sm" variant="ghost" onClick={() => { setEditingUser(user); setFormData({ username: user.username, name: user.name, password: '', role: user.role }); setShowModal(true) }} className="text-[10px] sm:text-xs h-7 px-1.5 sm:px-2">Edit</Button>
                           <Button size="sm" variant="ghost" className="text-[10px] sm:text-xs text-red-500 h-7 px-1.5 sm:px-2"
-                            onClick={async () => { if (confirm('Delete user?')) { await axios.delete(`${API_URL}/users/${user.id}`, { headers: { Authorization: `Bearer ${accessToken}` } }); fetchUsers(); toast({ title: 'User deleted' }) }}}>
+                            onClick={async () => {
+                              if (!confirm('Delete user?')) return
+                              try {
+                                await axios.delete(`${API_URL}/users/${user.id}`, { headers: { Authorization: `Bearer ${accessToken}` } })
+                                fetchUsers()
+                                toast({ title: 'User deleted' })
+                              } catch { toast({ title: 'Delete failed', variant: 'destructive' }) }
+                            }}>
                             Del
                           </Button>
                         </div>
@@ -139,7 +150,7 @@ export default function UserManagementPage() {
               </div>
               <div className="flex gap-2 sm:gap-3 pt-2">
                 <Button type="button" variant="outline" onClick={() => setShowModal(false)} className="flex-1 text-sm">Cancel</Button>
-                <Button type="submit" className="flex-1 text-sm">{editingUser ? 'Update' : 'Create'}</Button>
+                <Button type="submit" disabled={submitting} className="flex-1 text-sm">{submitting ? 'Saving...' : editingUser ? 'Update' : 'Create'}</Button>
               </div>
             </form>
           </div>

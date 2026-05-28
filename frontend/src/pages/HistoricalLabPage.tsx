@@ -6,7 +6,7 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
-  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
+  AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
 } from 'recharts'
 import {
   Play, AlertTriangle, Zap, BrainCircuit, Settings2,
@@ -174,8 +174,8 @@ export default function HistoricalLabPage() {
     try {
       const res = await axios.post('/api/historical-lab/run', {
         mode, symbol, start_date: startDate, end_date: endDate,
-        timeframe, prompt, initial_capital: parseFloat(capital),
-        leverage: parseFloat(leverage), include_spread: includeSpread,
+        timeframe, prompt, initial_capital: parseFloat(capital) || 10000,
+        leverage: parseFloat(leverage) || 100, include_spread: includeSpread,
         include_commission: includeCommission,
         provider, model,
       })
@@ -431,7 +431,53 @@ export default function HistoricalLabPage() {
             </Card>
           )}
 
-          {/* Deep Analysis results are now handled entirely by the Agentic Research Vault below. */}
+          {/* Analysis Results — metrics + volatility charts */}
+          {mode === 'analysis' && !isProcessing && result?.analysis && (
+            <>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <MetricCard label="Total Bars" value={result.analysis.stats?.total_bars?.toLocaleString() || '—'} icon={BarChartHorizontal} color="text-blue-400" />
+                <MetricCard label="Mean Return" value={result.analysis.stats?.mean_return_pct != null ? `${result.analysis.stats.mean_return_pct}%` : '—'} sub={`Std: ${result.analysis.stats?.std_return_pct != null ? `${result.analysis.stats.std_return_pct}%` : '—'}`} icon={TrendingUp} color="text-green-400" />
+                <MetricCard label="Avg ATR (14)" value={result.analysis.stats?.avg_atr_14 != null ? result.analysis.stats.avg_atr_14.toFixed(2) : '—'} icon={Zap} color="text-yellow-400" />
+                <MetricCard label="Period" value={`${result.analysis.stats?.best_day || '—'} → ${result.analysis.stats?.worst_day || '—'}`} icon={AlertTriangle} color="text-red-400" sub="Best → Worst Day" />
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <Card className="bg-card/50 border-border/50 h-[250px]">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm flex items-center gap-2"><HistoryIcon className="w-4 h-4" /> Hourly Volatility</CardTitle>
+                  </CardHeader>
+                  <CardContent className="h-[200px] p-0 pr-4 pb-4">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={result.analysis.hourly_volatility}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
+                        <XAxis dataKey="hour_utc" fontSize={10} tickLine={false} axisLine={false} tickFormatter={h => `${h}h`} />
+                        <YAxis fontSize={10} tickLine={false} axisLine={false} />
+                        <Tooltip />
+                        <Bar dataKey="avg_range" fill="hsl(var(--primary))" radius={[2,2,0,0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </CardContent>
+                </Card>
+
+                <Card className="bg-card/50 border-border/50 h-[250px]">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm flex items-center gap-2"><HistoryIcon className="w-4 h-4" /> Day-of-Week Volatility</CardTitle>
+                  </CardHeader>
+                  <CardContent className="h-[200px] p-0 pr-4 pb-4">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={result.analysis.day_of_week_volatility}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
+                        <XAxis dataKey="day" fontSize={10} tickLine={false} axisLine={false} />
+                        <YAxis fontSize={10} tickLine={false} axisLine={false} />
+                        <Tooltip />
+                        <Bar dataKey="avg_range" fill="hsl(var(--primary))" radius={[2,2,0,0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </CardContent>
+                </Card>
+              </div>
+            </>
+          )}
 
           {/* AI Chat Terminal */}
           <Card className="bg-primary/5 border-primary/20 h-[500px] flex flex-col">

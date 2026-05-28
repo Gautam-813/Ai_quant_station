@@ -5,7 +5,7 @@ interface TerminalState {
   selectedSymbol: string
   orderType: string
   direction: string
-  volume: number
+  volume: string
   price: string
   sl: string
   tp: string
@@ -13,7 +13,7 @@ interface TerminalState {
   setSelectedSymbol: (v: string) => void
   setOrderType: (v: string) => void
   setDirection: (v: string) => void
-  setVolume: (v: number) => void
+  setVolume: (v: string) => void
   setPrice: (v: string) => void
   setSl: (v: string) => void
   setTp: (v: string) => void
@@ -26,7 +26,7 @@ export const useTerminalStore = create<TerminalState>()(
       selectedSymbol: 'XAUUSD',
       orderType: 'market',
       direction: 'BUY',
-      volume: 0.1,
+      volume: '0.1',
       price: '',
       sl: '',
       tp: '',

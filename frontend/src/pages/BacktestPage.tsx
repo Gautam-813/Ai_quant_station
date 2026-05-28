@@ -70,7 +70,10 @@ export default function BacktestPage() {
       const res = await axios.get('/api/autopilot/prompts')
       const all = [...(res.data?.default_prompts || []), ...(res.data?.personal_prompts || [])]
       setPrompts(all)
-      if (all.length > 0) setSelectedPromptId(all[0].id)
+      if (all.length > 0) {
+        const stillExists = all.some(p => p.id === selectedPromptId)
+        if (!stillExists) setSelectedPromptId(all[0].id)
+      }
     } catch (err) {
       console.error('Failed to fetch prompts', err)
     }
