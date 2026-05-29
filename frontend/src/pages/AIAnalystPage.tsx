@@ -61,6 +61,8 @@ export default function AIAnalystPage() {
   const setProvider = useAIAnalystStore((s) => s.setProvider)
   const model = useAIAnalystStore((s) => s.model)
   const setModel = useAIAnalystStore((s) => s.setModel)
+  const persona = useAIAnalystStore((s) => s.persona)
+  const setPersona = useAIAnalystStore((s) => s.setPersona)
   const symbol = useAIAnalystStore((s) => s.symbol)
   const setSymbol = useAIAnalystStore((s) => s.setSymbol)
   const customSymbol = useAIAnalystStore((s) => s.customSymbol)
@@ -70,7 +72,6 @@ export default function AIAnalystPage() {
   const dataPeriod = useAIAnalystStore((s) => s.dataPeriod)
   const setDataPeriod = useAIAnalystStore((s) => s.setDataPeriod)
   const timeframe = useAIAnalystStore((s) => s.timeframe)
-  const setTimeframe = useAIAnalystStore((s) => s.setTimeframe)
   const loadedData = useAIAnalystStore((s) => s.loadedData)
   const setLoadedData = useAIAnalystStore((s) => s.setLoadedData)
   const liveMode = useAIAnalystStore((s) => s.liveMode)
@@ -250,7 +251,16 @@ export default function AIAnalystPage() {
     return symbol
   }
 
-  const handleLoadData = async () => {
+  const detectRequiredCandles = (query: string): number => {
+    const lower = query.toLowerCase()
+    if (/daily|weekly|d1|w1|1d\b|previous\s*day|yesterday/i.test(lower)) return 30000
+    if (/4h\b|4[-\s]?hour|four\s*hour|h4\b|4hrs?\b/i.test(lower)) return 10000
+    if (/1h\b|1[-\s]?hour|one\s*hour|hourly|h1\b|1hrs?\b/i.test(lower)) return 5000
+    if (/30m\b|30[-\s]?min|m30|thirty\s*min/i.test(lower)) return 3000
+    return 2000
+  }
+
+  const handleLoadData = async (count?: number) => {
     if (loadData === 'none' || !getSymbolValue()) {
       return
     }
@@ -258,6 +268,7 @@ export default function AIAnalystPage() {
     setDataLoading(true)
     try {
       let data: CandleData[] = []
+      const candleCount = count || 2000
 
       if (loadData === 'yahoo') {
         const res = await axios.get(`/api/data/yahoo/${getSymbolValue()}?period=${dataPeriod}`)
@@ -282,8 +293,8 @@ export default function AIAnalystPage() {
       } else if (loadData === 'mt5') {
         const res = await axios.post('/api/mt5/data/latest', {
           symbol: getSymbolValue(),
-          timeframe: timeframe,
-          count: 1000
+          timeframe: '1m',
+          count: candleCount
         })
         if (res.data?.success && res.data.data?.length > 0) {
           data = res.data.data.map((d: any) => ({
@@ -310,10 +321,18 @@ export default function AIAnalystPage() {
       console.error('Failed to load data:', error)
       setLoadedData(null)
       setCandleData([])
+      toast({ title: 'Data Load Failed', description: `Could not fetch data for ${getSymbolValue()}`, variant: 'destructive' })
     } finally {
       setDataLoading(false)
     }
   }
+
+  // Clear symbol+data when source changes (Yahoo vs MT5 symbols differ)
+  useEffect(() => {
+    setSymbol(undefined)
+    setLoadedData(null)
+    setCandleData([])
+  }, [loadData])
 
   useEffect(() => {
     const fetchSymbols = async () => {
@@ -355,6 +374,40 @@ export default function AIAnalystPage() {
     setLoading(true)
 
     try {
+      // Auto-fetch more data if user's query needs higher TF
+      let currentCandleData = candleData
+      if (loadData === 'mt5' && getSymbolValue()) {
+        const required = detectRequiredCandles(input)
+        if (required > currentCandleData.length) {
+          setDataLoading(true)
+          const res = await axios.post('/api/mt5/data/latest', {
+            symbol: getSymbolValue(),
+            timeframe: '1m',
+            count: required
+          })
+          if (res.data?.success && res.data.data?.length > 0) {
+            currentCandleData = res.data.data.map((d: any) => ({
+              time: typeof d.time === 'number' ? d.time : Math.floor(new Date(d.time).getTime() / 1000),
+              open: d.open || 0,
+              high: d.high || 0,
+              low: d.low || 0,
+              close: d.close || 0
+            }))
+            setCandleData(currentCandleData)
+            const startDate = currentCandleData[0].time
+            const endDate = currentCandleData[currentCandleData.length - 1].time
+            setLoadedData({
+              source: loadData,
+              symbol: getSymbolValue(),
+              startDate: new Date(startDate * 1000).toLocaleDateString(),
+              endDate: new Date(endDate * 1000).toLocaleDateString(),
+              candles: currentCandleData.length
+            })
+          }
+          setDataLoading(false)
+        }
+      }
+
       const allMessages = [...messages, userMessage].map(m => ({
         role: m.role,
         content: m.content
@@ -364,11 +417,12 @@ export default function AIAnalystPage() {
         messages: allMessages,
         provider,
         model,
+        persona,
         symbol: loadData !== 'none' ? getSymbolValue() : null,
         load_market_data: loadData !== 'none' ? loadData : null,
         data_period: dataPeriod,
         timeframe: timeframe,
-        candle_data: candleData.length > 0 ? candleData : null
+        candle_data: currentCandleData.length > 0 ? currentCandleData : null
       })
 
       const assistantMessage: Message = {
@@ -394,6 +448,7 @@ export default function AIAnalystPage() {
       })
     } finally {
       setLoading(false)
+      setDataLoading(false)
     }
   }
 
@@ -401,6 +456,7 @@ export default function AIAnalystPage() {
     if (feedbackSet.includes(idx)) return
     try {
       await axios.post('/api/analytics/feedback', {
+        chat_memory_id: messages[idx]?.chat_memory_id,
         is_helpful: isHelpful
       })
       addFeedback(idx)
@@ -468,18 +524,21 @@ export default function AIAnalystPage() {
                   </SelectContent>
                 </Select>
               </div>
-                <Select value={model} onValueChange={setModel}>
-                  <SelectTrigger className="w-52">
+
+              <div>
+                <Select value={persona} onValueChange={setPersona}>
+                  <SelectTrigger className="w-44">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {availableProviders.find(p => p.id === provider)?.models.map((m) => (
-                      <SelectItem key={m} value={m}>
-                        {m}
-                      </SelectItem>
-                    ))}
+                    <SelectItem value="technical_analyst">Technical Analyst</SelectItem>
+                    <SelectItem value="risk_manager">Risk Manager</SelectItem>
+                    <SelectItem value="quant">Quant / Systematic</SelectItem>
+                    <SelectItem value="swing_trader">Swing Trader</SelectItem>
+                    <SelectItem value="scalper">Scalper</SelectItem>
                   </SelectContent>
                 </Select>
+              </div>
               
               <div className="flex items-center gap-2 border-l pl-4">
                 <span className="text-sm text-muted-foreground">Data:</span>
@@ -526,37 +585,24 @@ export default function AIAnalystPage() {
                         className="w-20 h-8"
                       />
                     )}
-                    <Select value={dataPeriod} onValueChange={setDataPeriod}>
-                      <SelectTrigger className="w-20 h-8">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="1d">1D</SelectItem>
-                        <SelectItem value="1w">1W</SelectItem>
-                        <SelectItem value="1mo">1M</SelectItem>
-                        <SelectItem value="3mo">3M</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    
-                    <Select value={timeframe} onValueChange={setTimeframe}>
-                      <SelectTrigger className="w-16 h-8">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="1m">1m</SelectItem>
-                        <SelectItem value="5m">5m</SelectItem>
-                        <SelectItem value="15m">15m</SelectItem>
-                        <SelectItem value="30m">30m</SelectItem>
-                        <SelectItem value="1h">1h</SelectItem>
-                        <SelectItem value="4h">4h</SelectItem>
-                        <SelectItem value="1d">1d</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    {loadData === 'yahoo' && (
+                      <Select value={dataPeriod} onValueChange={setDataPeriod}>
+                        <SelectTrigger className="w-20 h-8">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="1d">1D</SelectItem>
+                          <SelectItem value="1w">1W</SelectItem>
+                          <SelectItem value="1mo">1M</SelectItem>
+                          <SelectItem value="3mo">3M</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    )}
 
                     <Button 
                       size="sm" 
                       variant="outline"
-                      onClick={handleLoadData}
+                      onClick={() => handleLoadData()}
                       disabled={!getSymbolValue() || dataLoading}
                     >
                       {dataLoading ? 'Loading...' : 'Load'}
@@ -742,7 +788,7 @@ export default function AIAnalystPage() {
                   <span className="text-sm font-medium text-primary">AI is performing deep quantitative analysis...</span>
                 </div>
                 <p className="mt-2 text-xs text-muted-foreground">
-                  Evaluating 1,000+ candles, checking technical indicators, and scanning for trade setups. 
+                  Evaluating {candleData.length}+ candles, checking technical indicators, and scanning for trade setups.
                   This may take a moment for long-form reasoning.
                 </p>
               </div>

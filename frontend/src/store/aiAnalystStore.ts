@@ -26,6 +26,7 @@ interface AIAnalystState {
   messages: Message[]
   provider: string
   model: string
+  persona: string
   symbol: string | undefined
   customSymbol: string
   loadData: 'yahoo' | 'mt5' | 'none'
@@ -39,6 +40,7 @@ interface AIAnalystState {
   addMessage: (message: Message) => void
   setProvider: (provider: string) => void
   setModel: (model: string) => void
+  setPersona: (persona: string) => void
   setSymbol: (symbol: string | undefined) => void
   setCustomSymbol: (customSymbol: string) => void
   setLoadData: (loadData: 'yahoo' | 'mt5' | 'none') => void
@@ -57,11 +59,12 @@ export const useAIAnalystStore = create<AIAnalystState>()(
       messages: [],
       provider: 'nvidia',
       model: 'qwen/qwen3.5-122b-a10b',
+      persona: 'technical_analyst',
       symbol: undefined,
       customSymbol: '',
       loadData: 'none',
       dataPeriod: '1mo',
-      timeframe: '1h',
+          timeframe: '1m',
       loadedData: null,
       liveMode: false,
       feedbackSet: [],
@@ -70,6 +73,7 @@ export const useAIAnalystStore = create<AIAnalystState>()(
       addMessage: (message) => set((state) => ({ messages: [...state.messages, message] })),
       setProvider: (provider) => set({ provider }),
       setModel: (model) => set({ model }),
+      setPersona: (persona) => set({ persona }),
       setSymbol: (symbol) => set({ symbol }),
       setCustomSymbol: (customSymbol) => set({ customSymbol }),
       setLoadData: (loadData) => set({ loadData }),
@@ -89,11 +93,12 @@ export const useAIAnalystStore = create<AIAnalystState>()(
           messages: [],
           provider: 'nvidia',
           model: 'qwen/qwen3.5-122b-a10b',
+          persona: 'technical_analyst',
           symbol: undefined,
           customSymbol: '',
           loadData: 'none',
           dataPeriod: '1mo',
-          timeframe: '1h',
+      timeframe: '1m',
           loadedData: null,
           liveMode: false,
           feedbackSet: [],
@@ -105,6 +110,7 @@ export const useAIAnalystStore = create<AIAnalystState>()(
         messages: state.messages,
         provider: state.provider,
         model: state.model,
+        persona: state.persona,
         symbol: state.symbol,
         customSymbol: state.customSymbol,
         loadData: state.loadData,

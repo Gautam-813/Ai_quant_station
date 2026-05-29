@@ -12,6 +12,8 @@ interface Metrics {
   profit_factor: number
   num_trades: number
   final_equity: number
+  lot_size?: number
+  total_pnl?: number
 }
 
 interface ChatMessage {
@@ -20,6 +22,15 @@ interface ChatMessage {
   execution_output?: string
   execution_charts?: any[]
   execution_tables?: any[]
+}
+
+interface TradeRecord {
+  entry_time: string
+  exit_time: string
+  direction: 'BUY' | 'SELL'
+  entry_price: number
+  exit_price: number
+  pnl: number
 }
 
 interface LabResult {
@@ -32,6 +43,7 @@ interface LabResult {
   analysis?: any
   ai_report: string
   chat_history: ChatMessage[]
+  trade_log?: TradeRecord[]
 }
 
 interface HistoricalLabState {

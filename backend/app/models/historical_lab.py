@@ -16,11 +16,14 @@ class HistoricalBacktest(Base):
     start_date = Column(DateTime(timezone=True), nullable=False)
     end_date = Column(DateTime(timezone=True), nullable=False)
     timeframe = Column(String, default="1m")
+    timeframes = Column(JSON, nullable=True)  # List of Pandas offset strings for multi-TF
     mode = Column(String, nullable=False)
     prompt = Column(Text, nullable=True)
+    provider = Column(String, default="nvidia")
+    model = Column(String, default="qwen/qwen3.5-122b-a10b")
     
     initial_capital = Column(Float, nullable=True)
-    leverage = Column(Float, nullable=True)
+    lot_size = Column(Float, default=0.01)
     include_spread = Column(Boolean, default=False)
     include_commission = Column(Boolean, default=False)
     
@@ -28,6 +31,7 @@ class HistoricalBacktest(Base):
     equity_curve = Column(JSON, nullable=True)
     analysis_data = Column(JSON, nullable=True)
     generated_code = Column(Text, nullable=True)
+    trade_log = Column(JSON, nullable=True)
     
     chat_history = Column(JSON, default=list)
     

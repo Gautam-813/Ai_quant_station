@@ -42,6 +42,17 @@ interface Metrics {
   profit_factor: number
   num_trades: number
   final_equity: number
+  lot_size?: number
+  total_pnl?: number
+}
+
+interface TradeRecord {
+  entry_time: string
+  exit_time: string
+  direction: 'BUY' | 'SELL'
+  entry_price: number
+  exit_price: number
+  pnl: number
 }
 
 interface LabResult {
@@ -58,6 +69,7 @@ interface LabResult {
   }
   ai_report: string
   chat_history: ChatMessage[]
+  trade_log?: TradeRecord[]
 }
 
 const SYMBOLS = ['XAUUSD', 'BTCUSD', 'EURUSD', 'GBPUSD', 'USDJPY', 'XAGUSD']
@@ -401,7 +413,8 @@ export default function HistoricalLabPage() {
 
           {/* Metrics */}
           {mode === 'backtest' && !isProcessing && (
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+              <MetricCard label="Total P&L" value={metrics ? `$${metrics.total_pnl?.toFixed(2) ?? metrics.final_equity - 10000}` : '—'} icon={TrendingUp} color="text-green-400" />
               <MetricCard label="Sharpe Ratio" value={metrics ? metrics.sharpe_ratio.toFixed(2) : '—'} icon={TrendingUp} color="text-green-400" />
               <MetricCard label="Win Rate" value={metrics ? `${metrics.win_rate_pct.toFixed(1)}%` : '—'} icon={Zap} color="text-yellow-400" />
               <MetricCard label="Profit Factor" value={metrics ? metrics.profit_factor.toFixed(2) : '—'} icon={BarChartHorizontal} color="text-blue-400" />
@@ -427,6 +440,41 @@ export default function HistoricalLabPage() {
                     </AreaChart>
                   ) : <div className="h-full flex items-center justify-center text-muted-foreground text-xs italic">Awaiting results...</div>}
                 </ResponsiveContainer>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Trade History */}
+          {mode === 'backtest' && !isProcessing && result?.trade_log && result.trade_log.length > 0 && (
+            <Card className="bg-card/50 border-border/50">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm flex items-center gap-2"><BarChartHorizontal className="w-4 h-4" /> Trade History ({result.trade_log.length} trades)</CardTitle>
+              </CardHeader>
+              <CardContent className="p-0 overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-border/50">
+                      <th className="text-left p-2 font-medium text-muted-foreground">Entry</th>
+                      <th className="text-left p-2 font-medium text-muted-foreground">Exit</th>
+                      <th className="text-center p-2 font-medium text-muted-foreground">Dir</th>
+                      <th className="text-right p-2 font-medium text-muted-foreground">Entry $</th>
+                      <th className="text-right p-2 font-medium text-muted-foreground">Exit $</th>
+                      <th className="text-right p-2 font-medium text-muted-foreground">P&L $</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {result.trade_log.map((t, i) => (
+                      <tr key={i} className="border-b border-border/20 hover:bg-muted/30">
+                        <td className="p-2 text-left text-muted-foreground font-mono">{new Date(t.entry_time).toLocaleString()}</td>
+                        <td className="p-2 text-left text-muted-foreground font-mono">{t.exit_time === 'END OF DATA' ? '—' : new Date(t.exit_time).toLocaleString()}</td>
+                        <td className={`p-2 text-center font-bold ${t.direction === 'BUY' ? 'text-green-400' : 'text-red-400'}`}>{t.direction}</td>
+                        <td className="p-2 text-right font-mono">{t.entry_price.toFixed(2)}</td>
+                        <td className="p-2 text-right font-mono">{t.exit_price.toFixed(2)}</td>
+                        <td className={`p-2 text-right font-mono font-bold ${t.pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>${t.pnl.toFixed(2)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </CardContent>
             </Card>
           )}

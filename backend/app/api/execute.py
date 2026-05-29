@@ -108,6 +108,16 @@ def _restore_state(safe_globals: dict, session: dict) -> None:
         safe_globals[k] = v
 
 
+def _strip_docstrings(code: str) -> str:
+    """Remove triple-quoted strings (docstrings) from AI-generated code to avoid syntax errors."""
+    import re
+    code = re.sub(r'"""[\s\S]*?"""', '', code)
+    code = re.sub(r"'''[\s\S]*?'''", '', code)
+    code = re.sub(r'"""[\s\S]*', '', code)
+    code = re.sub(r"'''[\s\S]*", '', code)
+    return code
+
+
 # ── Universal JSON Sanitizer ───────────────────────────────────────────────
 def _sanitize(obj):
     from datetime import date, time, datetime
@@ -184,6 +194,11 @@ def _execute_sandbox_sync(
             for col in ['open', 'high', 'low', 'close', 'volume']:
                 if col in df.columns:
                     df[col] = _pd.to_numeric(df[col], errors='coerce')
+            # Restore datetime index from 'datetime' column when available
+            if 'datetime' in df.columns:
+                df['datetime'] = _pd.to_datetime(df['datetime'])
+                df = df.set_index('datetime')
+                df.index.name = None
         except Exception as e:
             return {"success": False, "error": f"Failed to create DataFrame: {str(e)}"}
 
@@ -351,7 +366,7 @@ def _execute_sandbox_sync(
 
     try:
         with contextlib.redirect_stdout(output):
-            exec(code, safe_globals)
+            exec(_strip_docstrings(code), safe_globals)
 
         output_text = output.getvalue()
         charts = safe_globals.get('_charts', [])
@@ -448,7 +463,11 @@ async def run_python_code(
     md = market_data
     if inject_df is not None and md is None:
         try:
-            md = inject_df.to_dict('records') if hasattr(inject_df, 'to_dict') else inject_df
+            df_for_records = inject_df
+            if hasattr(df_for_records, 'index') and type(df_for_records.index).__name__ == 'DatetimeIndex':
+                df_for_records = df_for_records.reset_index()
+            records = df_for_records.to_dict('records') if hasattr(df_for_records, 'to_dict') else df_for_records
+            md = _sanitize(records) if isinstance(records, list) else records
         except Exception:
             md = None
 

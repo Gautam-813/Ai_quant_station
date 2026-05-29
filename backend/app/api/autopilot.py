@@ -16,10 +16,14 @@ import re
 from sqlalchemy import select, func
 from openai import AsyncOpenAI
 import httpx
+import pandas as pd
+import ta
+import numpy as np
 
 from ..core.config import settings
 from ..core.security import get_current_user
 from ..core.database import AsyncSessionLocal
+from ..core.providers import PROVIDERS, get_api_key as _get_api_key, get_base_url, resolve_api_key
 from ..models.ai_memory import AutopilotTrade, AutopilotSettings, UserPrompt
 
 router = APIRouter(prefix="/autopilot", tags=["Autopilot"])
@@ -72,9 +76,6 @@ def load_prompts():
             return [line.strip() for line in f.readlines() if line.strip() and "." in line]
     except Exception:
         return []
-
-
-from ..core.providers import PROVIDERS, get_api_key as _get_api_key, get_base_url, resolve_api_key
 
 
 def add_log(user_id: int, message: str, level: str = "INFO"):
@@ -335,17 +336,86 @@ async def run_autopilot_cycle(user_id: int):
         display_id = f"#{prompt_num}"
     add_log(user_id, f"Using Strategy {display_id}: {prompt_text[:50]}...")
 
-    market_data = await get_market_data(user_id, symbol, connector_url=connector_url)
+    # Detect required candle count based on prompt text
+    def _detect_required_candles(text: str) -> int:
+        lower = text.lower()
+        if re.search(r'daily|weekly|d1|w1|previous\s*day|yesterday', lower):
+            return 3000
+        if re.search(r'4h\b|4[-\s]?hour|four\s*hour|h4\b|4hrs?\b', lower):
+            return 2000
+        if re.search(r'1h\b|1[-\s]?hour|one\s*hour|hourly|h1\b|1hrs?\b', lower):
+            return 1000
+        return 500
+
+    data_count = _detect_required_candles(prompt_text)
+    market_data = await get_market_data(user_id, symbol, count=data_count, connector_url=connector_url)
     if not market_data or len(market_data) == 0:
         add_log(user_id, "No market data available", "ERROR")
         state["stats"]["error_count"] += 1
         return
-    add_log(user_id, f"Loaded {len(market_data)} candles for {symbol}")
+    add_log(user_id, f"Loaded {len(market_data)} candles for {symbol} (requested {data_count})")
 
     latest = market_data[-1]
     samples = []
-    for c in market_data[-20:]:
+    for c in market_data[-60:]:
         samples.append(f"O:{c.get('open', 0):.2f} H:{c.get('high', 0):.2f} L:{c.get('low', 0):.2f} C:{c.get('close', 0):.2f}")
+
+    # Multi-TF: resample 1m data to higher timeframes for AI context
+    multi_tf_section = ""
+    try:
+        df_1m = pd.DataFrame(market_data)
+        df_1m['datetime'] = pd.to_datetime(df_1m['time'], unit='s') if 'time' in df_1m.columns else pd.to_datetime(df_1m['timestamp'], unit='s')
+        df_1m = df_1m.set_index('datetime').sort_index()
+        for c in ['open', 'high', 'low', 'close']:
+            if c in df_1m.columns:
+                df_1m[c] = pd.to_numeric(df_1m[c], errors='coerce')
+
+        tf_lines = []
+        for alias, suffix in [('1H', 'H1'), ('4H', 'H4'), ('1D', 'D1')]:
+            df_tf = df_1m.resample(alias).agg({
+                'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last'
+            }).dropna()
+            if len(df_tf) < 5:
+                continue
+            tf_latest = df_tf.iloc[-1]
+            close = df_tf['close'].astype(float)
+            rsi = ta.momentum.rsi(close, window=14) if len(df_tf) >= 15 else pd.Series(50.0, index=df_tf.index)
+            ema9 = ta.trend.ema_indicator(close, window=9) if len(df_tf) >= 10 else close
+            ema50 = ta.trend.sma_indicator(close, window=50) if len(df_tf) >= 51 else close
+            trend = "UP" if ema9.iloc[-1] > ema50.iloc[-1] else "DOWN" if ema9.iloc[-1] < ema50.iloc[-1] else "SIDEWAYS"
+            tf_lines.append(
+                f"{alias}: O={tf_latest['open']:.2f} H={tf_latest['high']:.2f} L={tf_latest['low']:.2f} C={tf_latest['close']:.2f} | "
+                f"RSI(14)={rsi.iloc[-1]:.1f} EMA9={ema9.iloc[-1]:.2f} EMA50={ema50.iloc[-1]:.2f} Trend={trend}"
+            )
+        if tf_lines:
+            multi_tf_section = "\nHIGHER TIMEFRAMES:\n" + "\n".join(tf_lines) + "\n"
+            add_log(user_id, f"Multi-TF context built: {', '.join(l.split(':')[0] for l in tf_lines)}")
+
+        # Previous day high/low from 1m data (group by calendar date)
+        df_1m['date'] = df_1m.index.date
+        dates = sorted(df_1m['date'].unique(), reverse=True)
+        if len(dates) >= 2:
+            prev_date = dates[1]
+            today = dates[0]
+            prev_mask = df_1m['date'] == prev_date
+            prev_day = df_1m[prev_mask]
+            today_data = df_1m[df_1m['date'] == today]
+            prev_high = prev_day['high'].max()
+            prev_low = prev_day['low'].min()
+            prev_close = prev_day['close'].iloc[-1]
+            today_open = today_data['open'].iloc[0]
+            today_high = today_data['high'].max()
+            today_low = today_data['low'].min()
+            today_close_price = today_data['close'].iloc[-1]
+            session_type = "BULLISH" if today_close_price > prev_close else "BEARISH" if today_close_price < prev_close else "RANGING"
+            prev_line = (
+                f"PREVIOUS DAY: Date={prev_date} High={prev_high:.2f} Low={prev_low:.2f} Close={prev_close:.2f} | "
+                f"TODAY: Open={today_open:.2f} High={today_high:.2f} Low={today_low:.2f} | "
+                f"Session={session_type}"
+            )
+            multi_tf_section += prev_line + "\n"
+    except Exception as e:
+        add_log(user_id, f"Multi-TF computation failed: {str(e)}", "WARNING")
 
     error_feedback = state.get("last_error_feedback")
     error_section = ""
@@ -364,7 +434,7 @@ CURRENT MARKET DATA for {symbol}:
 - Latest: O:{latest.get('open', 0):.2f} H:{latest.get('high', 0):.2f} L:{latest.get('low', 0):.2f} C:{latest.get('close', 0):.2f}
 
 SAMPLES (Last 20 candles): {', '.join(samples)}
-{error_section}
+{multi_tf_section}{error_section}
 ORDER TYPES:
 - "market" — execute immediately at current price (for entry_price use null or current price)
 - "limit" — pending order at a BETTER price (BUY_LIMIT below market, SELL_LIMIT above market). Set entry_price to desired level.

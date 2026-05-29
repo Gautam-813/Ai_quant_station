@@ -192,12 +192,13 @@ class ChatRequest(BaseModel):
     messages: List[ChatMessage]
     provider: str
     model: str
+    persona: Optional[str] = "technical_analyst"  # technical_analyst, risk_manager, quant, swing_trader, scalper
     symbol: Optional[str] = None
     load_market_data: Optional[str] = None  # "yahoo" or "mt5"
     data_period: Optional[str] = "1mo"  # 1d, 1w, 1mo, 3mo, 1y
     candle_count: Optional[int] = 1000
-    timeframe: Optional[str] = "1h"
-    candle_data: Optional[List[dict]] = None  # Loaded candle data from frontend
+    timeframe: Optional[str] = "1h"  # Primary timeframe
+    candle_data: Optional[List[dict]] = None  # Candle data from frontend
 
 
 class ChatResponse(BaseModel):

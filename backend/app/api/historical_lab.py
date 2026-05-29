@@ -7,6 +7,7 @@ from datetime import datetime
 import json
 import logging
 import pandas as pd
+import numpy as np
 import asyncio
 import re
 from pydantic import BaseModel, Field
@@ -27,6 +28,85 @@ router = APIRouter(prefix="/historical-lab", tags=["Historical Lab"])
 # TTL: 5 minutes after last access
 _df_cache: dict[int, tuple[float, pd.DataFrame]] = {}
 _DF_CACHE_TTL = 300  # seconds
+
+TF_MAPPING = {
+    "M1": "1T", "M5": "5T", "M15": "15T", "M30": "30T",
+    "H1": "1H", "H2": "2H", "H4": "4H",
+    "D1": "1D", "W1": "1W",
+}
+
+def _extract_timeframes(prompt: str, primary_tf: str) -> list:
+    """Extract timeframe references from a strategy prompt.
+
+    Returns list of Pandas offset strings (e.g. ['5T', '15T', '1H']).
+    Always includes the primary timeframe.
+    """
+    detected = {primary_tf}
+    for label, offset in TF_MAPPING.items():
+        if re.search(rf'\b{label}\b', prompt, re.IGNORECASE):
+            detected.add(offset)
+    return sorted(detected, key=lambda x: _tf_sort_key(x))
+
+def _tf_sort_key(tf: str) -> int:
+    """Sort timeframes ascending by granularity (1T < 5T < 15T < 1H < 4H < 1D)."""
+    u = tf[-1]
+    v = int(tf[:-1])
+    scale = {"T": 1, "H": 60, "D": 1440}.get(u, 999)
+    return v * scale
+
+def _load_multi_timeframe(symbol: str, start: str, end: str, timeframes: list) -> dict:
+    """Load 1-minute data and resample to multiple timeframes with indicators.
+
+    Returns dict: {"1H": df_h1_with_indicators, "15T": df_m15_with_indicators, ...}
+    """
+    df_1m = load_data(symbol, start, end, "1T")
+    if df_1m is None:
+        return {}
+    # load_data resets the index; restore datetime index for resampling
+    if "datetime" in df_1m.columns:
+        df_1m = df_1m.set_index("datetime")
+    if not isinstance(df_1m.index, pd.DatetimeIndex):
+        logger.warning(f"Base data index is {type(df_1m.index).__name__}, converting")
+        df_1m.index = pd.to_datetime(df_1m.index)
+
+    result = {}
+    for tf in timeframes:
+        try:
+            if tf == "1T":
+                df_tf = df_1m.copy()
+            else:
+                df_tf = df_1m.resample(tf).agg({
+                    "open": "first", "high": "max", "low": "min",
+                    "close": "last", "volume": "sum", "timestamp": "first"
+                }).dropna()
+            if not isinstance(df_tf.index, pd.DatetimeIndex):
+                df_tf.index = pd.to_datetime(df_tf.index)
+            df_tf = add_indicators(df_tf)
+            result[tf] = df_tf
+        except Exception as e:
+            logger.error(f"Failed to load timeframe {tf}: {e}")
+            continue
+    return result
+
+def _merge_higher_tf(df_primary: pd.DataFrame, extra_dfs: dict, primary_tf: str) -> pd.DataFrame:
+    """Merge higher-timeframe indicator columns into the primary dataframe with _<tf> suffix.
+
+    Example: H1's rsi_14 column becomes rsi_14_1h in the M15 primary df.
+    """
+    if not isinstance(df_primary.index, pd.DatetimeIndex):
+        df_primary = df_primary.copy()
+        df_primary.index = pd.to_datetime(df_primary.index)
+    df = df_primary.copy()
+    for tf, df_extra in extra_dfs.items():
+        if tf == primary_tf:
+            continue
+        if not isinstance(df_extra.index, pd.DatetimeIndex):
+            continue
+        suffix = f"_{tf.replace('T', 'min').replace('H', 'h').replace('D', 'd')}"
+        indicator_cols = [c for c in df_extra.columns if c not in ('open', 'high', 'low', 'close', 'volume', 'timestamp')]
+        for col in indicator_cols:
+            df[f"{col}{suffix}"] = df_extra[col].reindex(df.index, method='ffill').bfill().fillna(0)
+    return df
 
 
 def _get_cached_df(backtest_id: int, symbol: str, start: str, end: str, timeframe: str) -> pd.DataFrame:
@@ -62,10 +142,11 @@ class LabRequest(BaseModel):
     start_date: str              # e.g. "2010-01-01"
     end_date: str                # e.g. "2025-12-31"
     timeframe: str = "1T"        # "1T", "5T", "1H"
+    timeframes: Optional[List[str]] = None  # Auto-detected from prompt if not set
     prompt: Optional[str] = ""   # User's strategy/analysis description
     # Backtest-only fields
     initial_capital: float = 10000.0
-    leverage: float = 100.0
+    lot_size: float = 0.01
     include_spread: bool = False
     include_commission: bool = False
     provider: Optional[str] = "nvidia"
@@ -82,6 +163,7 @@ class LabResponse(BaseModel):
     analysis: Optional[dict] = None
     ai_report: Optional[str] = Field(default="")
     chat_history: List[dict] = []
+    trade_log: Optional[list] = None
 
 
 class ChatMessageRequest(BaseModel):
@@ -103,42 +185,125 @@ async def _generate_signals_from_prompt(df: pd.DataFrame, prompt: str, symbol: s
     if not prompt:
         df["signal"] = 0
         return df, generated_code
-        
-    system_prompt = f"""You are a Strategy Developer. Given a dataset 'df' for {symbol} and a strategy description, write Python code to:
-1. Calculate necessary indicators.
-2. Create a 'signal' column where 1=BUY, -1=SELL, 0=NONE.
-3. Ensure the 'signal' column is added to 'df'.
+
+    # Build column description for the AI
+    base_cols = ['open', 'high', 'low', 'close', 'volume', 'datetime']
+    indicator_cols = sorted([c for c in df.columns if c not in base_cols and c != 'timestamp'])
+    indicator_str = ", ".join(indicator_cols[:50])  # cap at 50 to avoid huge prompts
+    extra_info = ""
+    extra_tf_cols = [c for c in indicator_cols if c.count('_') > 1 and c.rsplit('_', 1)[1] in ('1h', '4h', '1d', '5min', '15min', '30min', '1w')]
+    if extra_tf_cols:
+        shown = extra_tf_cols[:10]
+        extra_info = f"\nNOTE: Columns ending with _1h, _4h, _5min, _15min etc. are from higher timeframes merged into this df. For example, rsi_14_1h is the H1 RSI value."
+
+    system_prompt = f"""You are a Strategy Developer. You MUST write Python code — NO text, NO explanations.
+
+GIVEN:
+- A pandas DataFrame `df` loaded in the sandbox with columns: {indicator_str}
+- df already has a datetime index. Do NOT modify or recreate it.
+- The 'ta' library is available. Use existing columns first; only calculate new ones if needed.{extra_info}
+
+CRITICAL — NEVER do any of these:
+- NEVER create or assign datetime, date, or time columns (df already has them)
+- NEVER use string literals like '2020-01-01' or pd.date_range()
+- NEVER use groupby, shift, rolling with date-offset strings
+- NEVER use string operations on column names or values
+- Use only numeric column values in calculations
+
+YOUR TASK:
+Write code that adds a 'signal' column to 'df' where:
+  - 1 = BUY
+  - -1 = SELL  
+  - 0 = NO SIGNAL
+
+If the strategy references concepts not in 'df' (e.g., session times, spread, position management rules), ADAPT the logic to use only what's available. For example, use ATR instead of ADX.
+
+RULES:
+- Use columns from df directly (e.g. df['rsi_14'], df['ema_9_1h']).
+- Do NOT try to load files, call APIs, or reference undefined variables.
+- Output ONLY ```python ... ``` with no text before or after.
+- Outputting ANY text outside the code block will cause rejection.
 
 Strategy: {prompt}
 
-ONLY output the Python code block. No explanation."""
+Write ONLY the code block now:"""
 
     try:
         client = await _get_ai_client(provider)
         response = await client.chat.completions.create(
             model=model,
-            messages=[{"role": "system", "content": system_prompt}],
-            temperature=0.1,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Generate strategy code for {symbol} using only the columns in df."}
+            ],
+            temperature=0.05,
             timeout=30
         )
-        code = response.choices[0].message.content or ""
-        python_match = re.search(r"```python\s*(.*?)(?:```|$)", code, re.S)
+        raw = response.choices[0].message.content or ""
+        
+        # Retry up to 2 times if no code block found
+        for retry in range(2):
+            python_match = re.search(r"```python\s*(.*?)(?:```|$)", raw, re.S)
+            if python_match:
+                break
+            logger.warning(f"AI response had no code block (attempt {retry+1}). Retrying with stricter prompt...")
+            response = await client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Generate strategy code for {symbol} using only the columns in df."},
+                    {"role": "assistant", "content": raw},
+                    {"role": "user", "content": "You MUST output Python code inside ```python ... ```. No text, no explanations. Only the code block."}
+                ],
+                temperature=0.05,
+                timeout=30
+            )
+            raw = response.choices[0].message.content or ""
+        
+        python_match = re.search(r"```python\s*(.*?)(?:```|$)", raw, re.S)
         if python_match:
             code_clean = python_match.group(1)
             generated_code = code_clean
-            # Execute in safe sandbox — inject DataFrame directly to avoid serialization
             from .execute import run_python_code
             res = await run_python_code(code_clean, symbol=symbol, inject_df=df.copy(), user_id=user_id)
             
-            if res.get("success") and res.get("modified_data"):
-                df_mod = pd.DataFrame(res["modified_data"])
-                if "signal" in df_mod.columns:
-                    df["signal"] = df_mod["signal"].reindex(df.index).fillna(0)
-                    logger.info(f"Successfully integrated AI signals for {symbol}")
+            success = False
+            for attempt in range(5):
+                if res.get("success") and res.get("modified_data"):
+                    df_mod = pd.DataFrame(res["modified_data"])
+                    if "signal" in df_mod.columns:
+                        # df_mod has RangeIndex (from JSON roundtrip), df has DatetimeIndex.
+                        # reindex by label would match nothing → all zeros. Use .values instead.
+                        df["signal"] = df_mod["signal"].values[:len(df)]
+                        logger.info(f"Successfully integrated AI signals for {symbol}")
+                        success = True
+                        break
+                    error_detail = "Signal column not found in output"
                 else:
-                    logger.warning("AI code executed but no 'signal' column found.")
-            else:
-                logger.error(f"Signal code execution failed: {res.get('error')}")
+                    error_detail = (res.get("error") or "Unknown error")[:500]
+                
+                logger.warning(f"Signal code attempt {attempt+1} failed: {error_detail}. Asking AI to fix...")
+                response = await client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": f"Generate strategy code for {symbol} using only the columns in df."},
+                        {"role": "assistant", "content": raw},
+                        {"role": "user", "content": f"Your previous code failed with: {error_detail}. Fix the error and output ONLY valid Python code inside ```python ... ```."}
+                    ],
+                    temperature=min(0.05 + attempt * 0.1, 0.5),
+                    timeout=30
+                )
+                raw = response.choices[0].message.content or ""
+                python_match = re.search(r"```python\s*(.*?)(?:```|$)", raw, re.S)
+                if python_match:
+                    code_clean = python_match.group(1)
+                    generated_code = code_clean
+                    res = await run_python_code(code_clean, symbol=symbol, inject_df=df.copy(), user_id=user_id)
+            
+            if not success:
+                logger.error(f"Signal generation failed after all attempts. Using zero signals as fallback.")
+                df["signal"] = 0
     except Exception as e:
         logger.error(f"Signal generation error: {e}")
     
@@ -199,11 +364,20 @@ async def run_backtest_task(backtest_id: int, request_data: dict, user_id: int =
             await db.commit()
             
             # 2. Execute Logic
-            df = load_data(record.symbol, record.start_date.strftime('%Y-%m-%d'), record.end_date.strftime('%Y-%m-%d'), record.timeframe)
+            prompt_text = record.prompt or ""
+            if record.timeframes:
+                tfs = record.timeframes
+            else:
+                tfs = _extract_timeframes(prompt_text, record.timeframe)
+            
+            tf_data = _load_multi_timeframe(record.symbol, record.start_date.strftime('%Y-%m-%d'), record.end_date.strftime('%Y-%m-%d'), tfs)
+            primary_key = record.timeframe
+            df = tf_data.get(primary_key)
             if df is None or df.empty:
                 raise ValueError("No data found for the selected range.")
-                
-            df = add_indicators(df)
+            
+            # Merge higher-TF indicators into primary df
+            df = _merge_higher_tf(df, tf_data, primary_key)
             
             # Seed the DataFrame cache so chat follow-ups don't reload from disk
             import time as _time
@@ -212,15 +386,26 @@ async def run_backtest_task(backtest_id: int, request_data: dict, user_id: int =
             equity_curve = None
             metrics = None
             analysis = None
+            trade_log = None
             
             if record.mode == "backtest":
                 # AI-driven strategy translation
-                df, generated_code = await _generate_signals_from_prompt(df, record.prompt or "", record.symbol, user_id=user_id)
+                df, generated_code = await _generate_signals_from_prompt(
+                    df, record.prompt or "", record.symbol,
+                    provider=record.provider or "nvidia",
+                    model=record.model or "qwen/qwen3.5-122b-a10b",
+                    user_id=user_id
+                )
                 record.generated_code = generated_code
-                
+            
+            # Engines expect 'datetime' as a column, not DatetimeIndex
+            if isinstance(df.index, pd.DatetimeIndex):
+                df = df.reset_index()
+            
+            if record.mode == "backtest":
                 engine = BacktestEngine(
                     initial_capital=record.initial_capital,
-                    leverage=record.leverage,
+                    lot_size=record.lot_size or 0.01,
                     spread_pips=3.0 if record.include_spread else 0.0,
                     commission_per_lot=7.0 if record.include_commission else 0.0
                 )
@@ -228,6 +413,7 @@ async def run_backtest_task(backtest_id: int, request_data: dict, user_id: int =
                 if res:
                     equity_curve = res["equity_curve"]
                     metrics = res["metrics"]
+                    trade_log = res.get("trade_log")
             else:
                 engine = DeepAnalysisEngine()
                 analysis = engine.run(df)
@@ -239,6 +425,7 @@ async def run_backtest_task(backtest_id: int, request_data: dict, user_id: int =
             record.metrics = metrics
             record.equity_curve = equity_curve
             record.analysis_data = analysis
+            record.trade_log = trade_log
             record.chat_history = [{"role": "assistant", "content": report}]
             record.status = "completed"
             
@@ -270,6 +457,12 @@ async def run_lab(
     if request.symbol not in AVAILABLE_SYMBOLS:
         raise HTTPException(status_code=400, detail="Invalid symbol.")
     
+    # Auto-detect timeframes from prompt if not explicitly set
+    if request.timeframes:
+        detected_tfs = request.timeframes
+    else:
+        detected_tfs = _extract_timeframes(request.prompt or "", request.timeframe)
+
     # 1. Create a "Pending" record immediately
     backtest_record = HistoricalBacktest(
         user_id=current_user["id"],
@@ -277,10 +470,13 @@ async def run_lab(
         start_date=pd.to_datetime(request.start_date),
         end_date=pd.to_datetime(request.end_date),
         timeframe=request.timeframe,
+        timeframes=detected_tfs,
         mode=request.mode,
         prompt=request.prompt,
+        provider=request.provider or "nvidia",
+        model=request.model or "qwen/qwen3.5-122b-a10b",
         initial_capital=request.initial_capital,
-        leverage=request.leverage,
+        lot_size=request.lot_size,
         include_spread=request.include_spread,
         include_commission=request.include_commission,
         status="pending"
@@ -321,7 +517,8 @@ async def get_status(
         metrics=record.metrics,
         analysis=record.analysis_data,
         ai_report=str(record.chat_history[-1].get("content", "") or "") if record.chat_history else "",
-        chat_history=record.chat_history
+        chat_history=record.chat_history,
+        trade_log=record.trade_log,
     )
 
 
@@ -388,9 +585,14 @@ Be precise, professional, and mathematically rigorous."""
             )
             
             msg_obj = response.choices[0].message
-            ai_content = getattr(msg_obj, 'content', None) or getattr(msg_obj, 'reasoning_content', None) or ""
+            ai_content = msg_obj.content or ""
+            reasoning_text = msg_obj.reasoning_content if hasattr(msg_obj, 'reasoning_content') and msg_obj.reasoning_content else None
             
-            if not ai_content:
+            # Fallback: use reasoning_content if content is empty
+            if not ai_content and reasoning_text:
+                ai_content = reasoning_text
+            
+            if not ai_content and not reasoning_text:
                 if attempt == 0: continue
                 raise ValueError("Empty AI response")
 
@@ -432,6 +634,7 @@ Be precise, professional, and mathematically rigorous."""
             ai_msg_data = {
                 "role": "assistant", 
                 "content": str(ai_content),
+                "reasoning": reasoning_text,
                 "execution_output": execution_results.get("output") if execution_results else None,
                 "execution_charts": execution_results.get("charts") if execution_results else None,
                 "execution_tables": execution_results.get("tables") if execution_results else None,

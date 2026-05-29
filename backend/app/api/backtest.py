@@ -19,6 +19,7 @@ from ..core.config import settings
 from ..core.security import get_current_user
 from ..core.database import AsyncSessionLocal
 from ..core.providers import PROVIDERS, get_api_key as _get_api_key, get_base_url
+from ..core.historical_loader import add_indicators
 from ..models.ai_memory import UserPrompt, DefaultPromptStrategy
 from ..models.historical_lab import HistoricalBacktest
 
@@ -34,6 +35,16 @@ CONTRACT_MULTIPLIERS = {
     'US30': 10, 'SPX500': 50, 'NAS100': 20, 'DAX40': 25,
     'UK100': 10, 'JP225': 10,
 }
+
+def _tf_to_minutes(tf: str) -> int:
+    if tf.endswith('T'):
+        return int(tf[:-1])
+    elif tf.endswith('H'):
+        return int(tf[:-1]) * 60
+    elif tf.endswith('D'):
+        return int(tf[:-1]) * 1440
+    return 1
+
 
 class BacktestRequest(BaseModel):
     prompt_id: str
@@ -96,14 +107,15 @@ OBJECTIVE: Generate an IMPROVED version that outperforms the previous best resul
 
 RULES:
 1. Use the variable 'df' which is a pandas DataFrame with columns: open, high, low, close, volume.
-2. Use 'ta' library for technical indicators (e.g., ta.momentum.rsi, ta.trend.sma_indicator, ta.trend.ema_indicator).
-3. The function must be named 'calculate_signals(df)'.
-4. It must return a pandas Series named 'signal' where:
+2. The DataFrame also has indicator columns from higher timeframes with _1h, _4h, _1d suffixes, e.g.: rsi_14_1h, ema_9_4h, sma_50_1d. Reference them as: df['rsi_14_1h'], df['ema_9_4h'], etc.
+3. Use 'ta' library for technical indicators (e.g., ta.momentum.rsi, ta.trend.sma_indicator, ta.trend.ema_indicator).
+4. The function must be named 'calculate_signals(df)'.
+5. It must return a pandas Series named 'signal' where:
    - 1 = Buy Signal
    - -1 = Sell Signal
    - 0 = No Signal
-5. Be precise with logic. If multiple conditions are mentioned, all must be met.
-6. Output ONLY the code block, no explanations.
+6. Be precise with logic. If multiple conditions are mentioned, all must be met.
+7. Output ONLY the code block, no explanations.
 
 EXAMPLE:
 ```python
@@ -362,6 +374,7 @@ async def run_backtest(request: BacktestRequest, current_user: dict = Depends(ge
         return BacktestResponse(success=False, error=f"No data for {request.symbol} between {request.start_date} and {request.end_date}")
 
     # Resample if needed (Parquet is M1)
+    m1_df = full_df.copy()
     if request.timeframe != "1T":
         full_df.set_index('datetime', inplace=True)
         resampled = full_df.resample(request.timeframe).agg({
@@ -372,6 +385,27 @@ async def run_backtest(request: BacktestRequest, current_user: dict = Depends(ge
             'volume': 'sum'
         }).dropna()
         full_df = resampled.reset_index()  # keep datetime as a column
+
+    # Multi-TF: merge higher-TF indicator columns into primary df
+    HIGHER_TF_CONFIG = {
+        '1H': ('_1h', 60),
+        '4H': ('_4h', 240),
+        '1D': ('_1d', 1440),
+    }
+    primary_minutes = _tf_to_minutes(request.timeframe)
+    tfs_to_merge = {alias: (suffix, mins) for alias, (suffix, mins) in HIGHER_TF_CONFIG.items() if mins > primary_minutes}
+    if tfs_to_merge:
+        primary_idx = pd.DatetimeIndex(full_df['datetime'])
+        df_primary = add_indicators(full_df.set_index('datetime'))
+        for alias, (suffix, mins) in tfs_to_merge.items():
+            df_higher = m1_df.set_index('datetime').resample(alias).agg({
+                'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'
+            }).dropna()
+            df_higher = add_indicators(df_higher)
+            indicator_cols = [c for c in df_higher.columns if c not in ('open', 'high', 'low', 'close', 'volume', 'timestamp')]
+            for col in indicator_cols:
+                df_primary[f"{col}{suffix}"] = df_higher[col].reindex(primary_idx, method='ffill').bfill().fillna(0)
+        full_df = df_primary.reset_index()
 
     # 4. Run Backtest with Auto-Retry / Self-Correction
     max_retries = 2

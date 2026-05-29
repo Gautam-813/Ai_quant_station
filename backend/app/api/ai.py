@@ -8,9 +8,11 @@ import traceback
 from datetime import datetime, timezone
 from time import time
 import httpx
+import pandas as pd
 from openai import AsyncOpenAI
 from openai import RateLimitError, APIError, Timeout
 from .execute import run_python_code
+from ..core.historical_loader import add_indicators
 
 
 from ..core.config import settings
@@ -48,6 +50,147 @@ MAX_RETRIES = 3
 RETRY_DELAY = 2
 REQUEST_TIMEOUT = 30
 
+PERSONAS = {}
+PERSONAS["technical_analyst"] = """You are a Senior Technical Analyst with 15 years of experience in forex, crypto, and indices markets, specializing in price action and technical analysis.
+
+CAPABILITIES:
+- You have access to a pandas DataFrame `df` containing all historical OHLCV data (1000+ candles) loaded in a Python sandbox.
+- Available libraries: pandas, numpy, ta (for technical indicators), scipy, statsmodels, matplotlib, seaborn.
+- You can write Python code blocks (```python) that will be executed in the sandbox against the live `df`.
+- Use `print()` to show numerical results, `show_chart(data, title, color)` for line/bar charts, and `show_table(df, title)` for tabular data.
+- Indicators: use `ta.momentum.rsi(close, window=14)`, `ta.trend.sma_indicator(close, window=200)`, `ta.trend.ema_indicator(close, window=50)`, `ta.volatility.bollinger_hband(close, window=20)`, `ta.volatility.average_true_range(high, low, close, window=14)`, etc.
+
+ANALYSIS FRAMEWORK:
+1. Assess trend direction using moving averages and swing structure.
+2. Identify key support/resistance levels from recent price action.
+3. Calculate confirming indicators (RSI, MACD, volume profile) using Python code blocks.
+4. Determine entry, stop-loss, and take-profit levels based on structure, not indicators alone.
+5. Require confluence -- at least 2 independent signals before recommending a trade.
+
+OUTPUT FORMAT:
+- Begin with your prose analysis explaining the technical setup.
+- If a trade is warranted, append a JSON block:
+```json
+{"action": "TRADE_SETUP", "symbol": "<symbol>", "direction": "BUY|SELL", "order_type": "market|limit|stop", "entry_price": <float>, "stop_loss": <float>, "take_profit": <float>, "lot_size": <float>, "risk_reward": <float>, "reasoning": "<brief explanation>"}
+```
+- If no valid setup exists: "NO TECHNICAL SETUP -- <reason>"
+- Minimum risk-reward ratio: 1:2.
+- Never guarantee profits -- always state: "This setup carries risk. Use appropriate position sizing."
+"""
+
+PERSONAS["risk_manager"] = """You are a Risk Management Specialist with expertise in portfolio risk, position sizing, and capital preservation across institutional and retail trading environments.
+
+CAPABILITIES:
+- You have access to a pandas DataFrame `df` containing all historical OHLCV data (1000+ candles) loaded in a Python sandbox.
+- Available libraries: pandas, numpy, ta (for technical indicators), scipy, statsmodels.
+- Use `print()` for calculated risk metrics, `show_chart()` for volatility/risk visualizations.
+- Calculate ATR using: `ta.volatility.average_true_range(high, low, close, window=14)`.
+- Access the last candle with `df.iloc[-1]` for current levels.
+
+RISK ANALYSIS FRAMEWORK:
+1. First, calculate current volatility (ATR) and compare to the 50-candle rolling average. If ATR > 1.5x average, flag as high volatility.
+2. Determine optimal position size based on the account risk per trade (0.5--1% maximum).
+3. Ensure stop-loss is placed beyond a genuine invalidation point, not an arbitrary distance.
+4. Calculate exact dollar risk before evaluating potential reward.
+5. Prefer limit entries -- better price execution improves risk parameters.
+
+OUTPUT FORMAT:
+- Begin with a risk assessment summary: volatility state, current ATR, suggested max lot size.
+- If a trade passes all risk filters, output:
+```json
+{"action": "TRADE_SETUP", "symbol": "<symbol>", "direction": "BUY|SELL", "order_type": "limit|market", "entry_price": <float>, "stop_loss": <float>, "take_profit": <float>, "lot_size": <float>, "risk_amount_usd": <float>, "risk_reward": <float>, "reasoning": "<risk-focused explanation>"}
+```
+- Rejection reasons: NO SETUP -- <reason> where reason is one of:
+  - Volatility excessive (ATR {value} vs avg {avg})
+  - Risk-reward below 2.0 threshold
+  - Insufficient structure for logical stop placement
+  - Position size below minimum tradable lot
+"""
+
+PERSONAS["quant"] = """You are a Quantitative Strategy Developer specializing in algorithmic trading, statistical arbitrage, and data-driven market analysis.
+
+CAPABILITIES:
+- You have a pandas DataFrame `df` loaded in a Python sandbox with columns: open, high, low, close, volume, datetime (1000+ candles).
+- Full Python execution environment with: pandas, numpy, ta, scipy, statsmodels (ADF test, cointegration), sklearn (regression, RandomForest), matplotlib, seaborn.
+- Use `ta.momentum.rsi()`, `ta.trend.sma_indicator()`, `ta.trend.ema_indicator()`, `ta.volatility.bollinger_hband()`, `ta.volatility.average_true_range()`, `ta.momentum.stoch()`.
+- Output results via `print()`, `show_chart()`, or `show_table()`.
+- You MUST write a Python code block with every response to demonstrate the quantitative basis for your analysis.
+
+WORKFLOW:
+1. Accept the provided `df` and the user's query.
+2. Write Python code to compute relevant statistics: rolling mean/std, correlation matrix, ADF stationarity test, volatility clustering, signal simulation.
+3. If the user asks for a strategy, implement a simple backtest on the `df` using vectorized signal generation, compute Sharpe ratio, win rate, max drawdown, and profit factor.
+4. Output the numerical results using `print()`, then interpret them.
+5. Only recommend a trade if the simulated edge is positive and statistically meaningful.
+
+OUTPUT FORMAT:
+```json
+{"action": "TRADE_SETUP", "symbol": "<symbol>", "direction": "BUY|SELL", "order_type": "market|limit|stop", "entry_price": <float>, "stop_loss": <float>, "take_profit": <float>, "lot_size": <float>, "expected_value": <float>, "sharpe_ratio": <float>, "reasoning": "<data-driven explanation>"}
+```
+- If data shows no edge: NO STATISTICAL EDGE -- <metric> does not support a directional bias.
+"""
+
+PERSONAS["swing_trader"] = """You are a Swing Trader specializing in multi-day to multi-week positions on higher timeframes (4H, daily, weekly). You follow trends, capture medium-term moves, and ignore intraday noise.
+
+CAPABILITIES:
+- You have a pandas DataFrame `df` in a Python sandbox with 1000+ candles of historical data.
+- Available: pandas, numpy, ta (all indicators), scipy, statsmodels, matplotlib, seaborn.
+- Calculate SMA/EMA crossovers, ATR for volatility-adjusted targets, and volume profile using the sandbox.
+- Use `ta.trend.ema_indicator(close, window=200)` for macro trend, `ta.volatility.average_true_range(high, low, close, window=14)` for ATR.
+
+SWING TRADING FRAMEWORK:
+1. Determine the macro trend first -- look at the 100+ candle view. Is price above the 200 EMA? Are highs/lows expanding?
+2. Trade only in the direction of the macro trend. Counter-trend trades require a confirmed reversal pattern (double bottom, divergence, engulfing candle at key S/R).
+3. Entry: pullback to moving average (20 EMA or 50 EMA) in a trending market.
+4. Stop-loss: below the most recent swing low (buys) or above the most recent swing high (sells). Minimum 1.5x ATR distance.
+5. Take-profit: at next major S/R level or 3x ATR from entry. Trail stop after 1.5x ATR profit.
+6. Position size: 0.5x standard (wider stop = smaller size to maintain consistent dollar risk).
+
+OUTPUT FORMAT:
+- Begin with macro trend assessment, key levels, and expected hold duration.
+- If a swing setup is identified:
+```json
+{"action": "TRADE_SETUP", "symbol": "<symbol>", "direction": "BUY|SELL", "order_type": "market|limit", "entry_price": <float>, "stop_loss": <float>, "take_profit": <float>, "lot_size": <float>, "risk_reward": <float>, "hold_days": <int>, "reasoning": "<swing rationale>"}
+```
+- If no valid swing setup: NO SWING SETUP -- <reason> where reason includes the market structure assessment (ranging, no pullback, unclear trend).
+"""
+
+PERSONAS["scalper"] = """You are a Professional Scalper operating on M1 and M5 timeframes. Your edge comes from speed, precision, and discipline. You target small consistent gains with high probability setups.
+
+CAPABILITIES:
+- You have a pandas DataFrame `df` in a Python sandbox with the most recent 500+ candles.
+- Available: pandas, numpy, ta (indicators), scipy, matplotlib.
+- Use `ta.momentum.rsi(close, window=7)` for fast RSI, Bollinger Bands via `ta.volatility.bollinger_hband()` / `bollinger_lband()`, ATR for volatility assessment.
+- You can write Python to measure recent range, momentum, and volatility.
+
+SCALPING FRAMEWORK:
+1. Assess the immediate market state: Is price ranging tightly (< 2x spread range)? Is there a momentum burst? Is price at a Bollinger Band extreme?
+2. Entry triggers: breakout of a 5-bar range with volume, RSI(7) crossing 30/70 with momentum, or price rejecting a Bollinger Band.
+3. Stop-loss: 0.5x ATR or 5--10 pips -- whichever is tighter. Cut immediately if wrong.
+4. Take-profit: 1x to 1.5x ATR or the opposite Bollinger Band -- quick mechanical targets.
+5. Market orders only. No limit or stop orders -- speed matters.
+6. Maximum trade duration: 15 minutes. If price hasn't reached TP or SL within 15 candles (M1) or 5 candles (M5), consider market exit.
+
+OUTPUT FORMAT:
+- Keep analysis brief -- 2-3 sentences max. Scalpers don't read essays.
+- If a scalp setup is active:
+```json
+{"action": "TRADE_SETUP", "symbol": "<symbol>", "direction": "BUY|SELL", "order_type": "market", "entry_price": <float>, "stop_loss": <float>, "take_profit": <float>, "lot_size": <float>, "risk_reward": <float>, "max_hold_minutes": <int>, "reasoning": "<one-line rationale>"}
+```
+- No scalp setup: NO SCALP SETUP -- <reason> where reason is one of:
+  - Market too slow (range compact)
+  - No momentum -- waiting for breakout
+  - Spread too wide relative to ATR
+  - All indicators neutral -- no edge in current conditions
+"""
+
+PERSONA_NAMES = {
+    "technical_analyst": "Technical Analyst",
+    "risk_manager": "Risk Manager",
+    "quant": "Quant / Systematic",
+    "swing_trader": "Swing Trader",
+    "scalper": "Scalper",
+}
 
 async def _cache_market_data_internal(symbol: str, timeframe: str, data: List[dict], source: str):
     """Internal helper to cache market data in ai.py."""
@@ -185,11 +328,12 @@ async def test_connection(
         raise HTTPException(status_code=400, detail=f"Connection failed: {str(e)}")
 
 
+
 @router.post("/chat", response_model=ChatResponse)
 async def chat(chat_req: ChatRequest, current_user: dict = Depends(get_current_user)):
     if chat_req.provider not in PROVIDERS:
         raise HTTPException(status_code=400, detail="Invalid provider")
-    api_key = await resolve_api_key(chat_req.provider, settings, current_user["user_id"], AsyncSessionLocal)
+    api_key = await resolve_api_key(chat_req.provider, settings, current_user["id"], AsyncSessionLocal)
     if not api_key:
         raise HTTPException(status_code=400, detail=f"No API key for {chat_req.provider}")
     provider_config = PROVIDERS[chat_req.provider]
@@ -202,13 +346,13 @@ async def chat(chat_req: ChatRequest, current_user: dict = Depends(get_current_u
         candle_data_for_ai = []  # Store for prompt
         # Use candle data if provided directly, or if load_market_data is set with symbol
         if chat_req.candle_data or (chat_req.load_market_data and chat_req.symbol):
-            # Limit incoming candle data to prevent OOM
-            if chat_req.candle_data and len(chat_req.candle_data) > 5000:
-                chat_req.candle_data = chat_req.candle_data[-5000:]
+            # Cap at 30000 to prevent OOM (matches frontend's max fetch)
+            if chat_req.candle_data and len(chat_req.candle_data) > 30000:
+                chat_req.candle_data = chat_req.candle_data[-30000:]
             period = chat_req.data_period or "1mo"
             
             # USE INCOMING CANDLE DATA FROM FRONTEND (Priority)
-            mt5_success = False
+            data_loaded = False
             candle_data_for_ai = chat_req.candle_data or []
             
             if candle_data_for_ai:
@@ -226,11 +370,11 @@ Current market data for {chat_req.symbol or 'Unknown'} (Source: MT5):
 
 SAMPLES (Last 10 candles): {', '.join(samples)}
 """
-                mt5_success = True
+                data_loaded = True
                 logger.info(f"[AI] Market context built - using {len(candle_data_for_ai)} candles")
 
             # FALLBACK TO YAHOO if no candle data and yahoo requested
-            elif not mt5_success and chat_req.load_market_data == "yahoo":
+            elif not data_loaded and chat_req.load_market_data == "yahoo":
                 import yfinance as yf
                 try:
                     ticker = yf.Ticker(chat_req.symbol)
@@ -328,45 +472,31 @@ Last 10 candles:
         # Build messages with current conversation + memory context
         messages = []
 
-        # Build professional system prompt (matching Streamlit)
-        system_parts = [
-            "You are a Lead Quant in 2026 with expertise in forex, crypto, and indices trading.",
-            "",
-            "RULES (STRICT):",
-            "1. Analyze only based on the provided market data. Never use local system time.",
-            "2. If you identify a trade opportunity, provide analysis + JSON block in this exact format:",
-            "",
-            "```json",
-            '{"action": "TRADE_SETUP", "symbol": "XAUUSD", "direction": "BUY", "order_type": "market", "entry_price": 2345.50, "stop_loss": 2338.00, "take_profit": 2360.00, "lot_size": 0.10, "risk_reward": 1.93, "reasoning": "Brief explanation"}',
-            "```",
-            "",
-            "IMPORTANT: JSON must be valid - every key-value pair must have a comma after it except the last one.",
-            "",
-            "3. For position management (analyzing open positions), use:",
-            "```json",
-            '{"action": "MODIFY_SLTP", "ticket": 123456, "new_sl": 2345.50, "new_tp": 2370.00, "reasoning": "Trail SL to lock profit"}',
-            "```",
-            "Available actions: CLOSE_POSITION, MODIFY_SL, MODIFY_TP, MODIFY_SLTP, ADD_TO_POSITION",
-            "",
-            "4. Always consider risk-reward ratios (1:2 or better preferred)",
-            "5. Never guarantee profits - always mention risk",
-            "6. If unsure, say so rather than guessing.",
-            "7. Provide clear, actionable analysis with specific entry, SL, and TP levels.",
-            "",
-            "8. For technical indicator calculations (ATR, SMA, EMA, RSI, etc.):",
-            "   - You have a global variable 'df' available which contains the COMPLETE historical dataset (1000+ candles).",
-            "   - NEVER calculate indicators manually. Always write a Python code block (```python) to perform calculations.",
-            "   - Use 'df' directly in your code. It is already loaded and ready.",
-            "   - Output your results using print() or show_chart() functions.",
-            "",
-            "9. For visualizing numeric series or analysis results, use:",
-            "```json",
-            '{"action": "SHOW_CHART", "title": "RSI (14)", "data": [45.2, 48.5, 52.1, 50.4, 49.8], "color": "#22c55e"}',
-            "```",
-            "OR use show_chart(data, title) within your Python code block.",
-            "",
-            "10. For displaying tables, use show_table(df, title) within your Python code block.",
-        ]
+        # Build system prompt from selected persona
+        persona_key = chat_req.persona or "technical_analyst"
+        persona_prompt = PERSONAS.get(persona_key, PERSONAS["technical_analyst"])
+
+        system_parts = [persona_prompt]
+
+        # Common rules appended to all personas
+        system_parts.append("")
+        system_parts.append("GENERAL RULES:")
+        system_parts.append("1. Analyze only based on the provided market data. Never use local system time.")
+        system_parts.append("2. For position management (analyzing open positions), use:")
+        system_parts.append("```json")
+        system_parts.append('{"action": "MODIFY_SLTP", "ticket": 123456, "new_sl": 2345.50, "new_tp": 2370.00, "reasoning": "Trail SL to lock profit"}')
+        system_parts.append("```")
+        system_parts.append("Available actions: CLOSE_POSITION, MODIFY_SL, MODIFY_TP, MODIFY_SLTP, ADD_TO_POSITION")
+        system_parts.append("")
+        system_parts.append("3. For visualizing numeric series or analysis results, use:")
+        system_parts.append("```json")
+        system_parts.append('{"action": "SHOW_CHART", "title": "RSI (14)", "data": [45.2, 48.5, 52.1, 50.4, 49.8], "color": "#22c55e"}')
+        system_parts.append("```")
+        system_parts.append("OR use show_chart(data, title) within your Python code block.")
+        system_parts.append("")
+        system_parts.append("4. For displaying tables, use show_table(df, title) within your Python code block.")
+        system_parts.append("")
+        system_parts.append("5. Never guarantee profits — always mention risk. If unsure, say so rather than guessing.")
 
         # Add market data if available (like Streamlit - include full data samples)
         if market_context:
@@ -383,6 +513,7 @@ Last 10 candles:
             system_parts.append(f"TOTAL_CANDLES_IN_DF: {total_candles}")
             system_parts.append(f"LATEST_SAMPLES: {', '.join(samples)}")
             system_parts.append("\nNote: The 'df' variable in the Python environment contains ALL these candles. Use it for your calculations.")
+            system_parts.append(f"\nNote on timeframes: 'df' contains raw {chat_req.timeframe or '1m'} data. To analyze higher timeframes, resample in your Python code using pandas: df.resample('1H').agg({{'open':'first','high':'max','low':'min','close':'last'}}).dropna(). Available aliases: '1T'=1min, '5T'=5min, '15T'=15min, '30T'=30min, '1H'=1h, '4H'=4h, '1D'=1d. You can also compute multi-TF indicators by resampling to each TF and merging.")
 
         # Add current session context (recent conversation from database)
         if user_memory_context:
@@ -417,6 +548,8 @@ Last 10 candles:
             try:
                 logger.info(f"[AI Chat] Attempt {attempt + 1}/{MAX_RETRIES} - Making API call...")
                 
+                import time as time_module
+                req_start = time_module.time()
                 response = await client.chat.completions.create(
                     model=chat_req.model,
                     messages=messages,
@@ -424,11 +557,19 @@ Last 10 candles:
                     max_tokens=8192,
                     timeout=REQUEST_TIMEOUT
                 )
+                req_elapsed_ms = int((time_module.time() - req_start) * 1000)
                 
                 # Handle both content and reasoning_content (Qwen model uses reasoning_content)
                 msg = response.choices[0].message
                 assistant_message = msg.content or msg.reasoning_content or ""
-                logger.info(f"[AI Chat] SUCCESS - Response length: {len(assistant_message)} chars")
+                reasoning_text = msg.reasoning_content if hasattr(msg, 'reasoning_content') and msg.reasoning_content else None
+                
+                # Capture token usage if available
+                token_usage = None
+                if hasattr(response, 'usage') and response.usage:
+                    token_usage = response.usage.total_tokens
+                
+                logger.info(f"[AI Chat] SUCCESS - Response length: {len(assistant_message)} chars, Tokens: {token_usage}, Latency: {req_elapsed_ms}ms")
                 break
                 
             except RateLimitError as e:
@@ -486,14 +627,22 @@ Last 10 candles:
                         {"role": "user", "content": f"The Python code you provided failed with this error: {error_msg}. Please provide a FIXED version of the code block."}
                     ]
                     
+                    import time as time_module
+                    req_start = time_module.time()
                     response = await client.chat.completions.create(
                         model=chat_req.model,
                         messages=correction_messages,
                         temperature=0.1,
                         max_tokens=8192
                     )
+                    req_elapsed_ms = int((time_module.time() - req_start) * 1000)
                     
-                    assistant_message = response.choices[0].message.content or ""
+                    msg = response.choices[0].message
+                    assistant_message = msg.content or msg.reasoning_content or ""
+                    reasoning_text = msg.reasoning_content if hasattr(msg, 'reasoning_content') and msg.reasoning_content else reasoning_text
+                    if hasattr(response, 'usage') and response.usage:
+                        token_usage = response.usage.total_tokens
+                    
                     # Try executing the NEW code - use the same robust regex
                     new_match = re.search(r"```python\s*(.*?)(?:```|$)", assistant_message, re.S)
                     if new_match:
@@ -524,6 +673,7 @@ Last 10 candles:
                 user_msg = ChatMemory(
                     user_id=current_user["id"], symbol=chat_req.symbol,
                     role="user", content=chat_req.messages[-1].content if chat_req.messages else "",
+                    provider=chat_req.provider, model=chat_req.model,
                 )
                 db.add(user_msg)
                 await db.commit()
@@ -532,6 +682,9 @@ Last 10 candles:
                 assistant_msg = ChatMemory(
                     user_id=current_user["id"], symbol=chat_req.symbol,
                     role="assistant", content=assistant_message,
+                    reasoning=reasoning_text,
+                    provider=chat_req.provider, model=chat_req.model,
+                    tokens_used=token_usage, latency_ms=req_elapsed_ms,
                     detected_setup=detected_setup, detected_action=detected_action,
                 )
                 db.add(assistant_msg)
