@@ -30,7 +30,7 @@ async def verify_mt5_token(
             return {"auth_method": "mt5_token", "user_id": None}
         raise HTTPException(status_code=401, detail="Invalid MT5 token")
     if credentials:
-        payload = decode_token(credentials.credentials)
+        payload = await decode_token(credentials.credentials)
         if payload and payload.get("type") == "access":
             return {"auth_method": "jwt", "user": payload.get("sub"), "user_id": payload.get("user_id")}
     raise HTTPException(
@@ -43,9 +43,10 @@ async def _init_mt5():
     mt5 = _get_mt5()
     if mt5 is None:
         return False
-    if not mt5.initialize():
-        return False
-    return True
+    
+    loop = asyncio.get_running_loop()
+    ok = await loop.run_in_executor(None, mt5.initialize)
+    return ok
 
 
 def _get_safe_attr(attr, fallback):
@@ -70,12 +71,13 @@ async def place_order(order: OrderRequest, token: str = Depends(verify_mt5_token
         raise HTTPException(status_code=400, detail="MT5 not initialized")
 
     mt5 = _get_mt5()
+    loop = asyncio.get_running_loop()
 
-    if not mt5.symbol_select(order.symbol, True):
+    if not await loop.run_in_executor(None, mt5.symbol_select, order.symbol, True):
         raise HTTPException(status_code=404, detail=f"Symbol {order.symbol} not found")
 
-    symbol_info = mt5.symbol_info(order.symbol)
-    tick = mt5.symbol_info_tick(order.symbol)
+    symbol_info = await loop.run_in_executor(None, mt5.symbol_info, order.symbol)
+    tick = await loop.run_in_executor(None, mt5.symbol_info_tick, order.symbol)
 
     if symbol_info is None or tick is None:
         raise HTTPException(status_code=400, detail=f"Broker data unavailable for {order.symbol}")
@@ -175,7 +177,7 @@ async def place_order(order: OrderRequest, token: str = Depends(verify_mt5_token
         else:
             request["type_filling"] = ORDER_FILLING_RETURN
 
-    result = mt5.order_send(request)
+    result = await loop.run_in_executor(None, mt5.order_send, request)
 
     if result is None or result.retcode != getattr(mt5, 'TRADE_RETCODE_DONE', 10009):
         raise HTTPException(status_code=400, detail=f"Order failed: {result.comment if result else 'Unknown'}")
@@ -219,8 +221,11 @@ async def close_position(close_req: CloseRequest, token: str = Depends(verify_mt
         raise HTTPException(status_code=400, detail="MT5 not initialized")
 
     mt5 = _get_mt5()
+    loop = asyncio.get_running_loop()
 
-    positions = mt5.positions_get(ticket=close_req.ticket)
+    # Use lambda to handle keyword arguments in run_in_executor
+    positions = await loop.run_in_executor(None, lambda: mt5.positions_get(ticket=close_req.ticket))
+
     if positions is None or len(positions) == 0:
         raise HTTPException(status_code=404, detail=f"Position {close_req.ticket} not found")
 
@@ -231,13 +236,15 @@ async def close_position(close_req: CloseRequest, token: str = Depends(verify_mt
         raise HTTPException(status_code=400, detail="Close volume exceeds position volume")
 
     if position.type == mt5.POSITION_TYPE_BUY:
-        price = mt5.symbol_info_tick(position.symbol).bid
+        tick = await loop.run_in_executor(None, mt5.symbol_info_tick, position.symbol)
+        price = tick.bid
         order_type = mt5.ORDER_TYPE_SELL
     else:
-        price = mt5.symbol_info_tick(position.symbol).ask
+        tick = await loop.run_in_executor(None, mt5.symbol_info_tick, position.symbol)
+        price = tick.ask
         order_type = mt5.ORDER_TYPE_BUY
 
-    symbol_info = mt5.symbol_info(position.symbol)
+    symbol_info = await loop.run_in_executor(None, mt5.symbol_info, position.symbol)
     filling_mode = symbol_info.filling_mode if symbol_info else 2
 
     if filling_mode & 1:
@@ -261,7 +268,7 @@ async def close_position(close_req: CloseRequest, token: str = Depends(verify_mt
         "type_filling": type_filling,
     }
 
-    result = mt5.order_send(request)
+    result = await loop.run_in_executor(None, mt5.order_send, request)
 
     if result is None or result.retcode != getattr(mt5, 'TRADE_RETCODE_DONE', 10009):
         raise HTTPException(status_code=400, detail=f"Close failed: {result.comment if result else 'Unknown error'}")
@@ -297,13 +304,16 @@ async def modify_position(mod_req: ModifyRequest, token: str = Depends(verify_mt
         raise HTTPException(status_code=400, detail="MT5 not initialized")
 
     mt5 = _get_mt5()
+    loop = asyncio.get_running_loop()
 
-    positions = mt5.positions_get(ticket=mod_req.ticket)
+    # Use lambda to handle keyword arguments in run_in_executor
+    positions = await loop.run_in_executor(None, lambda: mt5.positions_get(ticket=mod_req.ticket))
+    
     if positions is None or len(positions) == 0:
         raise HTTPException(status_code=404, detail=f"Position {mod_req.ticket} not found")
 
     position = positions[0]
-    symbol_info = mt5.symbol_info(position.symbol)
+    symbol_info = await loop.run_in_executor(None, mt5.symbol_info, position.symbol)
 
     if symbol_info is None:
         raise HTTPException(status_code=400, detail="Cannot get symbol info")
@@ -320,7 +330,7 @@ async def modify_position(mod_req: ModifyRequest, token: str = Depends(verify_mt
         "tp": new_tp,
     }
 
-    result = mt5.order_send(request)
+    result = await loop.run_in_executor(None, mt5.order_send, request)
 
     if result is None or result.retcode != getattr(mt5, 'TRADE_RETCODE_DONE', 10009):
         raise HTTPException(status_code=400, detail=f"Modify failed: {result.comment if result else 'Unknown error'}")

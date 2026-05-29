@@ -20,6 +20,8 @@ from ..models.schemas import (
 from ..core.database import get_db
 from ..models.market_data import MarketData
 from sqlalchemy import insert
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy import select
 
 router = APIRouter(prefix="/mt5", tags=["MT5"])
@@ -54,7 +56,7 @@ async def verify_mt5_token(
     
     # Fall back to JWT auth (frontend users are logged in)
     if credentials:
-        payload = decode_token(credentials.credentials)
+        payload = await decode_token(credentials.credentials)
         if payload and payload.get("type") == "access":
             return {"auth_method": "jwt", "user": payload.get("sub")}
         # Token present but invalid/expired → 401 so frontend can refresh
@@ -103,7 +105,11 @@ async def _cache_market_data(db: AsyncSession, symbol: str, timeframe: str, data
         if not records:
             return
 
-        stmt = insert(MarketData).values(records).on_conflict_do_nothing()
+        # Check dialect for ON CONFLICT support
+        if db.bind.dialect.name == "postgresql":
+            stmt = pg_insert(MarketData).values(records).on_conflict_do_nothing()
+        else:
+            stmt = sqlite_insert(MarketData).values(records).on_conflict_do_nothing()
         
         await db.execute(stmt)
         await db.commit()
@@ -190,16 +196,20 @@ async def initialize_mt5(
 
     try:
         mt5 = _get_mt5()
+        loop = asyncio.get_running_loop()
+        
         if terminal_path:
-            if not mt5.initialize(path=terminal_path):
+            ok = await loop.run_in_executor(None, mt5.initialize, terminal_path)
+            if not ok:
                 raise HTTPException(status_code=500, detail="Failed to initialize MT5")
             _mt5_terminal_path = terminal_path
         else:
-            if not mt5.initialize():
+            ok = await loop.run_in_executor(None, mt5.initialize)
+            if not ok:
                 raise HTTPException(status_code=500, detail="Failed to initialize MT5")
 
         _mt5_initialized = True
-        account = mt5.account_info()
+        account = await loop.run_in_executor(None, mt5.account_info)
 
         return {
             "success": True,
@@ -227,13 +237,14 @@ async def get_all_symbols(token: str = Depends(verify_mt5_token)):
             raise HTTPException(status_code=500, detail=str(e))
 
     mt5 = _get_mt5()
-    all_symbols = mt5.symbols_get()
+    loop = asyncio.get_running_loop()
+    all_symbols = await loop.run_in_executor(None, mt5.symbols_get)
     if not all_symbols:
         return {"count": 0, "symbols": []}
 
     symbols = []
     for s in all_symbols:
-        tick = mt5.symbol_info_tick(s.name)
+        tick = await loop.run_in_executor(None, mt5.symbol_info_tick, s.name)
         symbols.append(MT5Symbol(
             name=s.name,
             description=s.description,
@@ -274,7 +285,8 @@ async def get_symbols_jwt(
             return {"success": False, "symbols": [], "error": str(e)}
 
     mt5 = _get_mt5()
-    all_symbols = mt5.symbols_get()
+    loop = asyncio.get_running_loop()
+    all_symbols = await loop.run_in_executor(None, mt5.symbols_get)
     if not all_symbols:
         return {"success": True, "symbols": []}
 
@@ -304,11 +316,12 @@ async def get_symbol_info(symbol: str, token: str = Depends(verify_mt5_token)):
             raise HTTPException(status_code=500, detail=str(e))
 
     mt5 = _get_mt5()
-    info = mt5.symbol_info(symbol)
+    loop = asyncio.get_running_loop()
+    info = await loop.run_in_executor(None, mt5.symbol_info, symbol)
     if info is None:
         raise HTTPException(status_code=404, detail=f"Symbol {symbol} not found")
 
-    tick = mt5.symbol_info_tick(symbol)
+    tick = await loop.run_in_executor(None, mt5.symbol_info_tick, symbol)
 
     return MT5Symbol(
         name=info.name,
@@ -359,6 +372,7 @@ async def fetch_data(
             raise HTTPException(status_code=500, detail=str(e))
 
     mt5 = _get_mt5()
+    loop = asyncio.get_running_loop()
 
     timeframe_map = {
         '1m': mt5.TIMEFRAME_M1,
@@ -383,10 +397,10 @@ async def fetch_data(
     if end_dt.tzinfo is None:
         end_dt = timezone.localize(end_dt)
 
-    if not mt5.symbol_select(symbol, True):
+    if not await loop.run_in_executor(None, mt5.symbol_select, symbol, True):
         raise HTTPException(status_code=404, detail=f"Failed to select symbol: {symbol}")
 
-    rates = mt5.copy_rates_range(symbol, tf, start_dt, end_dt)
+    rates = await loop.run_in_executor(None, mt5.copy_rates_range, symbol, tf, start_dt, end_dt)
     if rates is None or len(rates) == 0:
         raise HTTPException(status_code=500, detail="No data available")
 
@@ -466,6 +480,7 @@ async def fetch_latest(
             raise HTTPException(status_code=500, detail=str(e))
 
     mt5 = _get_mt5()
+    loop = asyncio.get_running_loop()
 
     timeframe_map = {
         '1m': mt5.TIMEFRAME_M1,
@@ -481,10 +496,10 @@ async def fetch_latest(
 
     tf = timeframe_map.get(timeframe, mt5.TIMEFRAME_M1)
 
-    if not mt5.symbol_select(symbol, True):
+    if not await loop.run_in_executor(None, mt5.symbol_select, symbol, True):
         raise HTTPException(status_code=404, detail=f"Symbol {symbol} not found")
 
-    rates = mt5.copy_rates_from_pos(symbol, tf, 0, count)
+    rates = await loop.run_in_executor(None, mt5.copy_rates_from_pos, symbol, tf, 0, count)
     if rates is None or len(rates) == 0:
         raise HTTPException(status_code=500, detail="No data available")
 
@@ -532,7 +547,8 @@ async def get_account_info(token: str = Depends(verify_mt5_token)):
             raise HTTPException(status_code=500, detail=str(e))
 
     mt5 = _get_mt5()
-    acc = mt5.account_info()
+    loop = asyncio.get_running_loop()
+    acc = await loop.run_in_executor(None, mt5.account_info)
     if acc is None:
         raise HTTPException(status_code=500, detail="Cannot get account info")
 
@@ -583,8 +599,9 @@ async def get_positions(token: str = Depends(verify_mt5_token)):
             raise HTTPException(status_code=500, detail=str(e))
 
     mt5 = _get_mt5()
-    acc = mt5.account_info()
-    positions = mt5.positions_get()
+    loop = asyncio.get_running_loop()
+    acc = await loop.run_in_executor(None, mt5.account_info)
+    positions = await loop.run_in_executor(None, mt5.positions_get)
 
     position_list = []
     total_profit = 0.0
@@ -605,14 +622,14 @@ async def get_positions(token: str = Depends(verify_mt5_token)):
             ))
             total_profit += pos.profit
 
-    margin_level = (acc.equity / acc.margin * 100) if acc.margin > 0 else 0
+    margin_level = (acc.equity / acc.margin * 100) if acc and acc.margin > 0 else 0
 
     return PositionsResponse(
         success=True,
-        balance=acc.balance,
-        equity=acc.equity,
-        margin=acc.margin,
-        free_margin=acc.margin_free,
+        balance=acc.balance if acc else 0.0,
+        equity=acc.equity if acc else 0.0,
+        margin=acc.margin if acc else 0.0,
+        free_margin=acc.margin_free if acc else 0.0,
         margin_level=round(margin_level, 2),
         open_count=len(position_list),
         total_profit=round(total_profit, 2),
@@ -639,7 +656,7 @@ async def get_history(hours: int = 0, token: str = Depends(verify_mt5_token)):
             raise HTTPException(status_code=500, detail=str(e))
 
     mt5 = _get_mt5()
-    # ... (rest of direct MT5 logic remains the same)
+    loop = asyncio.get_running_loop()
 
     if hours > 0:
         from_time = datetime.now() - timedelta(hours=hours)
@@ -648,7 +665,7 @@ async def get_history(hours: int = 0, token: str = Depends(verify_mt5_token)):
 
     to_time = datetime.now() + timedelta(days=5)
 
-    deals = mt5.history_deals_get(from_time, to_time)
+    deals = await loop.run_in_executor(None, mt5.history_deals_get, from_time, to_time)
     if deals is None:
         return HistoryResponse(success=True, count=0, deals=[])
 

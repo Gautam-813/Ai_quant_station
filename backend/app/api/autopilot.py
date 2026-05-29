@@ -24,6 +24,7 @@ from ..core.config import settings
 from ..core.security import get_current_user
 from ..core.database import AsyncSessionLocal
 from ..core.providers import PROVIDERS, get_api_key as _get_api_key, get_base_url, resolve_api_key
+from ..core.utils import detect_trade_setup
 from ..models.ai_memory import AutopilotTrade, AutopilotSettings, UserPrompt
 
 router = APIRouter(prefix="/autopilot", tags=["Autopilot"])
@@ -117,21 +118,6 @@ async def initialize_mt5_connector(user_id: int, terminal_path: str = None, conn
     return False
 
 
-def detect_trade_setup(text: str) -> Optional[dict]:
-    """Detect TRADE_SETUP JSON from AI response."""
-    json_pattern = r"```json\s*(.*?)\s*```"
-    blocks = re.findall(json_pattern, text, re.S | re.I)
-
-    for block in blocks:
-        try:
-            data = json.loads(block)
-            if isinstance(data, dict) and data.get("action") == "TRADE_SETUP":
-                return data
-        except Exception:
-            pass
-    return None
-
-
 async def get_market_data(user_id: int, symbol: str, timeframe: str = "1m", count: int = 500, connector_url: str = None):
     try:
         connector_url = (connector_url or settings.MT5_CONNECTOR_URL or "").strip() or None
@@ -162,7 +148,10 @@ async def execute_trade(user_id: int, symbol: str, direction: str, volume: float
     try:
         connector_url = (connector_url or settings.MT5_CONNECTOR_URL or "").strip() or None
         if prompt_num:
-            trade_comment = f"[AUTOPILOT] P{prompt_num}"
+            if isinstance(prompt_num, int) and prompt_num < 0:
+                trade_comment = f"[AUTOPILOT] Custom-{abs(prompt_num)}"
+            else:
+                trade_comment = f"[AUTOPILOT] P{prompt_num}"
         else:
             trade_comment = comment
 
@@ -234,7 +223,7 @@ async def execute_trade(user_id: int, symbol: str, direction: str, volume: float
         return {"success": False, "error": str(e)}
 
 
-async def check_open_positions(connector_url: str = None):
+async def check_open_positions(connector_url: str = None, user_id: int = 0):
     try:
         connector_url = (connector_url or settings.MT5_CONNECTOR_URL or "").strip() or None
         data = await async_request("GET", f"{connector_url}/positions")
@@ -242,7 +231,7 @@ async def check_open_positions(connector_url: str = None):
             return data.get("positions", [])
     except Exception as e:
         import traceback as _tb
-        add_log(0, f"check_open_positions error: {e}\n{_tb.format_exc()}", "ERROR")
+        add_log(user_id, f"check_open_positions error: {e}\n{_tb.format_exc()}", "ERROR")
     return []
 
 
@@ -329,7 +318,7 @@ async def run_autopilot_cycle(user_id: int):
     prompt_id_val = chosen["id"]
     prompt_text = chosen["text"]
     if chosen["is_custom"]:
-        prompt_num = 999
+        prompt_num = -int(prompt_id_val.split('_')[1])
         display_id = f"Custom-{prompt_id_val.split('_')[1]}"
     else:
         prompt_num = prompt_id_val
@@ -522,6 +511,7 @@ RULES:
     add_log(user_id, f"TRADE SETUP - {direction} ({order_type}) | Entry: {entry_price} SL: {sl} TP: {tp} Lot: {lot} Confidence: {confidence}%")
 
     result = await execute_trade(user_id, symbol, direction, lot, entry_price, sl, tp, prompt_num=prompt_num, connector_url=connector_url, order_type=order_type)
+    state["last_trade_time"] = datetime.now(timezone.utc)
 
     if result.get("success"):
         state["last_error_feedback"] = None  # Clear any previous error feedback
@@ -627,18 +617,39 @@ async def autopilot_loop(user_id: int):
         while state["enabled"]:
             if state["running"]:
                 state["stats"]["daily_pnl"] = state["stats"].get("daily_pnl", 0)
-                max_loss = 0
+                max_loss = None
+                cooldown_mins = 0
                 async with AsyncSessionLocal() as db:
                     result = await db.execute(select(AutopilotSettings).where(AutopilotSettings.user_id == user_id))
                     s = result.scalar_one_or_none()
                     if s:
                         max_loss = s.max_daily_loss
-                if state["stats"]["daily_pnl"] <= max_loss:
+                        cooldown_mins = s.cooldown_minutes or 0
+
+                # Cooldown check
+                last_trade = state.get("last_trade_time")
+                if cooldown_mins > 0 and last_trade:
+                    elapsed_mins = (datetime.now(timezone.utc) - last_trade).total_seconds() / 60
+                    if elapsed_mins < cooldown_mins:
+                        add_log(user_id, f"Cooldown ({elapsed_mins:.0f}/{cooldown_mins} min). Skipping cycle.", "INFO")
+                        state["stats"]["skipped_count"] += 1
+                        async with AsyncSessionLocal() as db:
+                            result = await db.execute(select(AutopilotSettings).where(AutopilotSettings.user_id == user_id))
+                            s = result.scalar_one_or_none()
+                            interval = s.interval_seconds if s else 300
+                        if not state["enabled"]:
+                            break
+                        await asyncio.sleep(interval)
+                        continue
+
+                hit_loss_limit = False
+                if max_loss is not None and state["stats"]["daily_pnl"] <= max_loss:
                     add_log(user_id, f"Daily loss limit (${max_loss}) reached. Stopping.", "WARNING")
                     state["running"] = False
-                    continue
+                    hit_loss_limit = True
                 await sync_trade_results(user_id)
-                await run_autopilot_cycle(user_id)
+                if not hit_loss_limit:
+                    await run_autopilot_cycle(user_id)
 
             async with AsyncSessionLocal() as db:
                 result = await db.execute(select(AutopilotSettings).where(AutopilotSettings.user_id == user_id))
@@ -732,6 +743,7 @@ class PromptStatsItem(BaseModel):
     win_rate: float
     total_profit: float
     avg_profit: float
+    display_name: str = ""
 
 
 # ── Internal helper: start autopilot without HTTP auth ────────────────────
@@ -897,6 +909,7 @@ async def save_settings(
             settings_obj = AutopilotSettings(user_id=user_id)
             db.add(settings_obj)
 
+        url_changed = config.mt5_connector_url is not None and config.mt5_connector_url != settings_obj.mt5_connector_url
         settings_obj.interval_seconds = config.interval_seconds
         settings_obj.default_lot = config.default_lot
         settings_obj.max_trades_per_day = config.max_trades_per_day
@@ -908,6 +921,9 @@ async def save_settings(
         settings_obj.provider = config.provider
         settings_obj.model = config.model
         settings_obj.selected_prompts = config.selected_prompts
+        if url_changed:
+            settings_obj.mt5_connected = False
+            add_log(user_id, "Connector URL changed — MT5 connection reset. Please reconnect.", "WARNING")
 
         await db.commit()
 
@@ -1055,6 +1071,8 @@ async def get_prompt_stats(current_user: dict = Depends(get_current_user)):
         g["win_rate"] = round(g["wins"] / g["total_trades"] * 100, 1) if g["total_trades"] > 0 else 0.0
         g["avg_profit"] = round(g["total_profit"] / g["total_trades"], 2) if g["total_trades"] > 0 else 0.0
         g["total_profit"] = round(g["total_profit"], 2)
+        pn = g["prompt_number"]
+        g["display_name"] = f"Custom-{abs(pn)}" if pn < 0 else f"#{pn}"
         stats.append(PromptStatsItem(**g))
 
     stats.sort(key=lambda x: x.total_profit, reverse=True)

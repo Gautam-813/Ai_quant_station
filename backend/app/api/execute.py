@@ -25,6 +25,8 @@ import sys
 import subprocess
 import uuid
 
+from ..core.utils import sanitize_for_json as _sanitize
+
 router = APIRouter(prefix="/execute", tags=["AI"])
 
 
@@ -116,57 +118,6 @@ def _strip_docstrings(code: str) -> str:
     code = re.sub(r'"""[\s\S]*', '', code)
     code = re.sub(r"'''[\s\S]*", '', code)
     return code
-
-
-# ── Universal JSON Sanitizer ───────────────────────────────────────────────
-def _sanitize(obj):
-    from datetime import date, time, datetime
-
-    if isinstance(obj, (datetime,)):
-        return obj.isoformat()
-    if isinstance(obj, (date, time)):
-        return str(obj)
-
-    try:
-        import pandas as _pd
-        if isinstance(obj, _pd.Timestamp):
-            return obj.isoformat()
-        if isinstance(obj, _pd.Timedelta):
-            return str(obj)
-        try:
-            if _pd.isna(obj):
-                return None
-        except (TypeError, ValueError):
-            pass
-    except ImportError:
-        pass
-
-    try:
-        import numpy as _np
-        if isinstance(obj, (_np.integer,)):
-            return int(obj)
-        if isinstance(obj, (_np.floating,)):
-            v = float(obj)
-            return None if math.isnan(v) or math.isinf(v) else v
-        if isinstance(obj, _np.bool_):
-            return bool(obj)
-        if isinstance(obj, _np.ndarray):
-            return _sanitize(obj.tolist())
-    except ImportError:
-        pass
-
-    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
-        return None
-    if isinstance(obj, dict):
-        return {k: _sanitize(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [_sanitize(i) for i in obj]
-    if hasattr(obj, 'item') and callable(obj.item):
-        try:
-            return _sanitize(obj.item())
-        except Exception:
-            pass
-    return obj
 
 
 # ── Core Sandbox (Synchronous) ─────────────────────────────────────────────

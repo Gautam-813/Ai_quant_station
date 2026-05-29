@@ -124,24 +124,29 @@ class BacktestEngine:
         entry_time = None
         entry_price = None
 
-        for idx, row in df.iterrows():
-            signal = row["signal"]
+        signals = df["signal"].values
+        closes = df["close"].values
+        datetimes = df["datetime"].values if "datetime" in df.columns else df.index.values
+        bar_pnl_values = bar_pnl.values if isinstance(bar_pnl, pd.Series) else bar_pnl
+
+        for i in range(len(df)):
+            signal = signals[i]
             if in_trade:
-                trade_pnl += bar_pnl.iloc[idx] if isinstance(bar_pnl, pd.Series) else 0
+                trade_pnl += bar_pnl_values[i]
             if signal != 0 and signal != current_position and not in_trade:
                 in_trade = True
                 current_position = signal
                 trade_pnl = 0
-                entry_time = row.get("datetime", idx)
-                entry_price = row.get("close", 0)
+                entry_time = datetimes[i]
+                entry_price = closes[i]
             elif in_trade and signal == 0:
                 trade_returns.append(trade_pnl)
                 trade_log.append({
                     "entry_time": str(entry_time) if entry_time is not None else "",
-                    "exit_time": str(row.get("datetime", idx)),
+                    "exit_time": str(datetimes[i]),
                     "direction": "BUY" if current_position == 1 else "SELL",
                     "entry_price": round(float(entry_price), 2) if entry_price else 0,
-                    "exit_price": round(float(row.get("close", 0)), 2),
+                    "exit_price": round(float(closes[i]), 2),
                     "pnl": round(float(trade_pnl), 2),
                 })
                 in_trade = False
@@ -152,16 +157,16 @@ class BacktestEngine:
                 trade_returns.append(trade_pnl)
                 trade_log.append({
                     "entry_time": str(entry_time) if entry_time is not None else "",
-                    "exit_time": str(row.get("datetime", idx)),
+                    "exit_time": str(datetimes[i]),
                     "direction": "BUY" if current_position == 1 else "SELL",
                     "entry_price": round(float(entry_price), 2) if entry_price else 0,
-                    "exit_price": round(float(row.get("close", 0)), 2),
+                    "exit_price": round(float(closes[i]), 2),
                     "pnl": round(float(trade_pnl), 2),
                 })
                 current_position = signal
                 trade_pnl = 0
-                entry_time = row.get("datetime", idx)
-                entry_price = row.get("close", 0)
+                entry_time = datetimes[i]
+                entry_price = closes[i]
 
         if in_trade:
             trade_returns.append(trade_pnl)
@@ -170,7 +175,7 @@ class BacktestEngine:
                 "exit_time": "END OF DATA",
                 "direction": "BUY" if current_position == 1 else "SELL",
                 "entry_price": round(float(entry_price), 2) if entry_price else 0,
-                "exit_price": round(float(df.iloc[-1].get("close", 0)), 2),
+                "exit_price": round(float(closes[-1]), 2),
                 "pnl": round(float(trade_pnl), 2),
             })
 

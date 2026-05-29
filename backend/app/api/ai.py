@@ -13,6 +13,7 @@ from openai import AsyncOpenAI
 from openai import RateLimitError, APIError, Timeout
 from .execute import run_python_code
 from ..core.historical_loader import add_indicators
+from ..core.utils import detect_trade_setup as _detect_trade_setup
 
 
 from ..core.config import settings
@@ -20,6 +21,7 @@ from ..core.security import get_current_user
 from ..core.database import AsyncSessionLocal
 from ..models.market_data import MarketData
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy import select, func, delete
 from ..models.schemas import (
     ChatRequest,
@@ -223,8 +225,11 @@ async def _cache_market_data_internal(symbol: str, timeframe: str, data: List[di
             if not records:
                 return
 
-            stmt = sqlite_insert(MarketData).values(records)
-            stmt = stmt.on_conflict_do_nothing()
+            if db.bind.dialect.name == "postgresql":
+                stmt = pg_insert(MarketData).values(records).on_conflict_do_nothing()
+            else:
+                stmt = sqlite_insert(MarketData).values(records).on_conflict_do_nothing()
+            
             await db.execute(stmt)
             await db.commit()
     except Exception as e:
@@ -746,29 +751,6 @@ Last 10 candles:
             status_code=500,
             detail=f"AI service error: {str(e)}"
         )
-
-
-def _detect_trade_setup(text: str) -> Optional[dict]:
-    """Detect TRADE_SETUP JSON from AI response."""
-    json_pattern = r"```json\s*(.*?)\s*```"
-    blocks = re.findall(json_pattern, text, re.S | re.I)
-
-    for block in blocks:
-        try:
-            data = json.loads(block)
-            if isinstance(data, dict) and data.get("action") == "TRADE_SETUP":
-                return data
-        except json.JSONDecodeError:
-            pass
-
-    try:
-        data = json.loads(text)
-        if isinstance(data, dict) and data.get("action") == "TRADE_SETUP":
-            return data
-    except (json.JSONDecodeError, ValueError):
-        pass
-
-    return None
 
 
 def _detect_trade_action(text: str) -> Optional[dict]:

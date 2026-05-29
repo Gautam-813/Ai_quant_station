@@ -53,7 +53,7 @@ interface HistoricalLabState {
   endDate: string
   timeframe: string
   capital: string
-  leverage: string
+  lotSize: string
   includeSpread: boolean
   includeCommission: boolean
   prompt: string
@@ -68,7 +68,7 @@ interface HistoricalLabState {
   setEndDate: (v: string) => void
   setTimeframe: (v: string) => void
   setCapital: (v: string) => void
-  setLeverage: (v: string) => void
+  setLotSize: (v: string) => void
   setIncludeSpread: (v: boolean) => void
   setIncludeCommission: (v: boolean) => void
   setPrompt: (v: string) => void
@@ -87,7 +87,7 @@ export const useHistoricalLabStore = create<HistoricalLabState>()(
       endDate: '2025-12-31',
       timeframe: '1T',
       capital: '10000',
-      leverage: '100',
+      lotSize: '0.01',
       includeSpread: false,
       includeCommission: false,
       prompt: '',
@@ -102,7 +102,7 @@ export const useHistoricalLabStore = create<HistoricalLabState>()(
       setEndDate: (v) => set({ endDate: v }),
       setTimeframe: (v) => set({ timeframe: v }),
       setCapital: (v) => set({ capital: v }),
-      setLeverage: (v) => set({ leverage: v }),
+      setLotSize: (v) => set({ lotSize: v }),
       setIncludeSpread: (v) => set({ includeSpread: v }),
       setIncludeCommission: (v) => set({ includeCommission: v }),
       setPrompt: (v) => set({ prompt: v }),
@@ -120,7 +120,7 @@ export const useHistoricalLabStore = create<HistoricalLabState>()(
         endDate: state.endDate,
         timeframe: state.timeframe,
         capital: state.capital,
-        leverage: state.leverage,
+        lotSize: state.lotSize,
         includeSpread: state.includeSpread,
         includeCommission: state.includeCommission,
         prompt: state.prompt,

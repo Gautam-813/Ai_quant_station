@@ -10,8 +10,9 @@ from ..core.database import get_db
 from ..core.security import (
     verify_password, get_password_hash,
     create_access_token, create_refresh_token,
-    decode_token, get_current_user, blacklist_token
+    decode_token, get_current_user
 )
+from ..core.blacklist import blacklist_token
 from ..models.user import User
 from ..models.schemas import UserLogin, Token, UserResponse, PasswordChange
 from pydantic import BaseModel
@@ -83,7 +84,7 @@ async def refresh_token(refresh_data: dict, db: AsyncSession = Depends(get_db)):
             detail="Refresh token is required"
         )
 
-    payload = decode_token(refresh_token)
+    payload = await decode_token(refresh_token)
     if not payload or payload.get("type") != "refresh":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -111,7 +112,7 @@ async def logout(
     credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer()),
     current_user: dict = Depends(get_current_user)
 ):
-    blacklist_token(credentials.credentials)
+    await blacklist_token(credentials.credentials)
     return {"message": "Successfully logged out"}
 
 

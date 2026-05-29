@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useAutopilotStore } from '@/store/autopilotStore'
+import { useToast } from '@/hooks/use-toast'
 import axios from 'axios'
 
 interface LogEntry {
@@ -67,9 +68,11 @@ interface PromptStatsItem {
   win_rate: number
   total_profit: number
   avg_profit: number
+  display_name?: string
 }
 
 export default function AutopilotPage() {
+  const { toast } = useToast()
   const [status, setStatus] = useState<AutopilotStatus | null>(null)
   const [trades, setTrades] = useState<TradeResult[]>([])
   const [promptStats, setPromptStats] = useState<PromptStatsItem[]>([])
@@ -207,8 +210,8 @@ export default function AutopilotPage() {
     try {
       await axios.post('/api/autopilot/start')
       fetchStatus()
-    } catch (error) {
-      console.error('Failed to start autopilot:', error)
+    } catch (error: any) {
+      toast({ title: 'Start Failed', description: error.response?.data?.detail || error.message, variant: 'destructive' })
     }
   }
 
@@ -251,13 +254,13 @@ export default function AutopilotPage() {
       })
       if (res.data.success) {
         setMt5Connected(true)
-        alert('MT5 Connected Successfully!')
+        toast({ title: 'MT5 Connected', description: 'Connected successfully' })
       } else {
-        alert('Failed to connect: ' + res.data.message)
+        toast({ title: 'MT5 Connection Failed', description: res.data.message, variant: 'destructive' })
       }
       fetchStatus()
     } catch (error: any) {
-      alert('Error: ' + (error.response?.data?.detail || error.message))
+      toast({ title: 'MT5 Connection Error', description: error.response?.data?.detail || error.message, variant: 'destructive' })
     }
   }
 
@@ -707,7 +710,7 @@ export default function AutopilotPage() {
                       className={`border-b border-border/30 hover:bg-muted/50 cursor-pointer ${selectedPromptFilter === s.prompt_number ? 'bg-blue-500/10' : ''}`}
                       onClick={() => setSelectedPromptFilter(selectedPromptFilter === s.prompt_number ? null : s.prompt_number)}
                     >
-                      <td className="py-3 px-2 font-bold text-blue-400">#{s.prompt_number}</td>
+                      <td className="py-3 px-2 font-bold text-blue-400">{s.display_name || `#${s.prompt_number}`}</td>
                       <td className="py-3 px-2 text-xs max-w-[200px] truncate">{s.prompt_text}</td>
                       <td className="py-3 px-2 text-right">{s.total_trades}</td>
                       <td className="py-3 px-2 text-right text-green-500">{s.wins}</td>

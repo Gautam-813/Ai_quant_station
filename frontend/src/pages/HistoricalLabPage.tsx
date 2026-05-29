@@ -72,9 +72,7 @@ interface LabResult {
   trade_log?: TradeRecord[]
 }
 
-const SYMBOLS = ['XAUUSD', 'BTCUSD', 'EURUSD', 'GBPUSD', 'USDJPY', 'XAGUSD']
 const TIMEFRAMES = [{ value: '1T', label: '1 min' }, { value: '5T', label: '5 min' }, { value: '1H', label: '1 hour' }]
-const LEVERAGES = ['1', '10', '30', '50', '100', '200', '500']
 
 const MetricCard = ({ label, value, sub, icon: Icon, color }: any) => (
   <Card className="bg-card/60 border-border/50">
@@ -103,8 +101,8 @@ export default function HistoricalLabPage() {
   const setTimeframe = useHistoricalLabStore((s) => s.setTimeframe)
   const capital = useHistoricalLabStore((s) => s.capital)
   const setCapital = useHistoricalLabStore((s) => s.setCapital)
-  const leverage = useHistoricalLabStore((s) => s.leverage)
-  const setLeverage = useHistoricalLabStore((s) => s.setLeverage)
+  const lotSize = useHistoricalLabStore((s) => s.lotSize)
+  const setLotSize = useHistoricalLabStore((s) => s.setLotSize)
   const includeSpread = useHistoricalLabStore((s) => s.includeSpread)
   const setIncludeSpread = useHistoricalLabStore((s) => s.setIncludeSpread)
   const includeCommission = useHistoricalLabStore((s) => s.includeCommission)
@@ -122,6 +120,7 @@ export default function HistoricalLabPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [availableProviders, setAvailableProviders] = useState<any[]>([])
+  const [availableSymbols, setAvailableSymbols] = useState<string[]>([])
 
   // Fetch providers
   useEffect(() => {
@@ -131,7 +130,17 @@ export default function HistoricalLabPage() {
         setAvailableProviders(res.data?.providers || [])
       } catch (e) { console.error("Providers error", e) }
     }
+    
+    // Fetch available symbols
+    const fetchSymbols = async () => {
+      try {
+        const res = await axios.get('/api/historical-lab/available-symbols')
+        setAvailableSymbols(res.data?.symbols || [])
+      } catch (e) { console.error("Symbols error", e) }
+    }
+    
     fetchProviders()
+    fetchSymbols()
   }, [])
 
   // Auto-select first model when provider changes
@@ -178,6 +187,28 @@ export default function HistoricalLabPage() {
   }, [backtestResult?.chat_history, analysisResult?.chat_history, mode])
 
   const handleRun = async () => {
+    // Validate date range against available years for the symbol
+    if (availableSymbols.length > 0 && symbol && startDate && endDate) {
+      try {
+        const yearsRes = await axios.get(`/api/historical-lab/available-years/${symbol}`)
+        const years = yearsRes.data?.years || []
+        if (years.length > 0) {
+          const startYear = new Date(startDate).getFullYear()
+          const endYear = new Date(endDate).getFullYear()
+          const minYear = Math.min(...years)
+          const maxYear = Math.max(...years)
+          
+          if (startYear < minYear || endYear > maxYear) {
+            setError(`Data for ${symbol} is only available from ${minYear} to ${maxYear}. Please adjust your date range.`)
+            return
+          }
+        }
+      } catch (e) {
+        // If years check fails, continue anyway - don't block the run
+        console.warn("Could not validate date range:", e)
+      }
+    }
+    
     setLoading(true)
     setError(null)
     const setResult = mode === 'backtest' ? setBacktestResult : setAnalysisResult
@@ -187,7 +218,8 @@ export default function HistoricalLabPage() {
       const res = await axios.post('/api/historical-lab/run', {
         mode, symbol, start_date: startDate, end_date: endDate,
         timeframe, prompt, initial_capital: parseFloat(capital) || 10000,
-        leverage: parseFloat(leverage) || 100, include_spread: includeSpread,
+        lot_size: parseFloat(lotSize) || 0.01,
+        include_spread: includeSpread,
         include_commission: includeCommission,
         provider, model,
       })
@@ -299,15 +331,15 @@ export default function HistoricalLabPage() {
           </CardHeader>
           <CardContent className="p-5 space-y-5">
             <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <Label className="text-xs">Symbol</Label>
-                <Select value={symbol} onValueChange={setSymbol} disabled={loading}>
-                  <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {SYMBOLS.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Symbol</Label>
+                  <Select value={symbol} onValueChange={setSymbol} disabled={loading}>
+                    <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {availableSymbols.length > 0 ? availableSymbols.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>) : ['XAUUSD', 'BTCUSD', 'EURUSD', 'GBPUSD', 'USDJPY', 'XAGUSD'].map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
               <div className="space-y-1.5">
                 <Label className="text-xs">Timeframe</Label>
                 <Select value={timeframe} onValueChange={setTimeframe} disabled={loading}>
@@ -339,13 +371,8 @@ export default function HistoricalLabPage() {
                     <Input type="number" className="h-9" value={capital} onChange={e => setCapital(e.target.value)} disabled={loading} />
                   </div>
                   <div className="space-y-1.5">
-                    <Label className="text-xs">Leverage</Label>
-                    <Select value={leverage} onValueChange={setLeverage} disabled={loading}>
-                      <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        {LEVERAGES.map(l => <SelectItem key={l} value={l}>1:{l}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
+                    <Label className="text-xs">Lot Size</Label>
+                    <Input type="number" className="h-9" step="0.01" min="0.01" value={lotSize} onChange={e => setLotSize(e.target.value)} disabled={loading} />
                   </div>
                 </div>
                 <div className="flex gap-3">

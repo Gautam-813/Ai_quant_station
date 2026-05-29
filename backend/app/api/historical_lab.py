@@ -18,6 +18,7 @@ from app.core.database import get_db, AsyncSessionLocal
 from app.core.security import get_current_user
 from app.models.historical_lab import HistoricalBacktest
 from app.core.config import settings
+from app.core.utils import sanitize_for_json as _clean_for_json
 from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,18 @@ TF_MAPPING = {
     "D1": "1D", "W1": "1W",
 }
 
+_NL_TF_PATTERNS = [
+    (r'\b1[-\s]?min(?:ute)?s?\b', "1T"),
+    (r'\b5[-\s]?min(?:ute)?s?\b', "5T"),
+    (r'\b15[-\s]?min(?:ute)?s?\b', "15T"),
+    (r'\b30[-\s]?min(?:ute)?s?\b', "30T"),
+    (r'\b1[-\s]?hour\b|\bhourly\b', "1H"),
+    (r'\b2[-\s]?hour\b', "2H"),
+    (r'\b4[-\s]?hour\b|\bfour\s*hour\b', "4H"),
+    (r'\bdaily\b|\b1[-\s]?day\b', "1D"),
+    (r'\bweekly\b|\b1[-\s]?week\b', "1W"),
+]
+
 def _extract_timeframes(prompt: str, primary_tf: str) -> list:
     """Extract timeframe references from a strategy prompt.
 
@@ -44,6 +57,9 @@ def _extract_timeframes(prompt: str, primary_tf: str) -> list:
     detected = {primary_tf}
     for label, offset in TF_MAPPING.items():
         if re.search(rf'\b{label}\b', prompt, re.IGNORECASE):
+            detected.add(offset)
+    for pattern, offset in _NL_TF_PATTERNS:
+        if re.search(pattern, prompt, re.IGNORECASE):
             detected.add(offset)
     return sorted(detected, key=lambda x: _tf_sort_key(x))
 
@@ -105,7 +121,7 @@ def _merge_higher_tf(df_primary: pd.DataFrame, extra_dfs: dict, primary_tf: str)
         suffix = f"_{tf.replace('T', 'min').replace('H', 'h').replace('D', 'd')}"
         indicator_cols = [c for c in df_extra.columns if c not in ('open', 'high', 'low', 'close', 'volume', 'timestamp')]
         for col in indicator_cols:
-            df[f"{col}{suffix}"] = df_extra[col].reindex(df.index, method='ffill').bfill().fillna(0)
+            df[f"{col}{suffix}"] = df_extra[col].reindex(df.index, method='ffill').bfill()
     return df
 
 
@@ -229,93 +245,62 @@ Strategy: {prompt}
 Write ONLY the code block now:"""
 
     try:
-        client = await _get_ai_client(provider)
-        response = await client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Generate strategy code for {symbol} using only the columns in df."}
-            ],
-            temperature=0.05,
-            timeout=30
-        )
-        raw = response.choices[0].message.content or ""
+        client = await _get_ai_client(provider, user_id=user_id)
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Generate strategy code for {symbol} using only the columns in df."}
+        ]
         
-        # Retry up to 2 times if no code block found
-        for retry in range(2):
-            python_match = re.search(r"```python\s*(.*?)(?:```|$)", raw, re.S)
-            if python_match:
-                break
-            logger.warning(f"AI response had no code block (attempt {retry+1}). Retrying with stricter prompt...")
+        for attempt in range(2):
             response = await client.chat.completions.create(
                 model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"Generate strategy code for {symbol} using only the columns in df."},
-                    {"role": "assistant", "content": raw},
-                    {"role": "user", "content": "You MUST output Python code inside ```python ... ```. No text, no explanations. Only the code block."}
-                ],
-                temperature=0.05,
+                messages=messages,
+                temperature=0.05 if attempt == 0 else 0.2,
                 timeout=30
             )
             raw = response.choices[0].message.content or ""
-        
-        python_match = re.search(r"```python\s*(.*?)(?:```|$)", raw, re.S)
-        if python_match:
+            
+            python_match = re.search(r"```python\s*(.*?)(?:```|$)", raw, re.S)
+            if not python_match:
+                logger.warning(f"Signal code attempt {attempt+1} had no code block. Retrying...")
+                messages.append({"role": "assistant", "content": raw})
+                messages.append({"role": "user", "content": "You MUST output Python code inside ```python ... ```. No text, no explanations. Only the code block."})
+                continue
+            
             code_clean = python_match.group(1)
             generated_code = code_clean
             from .execute import run_python_code
             res = await run_python_code(code_clean, symbol=symbol, inject_df=df.copy(), user_id=user_id)
             
-            success = False
-            for attempt in range(5):
-                if res.get("success") and res.get("modified_data"):
-                    df_mod = pd.DataFrame(res["modified_data"])
-                    if "signal" in df_mod.columns:
-                        # df_mod has RangeIndex (from JSON roundtrip), df has DatetimeIndex.
-                        # reindex by label would match nothing → all zeros. Use .values instead.
-                        df["signal"] = df_mod["signal"].values[:len(df)]
-                        logger.info(f"Successfully integrated AI signals for {symbol}")
-                        success = True
-                        break
-                    error_detail = "Signal column not found in output"
+            if res.get("success") and res.get("modified_data"):
+                df_mod = pd.DataFrame(res["modified_data"])
+                if "signal" in df_mod.columns:
+                    df["signal"] = df_mod["signal"].values[:len(df)]
+                    logger.info(f"Successfully integrated AI signals for {symbol}")
+                    break
                 else:
-                    error_detail = (res.get("error") or "Unknown error")[:500]
-                
-                logger.warning(f"Signal code attempt {attempt+1} failed: {error_detail}. Asking AI to fix...")
-                response = await client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": f"Generate strategy code for {symbol} using only the columns in df."},
-                        {"role": "assistant", "content": raw},
-                        {"role": "user", "content": f"Your previous code failed with: {error_detail}. Fix the error and output ONLY valid Python code inside ```python ... ```."}
-                    ],
-                    temperature=min(0.05 + attempt * 0.1, 0.5),
-                    timeout=30
-                )
-                raw = response.choices[0].message.content or ""
-                python_match = re.search(r"```python\s*(.*?)(?:```|$)", raw, re.S)
-                if python_match:
-                    code_clean = python_match.group(1)
-                    generated_code = code_clean
-                    res = await run_python_code(code_clean, symbol=symbol, inject_df=df.copy(), user_id=user_id)
+                    error_detail = "Signal column not found in output"
+            else:
+                error_detail = (res.get("error") or "Unknown error")[:500]
             
-            if not success:
-                logger.error(f"Signal generation failed after all attempts. Using zero signals as fallback.")
-                df["signal"] = 0
+            logger.warning(f"Signal code attempt {attempt+1} failed: {error_detail}. Asking AI to fix...")
+            messages.append({"role": "assistant", "content": raw})
+            messages.append({"role": "user", "content": f"Your previous code failed with: {error_detail}. Fix the error and output ONLY valid Python code inside ```python ... ```."})
+        
     except Exception as e:
         logger.error(f"Signal generation error: {e}")
     
     return df, generated_code
 
-async def _get_ai_client(provider: str = "nvidia"):
-    from ..core.providers import PROVIDERS, get_api_key, get_base_url
+async def _get_ai_client(provider: str = "nvidia", user_id: int = 0):
+    from ..core.providers import PROVIDERS, get_base_url, resolve_api_key
     if provider not in PROVIDERS:
         raise ValueError(f"Unknown provider: {provider}")
-    api_key = get_api_key(provider, settings)
+    api_key = await resolve_api_key(provider, settings, user_id, AsyncSessionLocal)
     if not api_key:
         raise ValueError(f"No API key configured for {provider}")
+    if provider == "nvidia" and not api_key.startswith("nvapi-"):
+        api_key = f"nvapi-{api_key}"
     return AsyncOpenAI(base_url=get_base_url(provider), api_key=api_key)
 
 def _generate_initial_report(mode: str, symbol: str, start: str, end: str,
@@ -575,7 +560,7 @@ Be precise, professional, and mathematically rigorous."""
     last_error = ""
     for attempt in range(2):
         try:
-            client = await _get_ai_client(request.provider)
+            client = await _get_ai_client(request.provider, user_id=current_user["id"])
             response = await client.chat.completions.create(
                 model=request.model,
                 messages=messages,
@@ -640,50 +625,6 @@ Be precise, professional, and mathematically rigorous."""
                 "execution_tables": execution_results.get("tables") if execution_results else None,
             }
             
-            # Recursive cleaner for JSON serialization safety
-            def _clean_for_json(obj):
-                from datetime import date, time, datetime
-                import math
-
-                if isinstance(obj, (datetime,)): return obj.isoformat()
-                if isinstance(obj, (date, time)): return str(obj)
-
-                try:
-                    import pandas as _pd
-                    if isinstance(obj, _pd.Timestamp): return obj.isoformat()
-                    if isinstance(obj, _pd.Timedelta): return str(obj)
-                    try:
-                        if _pd.isna(obj):
-                            return None
-                    except (TypeError, ValueError):
-                        pass
-                except ImportError:
-                    pass
-
-                try:
-                    import numpy as _np
-                    if isinstance(obj, (_np.integer,)): return int(obj)
-                    if isinstance(obj, (_np.floating,)):
-                        v = float(obj)
-                        return None if math.isnan(v) or math.isinf(v) else v
-                    if isinstance(obj, _np.bool_): return bool(obj)
-                    if isinstance(obj, _np.ndarray): return _clean_for_json(obj.tolist())
-                except ImportError:
-                    pass
-
-                if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
-                    return None
-                if isinstance(obj, dict):
-                    return {k: _clean_for_json(v) for k, v in obj.items()}
-                if isinstance(obj, (list, tuple)):
-                    return [_clean_for_json(i) for i in obj]
-                if hasattr(obj, 'item') and callable(obj.item):
-                    try:
-                        return _clean_for_json(obj.item())
-                    except Exception:
-                        pass
-                return obj
-
             ai_msg_data = _clean_for_json(ai_msg_data)
             
             new_history = list(record.chat_history)
