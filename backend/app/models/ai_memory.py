@@ -12,6 +12,7 @@ class ChatMemory(Base):
     role = Column(String, nullable=False)
     content = Column(Text, nullable=False)
     reasoning = Column(Text, nullable=True)
+    raw_thinking = Column(JSON, nullable=True)
     provider = Column(String, nullable=True)
     model = Column(String, nullable=True)
     tokens_used = Column(Integer, nullable=True)

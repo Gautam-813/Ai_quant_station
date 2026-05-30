@@ -546,8 +546,12 @@ Last 10 candles:
         logger.info(f"[AI Chat] OpenAI client created successfully")
 
         # Professional retry logic with detailed logging
-        assistant_message = None
+                assistant_message = None
+        reasoning_text = None
+        token_usage = None
+        req_elapsed_ms = None
         last_error = "Unknown error - check server logs"
+        full_raw_response = None
         
         for attempt in range(MAX_RETRIES):
             try:
@@ -573,6 +577,15 @@ Last 10 candles:
                 token_usage = None
                 if hasattr(response, 'usage') and response.usage:
                     token_usage = response.usage.total_tokens
+                
+                # Capture full raw API response
+                try:
+                    full_raw_response = response.model_dump(mode='json')
+                except Exception:
+                    try:
+                        full_raw_response = response.dict()
+                    except Exception:
+                        full_raw_response = None
                 
                 logger.info(f"[AI Chat] SUCCESS - Response length: {len(assistant_message)} chars, Tokens: {token_usage}, Latency: {req_elapsed_ms}ms")
                 break
@@ -648,6 +661,15 @@ Last 10 candles:
                     if hasattr(response, 'usage') and response.usage:
                         token_usage = response.usage.total_tokens
                     
+                    # Capture full raw API response for self-correction
+                    try:
+                        full_raw_response = response.model_dump(mode='json')
+                    except Exception:
+                        try:
+                            full_raw_response = response.dict()
+                        except Exception:
+                            pass
+                    
                     # Try executing the NEW code - use the same robust regex
                     new_match = re.search(r"```python\s*(.*?)(?:```|$)", assistant_message, re.S)
                     if new_match:
@@ -688,6 +710,7 @@ Last 10 candles:
                     user_id=current_user["id"], symbol=chat_req.symbol,
                     role="assistant", content=assistant_message,
                     reasoning=reasoning_text,
+                    raw_thinking=full_raw_response,
                     provider=chat_req.provider, model=chat_req.model,
                     tokens_used=token_usage, latency_ms=req_elapsed_ms,
                     detected_setup=detected_setup, detected_action=detected_action,
