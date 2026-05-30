@@ -28,6 +28,16 @@ router = APIRouter(prefix="/backtest", tags=["Backtest"])
 PARQUET_DIR = Path(__file__).parent.parent.parent.parent / "data_archive" / "parquet_storage"
 PROMPT_FILE = str(Path(__file__).resolve().parent.parent.parent.parent / "backend" / "prompt_list.txt")
 
+
+def _capture_raw_response(response) -> dict | None:
+    try:
+        return response.model_dump(mode='json')
+    except Exception:
+        try:
+            return response.dict()
+        except Exception:
+            return None
+
 CONTRACT_MULTIPLIERS = {
     'XAUUSD': 100, 'XAGUSD': 5000, 'EURUSD': 100000, 'GBPUSD': 100000,
     'USDJPY': 100000, 'USDCAD': 100000, 'AUDUSD': 100000, 'NZDUSD': 100000,
@@ -147,12 +157,12 @@ def calculate_signals(df):
         timeout=60
     )
 
+    full_raw_response = _capture_raw_response(response)
     code_content = response.choices[0].message.content or ""
     # Extract code block
     match = re.search(r"```python\s*(.*?)\s*```", code_content, re.S)
-    if match:
-        return match.group(1).strip()
-    return code_content.strip()
+    code = match.group(1).strip() if match else code_content.strip()
+    return {"code": code, "raw_thinking": full_raw_response}
 
 def run_vectorized_backtest(df, strategy_code, lot_size=0.01, contract_multiplier=100):
     """Execute code and calculate PnL."""
@@ -332,14 +342,17 @@ async def run_backtest(request: BacktestRequest, current_user: dict = Depends(ge
                 if run.metrics:
                     previous_results.append(run.metrics)
     
+    raw_thinking = None
     if not strategy_code:
         try:
-            strategy_code = await generate_strategy_code(
+            gen_result = await generate_strategy_code(
                 prompt_text, 
                 provider=request.provider, 
                 model=request.model,
                 previous_results=previous_results if previous_results else None
             )
+            strategy_code = gen_result["code"]
+            raw_thinking = gen_result["raw_thinking"]
             # Save to cache
             async with AsyncSessionLocal() as db:
                 if request.prompt_id.startswith("custom_"):
@@ -433,12 +446,14 @@ async def run_backtest(request: BacktestRequest, current_user: dict = Depends(ge
         
         # Call AI again with the error message
         try:
-            strategy_code = await generate_strategy_code(
+            gen_result = await generate_strategy_code(
                 prompt_text, 
                 provider=request.provider,
                 model=request.model,
                 error_msg=last_error
             )
+            strategy_code = gen_result["code"]
+            raw_thinking = gen_result["raw_thinking"]
             # Update cache with fixed code
             async with AsyncSessionLocal() as db:
                 if request.prompt_id.startswith("custom_"):
@@ -468,7 +483,8 @@ async def run_backtest(request: BacktestRequest, current_user: dict = Depends(ge
             status="completed",
             metrics=result["metrics"],
             equity_curve=result["equity_curve"],
-            generated_code=strategy_code
+            generated_code=strategy_code,
+            raw_thinking=raw_thinking
         )
         db.add(backtest_rec)
         await db.commit()

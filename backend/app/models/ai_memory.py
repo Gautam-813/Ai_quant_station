@@ -186,6 +186,7 @@ class AutopilotTrade(Base):
     reasoning = Column(Text, nullable=True)
     confidence = Column(Float, nullable=True)
     ai_response = Column(Text, nullable=True)
+    raw_thinking = Column(JSON, nullable=True)
 
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 

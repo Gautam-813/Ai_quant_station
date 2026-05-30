@@ -31,6 +31,7 @@ class HistoricalBacktest(Base):
     equity_curve = Column(JSON, nullable=True)
     analysis_data = Column(JSON, nullable=True)
     generated_code = Column(Text, nullable=True)
+    raw_thinking = Column(JSON, nullable=True)
     trade_log = Column(JSON, nullable=True)
     
     chat_history = Column(JSON, default=list)

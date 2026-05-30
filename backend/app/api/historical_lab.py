@@ -24,6 +24,16 @@ from openai import AsyncOpenAI
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/historical-lab", tags=["Historical Lab"])
 
+
+def _capture_raw_response(response) -> dict | None:
+    try:
+        return response.model_dump(mode='json')
+    except Exception:
+        try:
+            return response.dict()
+        except Exception:
+            return None
+
 # ── DataFrame cache for chat follow-ups ────────────────────────────────────
 # Cache key: backtest_id, Value: (timestamp, DataFrame with indicators)
 # TTL: 5 minutes after last access
@@ -572,6 +582,7 @@ Be precise, professional, and mathematically rigorous."""
             msg_obj = response.choices[0].message
             ai_content = msg_obj.content or ""
             reasoning_text = msg_obj.reasoning_content if hasattr(msg_obj, 'reasoning_content') and msg_obj.reasoning_content else None
+            full_raw_response = _capture_raw_response(response)
             
             # Fallback: use reasoning_content if content is empty
             if not ai_content and reasoning_text:
@@ -609,6 +620,7 @@ Be precise, professional, and mathematically rigorous."""
                                 timeout=30
                             )
                             ai_content = response.choices[0].message.content or ""
+                            full_raw_response = _capture_raw_response(response)
                             new_match = re.search(r"```python\s*(.*?)(?:```|$)", ai_content, re.S)
                             if new_match:
                                 execution_results = await run_python_code(new_match.group(1), symbol=record.symbol, inject_df=df.copy(), user_id=current_user["id"])
@@ -620,6 +632,7 @@ Be precise, professional, and mathematically rigorous."""
                 "role": "assistant", 
                 "content": str(ai_content),
                 "reasoning": reasoning_text,
+                "raw_thinking": full_raw_response,
                 "execution_output": execution_results.get("output") if execution_results else None,
                 "execution_charts": execution_results.get("charts") if execution_results else None,
                 "execution_tables": execution_results.get("tables") if execution_results else None,

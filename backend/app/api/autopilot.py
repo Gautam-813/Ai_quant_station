@@ -29,6 +29,16 @@ from ..models.ai_memory import AutopilotTrade, AutopilotSettings, UserPrompt
 
 router = APIRouter(prefix="/autopilot", tags=["Autopilot"])
 
+
+def _capture_raw_response(response) -> dict | None:
+    try:
+        return response.model_dump(mode='json')
+    except Exception:
+        try:
+            return response.dict()
+        except Exception:
+            return None
+
 _http_client: httpx.AsyncClient | None = None
 
 def get_http_client() -> httpx.AsyncClient:
@@ -460,6 +470,7 @@ RULES:
             timeout=60
         )
         ai_response = response.choices[0].message.content or ""
+        full_raw_response = _capture_raw_response(response)
         add_log(user_id, f"AI Response (length: {len(ai_response)} chars)")
     except Exception as e:
         add_log(user_id, f"AI call failed: {str(e)}", "ERROR")
@@ -490,6 +501,7 @@ RULES:
                 timeout=60
             )
             ai_response = response.choices[0].message.content or ""
+            full_raw_response = _capture_raw_response(response)
         except Exception as e:
             add_log(user_id, f"AI correction failed: {str(e)}", "ERROR")
             break
@@ -527,7 +539,7 @@ RULES:
                 symbol=symbol, direction=direction, order_type=order_type, entry_price=entry_price,
                 stop_loss=sl, take_profit=tp, lot_size=lot,
                 mt5_ticket=ticket, execution_price=exec_price, execution_status="executed",
-                reasoning=reasoning, confidence=confidence, ai_response=ai_response[:1000]
+                reasoning=reasoning, confidence=confidence, ai_response=ai_response, raw_thinking=full_raw_response
             )
             db.add(trade)
             await db.commit()
