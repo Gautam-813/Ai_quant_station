@@ -199,6 +199,7 @@ class ChatRequest(BaseModel):
     candle_count: Optional[int] = 1000
     timeframe: Optional[str] = "1h"  # Primary timeframe
     candle_data: Optional[List[dict]] = None  # Candle data from frontend
+    refine_prompt: bool = True  # Automatically enrich/refine user query before sending to AI
 
 
 class ChatResponse(BaseModel):

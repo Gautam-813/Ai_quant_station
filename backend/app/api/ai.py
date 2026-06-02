@@ -236,6 +236,87 @@ async def _cache_market_data_internal(symbol: str, timeframe: str, data: List[di
                 logger.warning(f"AI Cache Error: {e}")
 
 
+PROMPT_REFINER_SYSTEM = """You are a query refiner for a trading AI assistant. Your ONLY job is to rewrite the user's raw trading question into a clear, specific, well-structured analysis request. 
+
+RULES:
+1. Keep the original intent intact — do NOT answer the question, just refine it.
+2. Add relevant context: mention the symbol, timeframe, and specific technical elements the user hints at.
+3. Be precise — convert vague language ("is it good?") into specific analysis requests ("Evaluate the risk-reward for a long entry").
+4. Output ONLY the refined query text — no explanations, no JSON, no formatting.
+5. Maximum 3 sentences.
+6. If the query is already specific and well-structured, return it as-is with minimal changes.
+
+EXAMPLES:
+User: "is it good to buy?"
+Refined: "Analyze EURUSD for a potential buy entry. Assess the current trend direction, identify key support/resistance levels, and evaluate whether the risk-reward profile supports a long position."
+
+User: "whats the market doing"
+Refined: "Provide a comprehensive market analysis of EURUSD. Describe the current price action, trend structure, volatility conditions, and any notable technical patterns."
+
+User: "check rsi on bitcoin"
+Refined: "Calculate and analyze the RSI indicator on BTCUSD. Interpret the current RSI value, identify any divergences, and assess whether the reading suggests overbought or oversold conditions."
+
+User: "should I sell my gold position"
+Refined: "Evaluate whether to close or hold a long XAUUSD position. Analyze the current trend, key support levels, and any reversal signals that would warrant selling."
+
+User: "how's the volatility on nasdaq"
+Refined: "Analyze the current volatility conditions on NASDAQ. Calculate ATR, compare it to recent averages, and assess whether the volatility environment favors range-trading or breakout strategies."
+"""
+
+REFINER_MODEL = "mistralai/mistral-7b-instruct-v0.3"  # Fast/cheap model for refinement
+
+
+async def _refine_query(
+    user_query: str,
+    symbol: Optional[str],
+    persona_name: str,
+    market_context: str,
+    api_key: str,
+    base_url: str,
+    fallback_model: str,
+) -> str:
+    """Refine a user's raw query into a structured analysis request using a cheap AI call.
+
+    Tries the fast REFINER_MODEL first, falls back to the user's model if unavailable.
+    Returns the original query if both attempts fail.
+    """
+    if not user_query or len(user_query.strip()) < 3:
+        return user_query
+
+    persona_desc = PERSONA_NAMES.get(persona_name, persona_name)
+    context_summary = market_context[:300] if market_context else 'No market data loaded'
+
+    refiner_input = f"""Symbol: {symbol or 'Unknown'}
+Persona: {persona_desc}
+User query: {user_query}
+Market context: {context_summary}
+"""
+
+    models_to_try = [REFINER_MODEL, fallback_model]
+
+    for model in models_to_try:
+        try:
+            client = AsyncOpenAI(base_url=base_url, api_key=api_key)
+            response = await client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": PROMPT_REFINER_SYSTEM},
+                    {"role": "user", "content": refiner_input},
+                ],
+                temperature=0.1,
+                max_tokens=300,
+                timeout=10,
+            )
+            refined = response.choices[0].message.content
+            if refined and len(refined.strip()) > 5:
+                logger.info(f"[Refiner] {model}: '{user_query[:50]}...' → '{refined[:60]}...'")
+                return refined.strip()
+        except Exception as e:
+            logger.warning(f"[Refiner] Model {model} failed: {e}")
+
+    return user_query
+
+
 _model_cache = {"data": {}, "timestamp": 0}
 MODEL_CACHE_TTL = 300  # 5 minutes
 
@@ -536,6 +617,22 @@ Last 10 candles:
         for m in chat_req.messages:
             messages.append({"role": m.role, "content": m.content})
 
+        # PROMPT REFINEMENT — rewrite the last user query before sending to main AI
+        if chat_req.refine_prompt and messages and messages[-1].get("role") == "user":
+            last_user_msg = messages[-1]["content"]
+            refined = await _refine_query(
+                user_query=last_user_msg,
+                symbol=chat_req.symbol,
+                persona_name=chat_req.persona or "technical_analyst",
+                market_context=market_context,
+                api_key=api_key,
+                base_url=provider_config["base_url"],
+                fallback_model=chat_req.model,
+            )
+            if refined != last_user_msg:
+                messages[-1]["content"] = refined
+                logger.info(f"[AI Chat] Query refined: '{last_user_msg[:50]}...' → '{refined[:60]}...'")
+
         logger.info(f"[AI Chat] === Starting AI Request ===")
         logger.info(f"[AI Chat] Provider: {chat_req.provider}")
         logger.info(f"[AI Chat] Model: {chat_req.model}")
@@ -546,7 +643,7 @@ Last 10 candles:
         logger.info(f"[AI Chat] OpenAI client created successfully")
 
         # Professional retry logic with detailed logging
-                assistant_message = None
+        assistant_message = None
         reasoning_text = None
         token_usage = None
         req_elapsed_ms = None

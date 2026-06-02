@@ -534,6 +534,7 @@ Brokers often return timestamps in their local timezone (UTC+2, UTC+3), not UTC.
 | `execute.py` sandbox | All AI code execution goes through this single module with safe_globals |
 | `chat_memory_id` in trade link | Enables win-rate tracking per strategy prompt (RAG pipeline) |
 | `PRAGMA foreign_keys=ON` for SQLite | Required for CASCADE deletes to work on SQLite |
+| Prompt refinement before AI call | `_refine_query()` rewrites vague user queries into structured analysis requests using a fast/cheap model (`mistralai/mistral-7b-instruct-v0.3`), falls back to the user's main model if unavailable. Controlled by `refine_prompt: bool` on `ChatRequest` (default: True). Adds ~300ms latency per query. |
 
 ## Known Limitations
 

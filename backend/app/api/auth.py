@@ -21,7 +21,7 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 # Simple in-memory rate limiter: {ip: [(timestamp, count)]}
 _login_attempts: dict[str, list[float]] = defaultdict(list)
-_LOGIN_RATE_LIMIT = 5  # max attempts
+_LOGIN_RATE_LIMIT = 50  # max attempts
 _LOGIN_RATE_WINDOW = 60  # seconds
 
 def _check_login_rate(ip: str) -> bool:

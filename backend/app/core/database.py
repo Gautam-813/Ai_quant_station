@@ -3,18 +3,13 @@ from sqlalchemy.orm import declarative_base
 from sqlalchemy import text
 from .config import settings
 
-engine = create_async_engine(
-    settings.DATABASE_URL,
-    echo=False,
-    future=True,
-    pool_size=20,
-    max_overflow=10,
-    pool_pre_ping=True,
-    pool_recycle=3600,
-)
+_is_sqlite = str(settings.DATABASE_URL).startswith("sqlite")
+_engine_kwargs = dict(echo=False, future=True)
+if not _is_sqlite:
+    _engine_kwargs.update(pool_size=20, max_overflow=10, pool_pre_ping=True, pool_recycle=3600)
+engine = create_async_engine(settings.DATABASE_URL, **_engine_kwargs)
 
 # PostgreSQL enforces foreign keys natively. For SQLite, we handle it below.
-_is_sqlite = str(settings.DATABASE_URL).startswith("sqlite")
 if _is_sqlite:
     from sqlalchemy import event
 

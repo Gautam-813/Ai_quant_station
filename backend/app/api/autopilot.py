@@ -81,12 +81,63 @@ PROMPT_FILE = str(Path(__file__).resolve().parent.parent.parent.parent / "backen
 
 
 def load_prompts():
-    """Load prompts from file."""
+    """Load prompts from file.
+
+    Supports two formats:
+      - Old: "1. Analyze XAUUSD..."
+      - New: "PROMPT #1:\\nAnalyze XAUUSD price structure..."
+    Returns list of "N. <full prompt text>" for backward compatibility.
+    """
     try:
         with open(PROMPT_FILE, "r", encoding="utf-8") as f:
-            return [line.strip() for line in f.readlines() if line.strip() and "." in line]
+            lines = f.readlines()
     except Exception:
         return []
+
+    prompts = []
+    current_num = None
+    current_lines = []
+
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        # Check for new format: "PROMPT #N:"
+        new_match = re.match(r"^PROMPT\s*#(\d+):?\s*$", line, re.I)
+        if new_match:
+            # Save previous prompt if any
+            if current_num is not None and current_lines:
+                text = " ".join(current_lines).strip()
+                prompts.append(f"{current_num}. {text}")
+            current_num = int(new_match.group(1))
+            current_lines = []
+            continue
+
+        # Check for old format: "N. text"
+        old_match = re.match(r"^(\d+)\.\s*(.*)", line)
+        if old_match and current_num is None:
+            # Save previous old-style prompt
+            if current_num is not None and current_lines:
+                text = " ".join(current_lines).strip()
+                prompts.append(f"{current_num}. {text}")
+            current_num = int(old_match.group(1))
+            current_lines = [old_match.group(2)]
+            continue
+
+        # Accumulate content lines for the current prompt
+        if current_num is not None:
+            # Clean up extra whitespace
+            cleaned = re.sub(r'\s+', ' ', line).strip()
+            if cleaned:
+                current_lines.append(cleaned)
+
+    # Save the last prompt
+    if current_num is not None and current_lines:
+        text = " ".join(current_lines).strip()
+        prompts.append(f"{current_num}. {text}")
+
+    return prompts
 
 
 def add_log(user_id: int, message: str, level: str = "INFO"):

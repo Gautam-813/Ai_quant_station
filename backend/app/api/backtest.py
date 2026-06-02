@@ -65,6 +65,7 @@ class BacktestRequest(BaseModel):
     provider: Optional[str] = "nvidia"
     model: Optional[str] = "qwen/qwen3.5-122b-a10b"
     lot_size: Optional[float] = 0.01
+    strategy_code: Optional[str] = None
 
 class BacktestResponse(BaseModel):
     success: bool
@@ -126,18 +127,17 @@ RULES:
    - 0 = No Signal
 6. Be precise with logic. If multiple conditions are mentioned, all must be met.
 7. Output ONLY the code block, no explanations.
+8. CRITICAL: You MUST create `signal = pd.Series(0, index=df.index)` and you MUST `return signal` at the end.
+9. KEEP IT SIMPLE. Use basic indicators (SMA, EMA, RSI). Avoid complex loops.
 
 EXAMPLE:
 ```python
 def calculate_signals(df):
     close = df['close']
-    # RSI(14) < 30
     rsi = ta.momentum.rsi(close, window=14)
-    # Price above 200 SMA
     sma200 = ta.trend.sma_indicator(close, window=200)
-    
     signal = pd.Series(0, index=df.index)
-    signal[(rsi < 30) & (df['close'] > sma200)] = 1
+    signal[(rsi < 30) & (close > sma200)] = 1
     signal[(rsi > 70)] = -1
     return signal
 ```
@@ -154,14 +154,18 @@ def calculate_signals(df):
             {"role": "user", "content": user_content}
         ],
         temperature=0.1,
-        timeout=60
+        timeout=120
     )
 
     full_raw_response = _capture_raw_response(response)
     code_content = response.choices[0].message.content or ""
-    # Extract code block
-    match = re.search(r"```python\s*(.*?)\s*```", code_content, re.S)
-    code = match.group(1).strip() if match else code_content.strip()
+    code = code_content.strip()
+    match = re.search(r"```python\s*(.*?)\s*```", code, re.S)
+    if match:
+        code = match.group(1).strip()
+    elif "```python" in code:
+        code = code.split("```python", 1)[1].strip()
+        code = code.strip("`").strip()
     return {"code": code, "raw_thinking": full_raw_response}
 
 def run_vectorized_backtest(df, strategy_code, lot_size=0.01, contract_multiplier=100):
@@ -294,7 +298,7 @@ async def run_backtest(request: BacktestRequest, current_user: dict = Depends(ge
     user_id = current_user["id"]
     
     # 1. Get Prompt Text and Strategy Code (Cache)
-    strategy_code = None
+    strategy_code = request.strategy_code  # Allow direct code injection for testing
     prompt_text = ""
     
     async with AsyncSessionLocal() as db:
@@ -309,14 +313,38 @@ async def run_backtest(request: BacktestRequest, current_user: dict = Depends(ge
         else:
             # Default prompts
             p_num = int(request.prompt_id)
-            # Try to get prompt text from file
+            # Try to get prompt text from file (handles both old "N. text" and new "PROMPT #N:" formats)
             try:
                 with open(PROMPT_FILE, "r", encoding="utf-8") as f:
                     lines = f.readlines()
-                    for line in lines:
-                        if line.startswith(f"{p_num}."):
-                            prompt_text = line.split(".", 1)[1].strip()
+                current_num = None
+                current_lines = []
+                for raw_line in lines:
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    new_match = re.match(r"^PROMPT\s*#(\d+):?\s*$", line, re.I)
+                    if new_match:
+                        if current_num == p_num and current_lines:
+                            prompt_text = " ".join(current_lines).strip()
                             break
+                        current_num = int(new_match.group(1))
+                        current_lines = []
+                        continue
+                    old_match = re.match(r"^(\d+)\.\s*(.*)", line)
+                    if old_match and current_num is None:
+                        if int(old_match.group(1)) == p_num:
+                            prompt_text = old_match.group(2).strip()
+                            break
+                        current_num = int(old_match.group(1))
+                        current_lines = [old_match.group(2)]
+                        continue
+                    if current_num == p_num:
+                        cleaned = re.sub(r'\s+', ' ', line).strip()
+                        if cleaned:
+                            current_lines.append(cleaned)
+                if current_num == p_num and current_lines and not prompt_text:
+                    prompt_text = " ".join(current_lines).strip()
             except Exception:
                 pass
             
@@ -432,7 +460,7 @@ async def run_backtest(request: BacktestRequest, current_user: dict = Depends(ge
         try:
             result = await asyncio.wait_for(
                 loop.run_in_executor(None, run_vectorized_backtest, full_df, strategy_code, lot_size, contract_multiplier),
-                timeout=30.0
+                timeout=60.0
             )
         except asyncio.TimeoutError:
             result = {"error": "Code execution timed out (30s limit). Simplify the strategy logic."}
