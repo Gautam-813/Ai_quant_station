@@ -69,6 +69,8 @@ def load_data(
 
     Returns a clean DataFrame with: timestamp, open, high, low, close, volume
     """
+    if symbol not in AVAILABLE_SYMBOLS:
+        return None
     start_dt = pd.to_datetime(start_date)
     end_dt = pd.to_datetime(end_date)
     start_year = start_dt.year
@@ -166,6 +168,8 @@ def get_available_years(symbol: str) -> list:
     Checks local cache first, then falls back to a sensible default range
     (2006–2026) since HuggingFace is guaranteed to have the data.
     """
+    if symbol not in AVAILABLE_SYMBOLS:
+        return []
     years = set()
     # 1. Check local cache
     for f in LOCAL_CACHE.glob(f"{symbol}_*.parquet"):

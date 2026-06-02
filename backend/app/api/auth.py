@@ -101,6 +101,13 @@ async def refresh_token(refresh_data: dict, db: AsyncSession = Depends(get_db)):
             detail="User not found"
         )
 
+    # Blacklist the old refresh token so it can't be reused
+    try:
+        exp_dt = datetime.fromtimestamp(payload["exp"], tz=timezone.utc)
+        await blacklist_token(refresh_token, expires_at=exp_dt)
+    except Exception:
+        pass
+
     access_token = create_access_token(data={"sub": user.username, "user_id": user.id, "role": user.role, "name": user.name})
     new_refresh_token = create_refresh_token(data={"sub": user.username, "user_id": user.id, "role": user.role, "name": user.name})
 
