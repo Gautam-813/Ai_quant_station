@@ -28,7 +28,7 @@ class CalculationRecord(BaseModel):
 
 
 @router.get("/test")
-async def test_endpoint():
+async def test_endpoint(current_user: dict = Depends(get_current_user)):
     """Simple test endpoint"""
     return {"status": "ok", "message": "Analytics is working"}
 

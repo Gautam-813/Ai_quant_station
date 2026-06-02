@@ -658,10 +658,10 @@ Be precise, professional, and mathematically rigorous."""
                 raise HTTPException(status_code=500, detail=f"AI service error after retries: {last_error}")
 
 @router.get("/available-symbols")
-async def get_symbols():
+async def get_symbols(current_user: dict = Depends(get_current_user)):
     return {"symbols": AVAILABLE_SYMBOLS}
 
 @router.get("/available-years/{symbol}")
-async def get_years(symbol: str):
+async def get_years(symbol: str, current_user: dict = Depends(get_current_user)):
     years = get_available_years(symbol)
     return {"symbol": symbol, "years": years, "from": min(years) if years else None, "to": max(years) if years else None}

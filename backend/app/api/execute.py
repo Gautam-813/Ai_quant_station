@@ -8,7 +8,7 @@ Multi-user isolation:
   - Each subprocess exits after one execution (no state persistence risk)
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 import io
@@ -18,6 +18,7 @@ import math
 import json
 import base64
 import asyncio
+from ..core.security import get_current_user
 import time
 import hashlib
 import os
@@ -35,7 +36,7 @@ class ExecuteCodeRequest(BaseModel):
     market_data: Optional[List[Dict[str, Any]]] = None
     symbol: Optional[str] = None
     session_id: Optional[str] = None   # client-generated id to isolate sessions
-    user_id: int = 0                   # 0 = anonymous/unauthenticated
+    user_id: int = 0                   # Overridden by authenticated user_id from JWT
 
 
 class ExecuteCodeResponse(BaseModel):
@@ -486,8 +487,9 @@ async def run_python_code(
 
 # ── API Endpoint ───────────────────────────────────────────────────────────
 @router.post("/code", response_model=ExecuteCodeResponse)
-async def execute_code(request: ExecuteCodeRequest):
+async def execute_code(request: ExecuteCodeRequest, current_user: dict = Depends(get_current_user)):
     """Execute Python code with market data (df) and common libraries."""
+    user_id = current_user.get("user_id", 0)
     try:
         result = await asyncio.wait_for(
             run_python_code(
@@ -495,7 +497,7 @@ async def execute_code(request: ExecuteCodeRequest):
                 request.market_data,
                 request.symbol,
                 request.session_id,
-                user_id=request.user_id,
+                user_id=user_id,
             ),
             timeout=30.0,
         )
@@ -519,7 +521,7 @@ class CalculateIndicatorRequest(BaseModel):
 
 
 @router.post("/calculate-indicator")
-async def calculate_indicator(request: CalculateIndicatorRequest):
+async def calculate_indicator(request: CalculateIndicatorRequest, current_user: dict = Depends(get_current_user)):
     try:
         import pandas as pd
         df = pd.DataFrame(request.market_data)
