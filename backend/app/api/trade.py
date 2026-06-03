@@ -1,7 +1,9 @@
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException, Header, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from typing import Optional, Annotated
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from sqlalchemy import select
 
 from ..core.config import settings
 from ..core.security import decode_token
@@ -273,10 +275,38 @@ async def close_position(close_req: CloseRequest, token: str = Depends(verify_mt
     if result is None or result.retcode != getattr(mt5, 'TRADE_RETCODE_DONE', 10009):
         raise HTTPException(status_code=400, detail=f"Close failed: {result.comment if result else 'Unknown error'}")
 
-    # Write audit trail
+    # Query MT5 history to get the closing deal's actual P&L and price
+    close_profit = None
+    close_deal_price = None
+    try:
+        hist_from = datetime.now() - timedelta(seconds=10)
+        hist_to = datetime.now() + timedelta(seconds=1)
+        deals = await loop.run_in_executor(
+            None, lambda: mt5.history_deals_get(hist_from, hist_to)
+        )
+        if deals:
+            for d in deals:
+                if d.position_id == close_req.ticket:
+                    close_profit = d.profit
+                    close_deal_price = d.price
+                    break
+    except Exception:
+        pass
+
+    # Update TradeRecord with close details and write audit trail
     try:
         uid = token.get("user_id") if isinstance(token, dict) else None
         async with AsyncSessionLocal() as db:
+            rec = await db.execute(
+                select(TradeRecord).where(TradeRecord.mt5_ticket == close_req.ticket)
+            )
+            trade_rec = rec.scalar_one_or_none()
+            if trade_rec:
+                trade_rec.status = "closed"
+                trade_rec.closed_at = datetime.now(timezone.utc)
+                trade_rec.exit_price = close_deal_price if close_deal_price else price
+                trade_rec.profit_loss = close_profit
+
             db.add(PositionAudit(
                 user_id=uid, mt5_ticket=close_req.ticket,
                 action="close", symbol=position.symbol,
@@ -286,7 +316,7 @@ async def close_position(close_req: CloseRequest, token: str = Depends(verify_mt
             await db.commit()
     except Exception:
         import traceback as _tb
-        print(f"[trade] PositionAudit close failed for ticket {close_req.ticket}:\n{_tb.format_exc()}")
+        print(f"[trade] Close audit failed for ticket {close_req.ticket}:\n{_tb.format_exc()}")
 
     return {
         "success": True,
