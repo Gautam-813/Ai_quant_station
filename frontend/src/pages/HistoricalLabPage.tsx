@@ -461,11 +461,11 @@ export default function HistoricalLabPage() {
           {/* Metrics */}
           {mode === 'backtest' && !isProcessing && (
             <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-              <MetricCard label="Total P&L" value={metrics ? `$${metrics.total_pnl?.toFixed(2) ?? metrics.final_equity - 10000}` : '—'} icon={TrendingUp} color="text-green-400" />
-              <MetricCard label="Sharpe Ratio" value={metrics ? metrics.sharpe_ratio.toFixed(2) : '—'} icon={TrendingUp} color="text-green-400" />
-              <MetricCard label="Win Rate" value={metrics ? `${metrics.win_rate_pct.toFixed(1)}%` : '—'} icon={Zap} color="text-yellow-400" />
-              <MetricCard label="Profit Factor" value={metrics ? metrics.profit_factor.toFixed(2) : '—'} icon={BarChartHorizontal} color="text-blue-400" />
-              <MetricCard label="Max Drawdown" value={metrics ? `${metrics.max_drawdown_pct.toFixed(1)}%` : '—'} icon={AlertTriangle} color="text-red-400" />
+              <MetricCard label="Total P&L" value={metrics ? `$${(metrics.total_pnl ?? Number(metrics.final_equity ?? 0) - 10000).toFixed(2)}` : '—'} icon={TrendingUp} color="text-green-400" />
+              <MetricCard label="Sharpe Ratio" value={metrics ? Number(metrics.sharpe_ratio ?? 0).toFixed(2) : '—'} icon={TrendingUp} color="text-green-400" />
+              <MetricCard label="Win Rate" value={metrics ? `${Number(metrics.win_rate_pct ?? 0).toFixed(1)}%` : '—'} icon={Zap} color="text-yellow-400" />
+              <MetricCard label="Profit Factor" value={metrics ? Number(metrics.profit_factor ?? 0).toFixed(2) : '—'} icon={BarChartHorizontal} color="text-blue-400" />
+              <MetricCard label="Max Drawdown" value={metrics ? `${Number(metrics.max_drawdown_pct ?? 0).toFixed(1)}%` : '—'} icon={AlertTriangle} color="text-red-400" />
             </div>
           )}
 
@@ -512,12 +512,12 @@ export default function HistoricalLabPage() {
                   <tbody>
                     {result.trade_log.map((t, i) => (
                       <tr key={i} className="border-b border-border/20 hover:bg-muted/30">
-                        <td className="p-2 text-left text-muted-foreground font-mono">{new Date(t.entry_time).toLocaleString()}</td>
-                        <td className="p-2 text-left text-muted-foreground font-mono">{t.exit_time === 'END OF DATA' ? '—' : new Date(t.exit_time).toLocaleString()}</td>
-                        <td className={`p-2 text-center font-bold ${t.direction === 'BUY' ? 'text-green-400' : 'text-red-400'}`}>{t.direction}</td>
-                        <td className="p-2 text-right font-mono">{t.entry_price.toFixed(2)}</td>
-                        <td className="p-2 text-right font-mono">{t.exit_price.toFixed(2)}</td>
-                        <td className={`p-2 text-right font-mono font-bold ${t.pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>${t.pnl.toFixed(2)}</td>
+                        <td className="p-2 text-left text-muted-foreground font-mono">{t.entry_time ? new Date(t.entry_time).toLocaleString() : '—'}</td>
+                        <td className="p-2 text-left text-muted-foreground font-mono">{t.exit_time === 'END OF DATA' ? '—' : t.exit_time ? new Date(t.exit_time).toLocaleString() : '—'}</td>
+                        <td className={`p-2 text-center font-bold ${t.direction === 'BUY' ? 'text-green-400' : 'text-red-400'}`}>{t.direction || '—'}</td>
+                        <td className="p-2 text-right font-mono">{Number(t.entry_price ?? 0).toFixed(2)}</td>
+                        <td className="p-2 text-right font-mono">{Number(t.exit_price ?? 0).toFixed(2)}</td>
+                        <td className={`p-2 text-right font-mono font-bold ${(t.pnl ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>${Number(t.pnl ?? 0).toFixed(2)}</td>
                       </tr>
                     ))}
                   </tbody>

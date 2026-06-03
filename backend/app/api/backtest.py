@@ -26,6 +26,41 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/backtest", tags=["Backtest"])
 
+
+def _validate_backtest_result(bt: dict) -> dict:
+    """Ensure backtest_result has all required keys with safe defaults."""
+    bt = bt or {}
+    metrics = bt.get("metrics") or {}
+    bt["metrics"] = {
+        "total_return_pct": float(metrics.get("total_return_pct") or 0),
+        "total_pnl": float(metrics.get("total_pnl") or 0),
+        "sharpe_ratio": float(metrics.get("sharpe_ratio") or 0),
+        "max_drawdown_pct": float(metrics.get("max_drawdown_pct") or 0),
+        "win_rate_pct": float(metrics.get("win_rate_pct") or 0),
+        "profit_factor": float(metrics.get("profit_factor") or 0),
+        "num_trades": int(metrics.get("num_trades") or 0),
+        "final_equity": float(metrics.get("final_equity") or 0),
+        "lot_size": float(metrics.get("lot_size") or 0),
+    }
+    eq = bt.get("equity_curve") or []
+    bt["equity_curve"] = [
+        {"time": str(e.get("time", "")), "balance": float(e.get("balance") or 0)}
+        for e in eq if isinstance(e, dict)
+    ]
+    tl = bt.get("trade_log") or []
+    bt["trade_log"] = [
+        {
+            "entry_time": str(t.get("entry_time", "")),
+            "exit_time": str(t.get("exit_time", "")),
+            "direction": str(t.get("direction", "")),
+            "entry_price": float(t.get("entry_price") or 0),
+            "exit_price": float(t.get("exit_price") or 0),
+            "pnl": float(t.get("pnl") or 0),
+        }
+        for t in tl if isinstance(t, dict)
+    ]
+    return bt
+
 PARQUET_DIR = Path(__file__).parent.parent.parent.parent / "data_archive" / "parquet_storage"
 PROMPT_FILE = str(Path(__file__).resolve().parent.parent.parent.parent / "backend" / "prompt_list.txt")
 
@@ -143,6 +178,152 @@ def calculate_signals(df):
         code = code.split("```python", 1)[1].strip()
         code = code.strip("`").strip()
     return {"code": code, "raw_thinking": full_raw_response}
+
+def _map_freeform_metrics(ff_metrics: dict) -> dict:
+    """Convert freeform backtest_result metrics to backtest.py format."""
+    return {
+        "total_return": ff_metrics.get("total_return_pct", 0),
+        "total_pnl": ff_metrics.get("total_pnl", 0),
+        "final_equity": ff_metrics.get("final_equity", 0),
+        "win_rate": ff_metrics.get("win_rate_pct", 0),
+        "max_drawdown": ff_metrics.get("max_drawdown_pct", 0),
+        "trades": ff_metrics.get("num_trades", 0),
+    }
+
+
+def _map_freeform_trades(ff_trades: list) -> list:
+    """Convert freeform trade_log to backtest.py format."""
+    mapped = []
+    for t in (ff_trades or []):
+        entry_p = t.get("entry_price", 0)
+        exit_p = t.get("exit_price", 0)
+        pnl = t.get("pnl", 0)
+        pnl_pct = (pnl / entry_p * 100) if entry_p else 0
+        mapped.append({
+            "entry_time": t.get("entry_time", ""),
+            "exit_time": t.get("exit_time", ""),
+            "direction": t.get("direction", ""),
+            "entry_price": entry_p,
+            "exit_price": exit_p,
+            "pnl_dollars": round(pnl, 2),
+            "pnl_pct": round(pnl_pct, 2),
+            "holding_period": 0,
+        })
+    return mapped
+
+
+def _build_freeform_prompt_backtest(df, prompt_text, symbol, initial_capital=10000.0, lot_size=0.01, contract_multiplier=100.0) -> str:
+    base_cols = ['open', 'high', 'low', 'close', 'volume']
+    indicator_cols = sorted([c for c in df.columns if c not in base_cols and c != 'timestamp' and c != 'datetime'])
+    indicator_str = ", ".join(indicator_cols[:50])
+    return f"""You are a trading strategy developer. Write Python code that simulates trades on `df`.
+
+AVAILABLE COLUMNS: {indicator_str}
+
+The df is a pandas DataFrame with DatetimeIndex. Each row is one bar.
+
+PARAMETERS (already defined as Python variables):
+  initial_capital = {initial_capital}
+  lot_size = {lot_size}
+  contract_multiplier = {contract_multiplier}
+  spread_cost_per_lot   # spread in points per lot, subtract from trade P&L
+  commission_per_lot    # fixed commission per lot per trade, subtract from trade P&L
+
+Write ANY Python code you want. Use loops, state variables, SL/TP checks, time filters, whatever the strategy needs.
+At the end, store results in `backtest_result` which is a dict with this exact shape:
+
+backtest_result = {{
+    "equity_curve": [{{"time": "...", "balance": 10000.0}}, ...],
+    "metrics": {{
+        "total_return_pct": 12.34,
+        "total_pnl": 1234.56,
+        "sharpe_ratio": 1.23,
+        "max_drawdown_pct": -5.67,
+        "win_rate_pct": 55.5,
+        "profit_factor": 1.5,
+        "num_trades": 42,
+        "final_equity": 11234.56,
+        "lot_size": {lot_size},
+    }},
+    "trade_log": [{{"entry_time": "...", "exit_time": "...", "direction": "BUY", "entry_price": 2000.0, "exit_price": 2050.0, "pnl": 50.0}}, ...],
+}}
+
+PnL per trade: lot_size * contract_multiplier * (exit - entry) * direction_sign
+Use df.index[i] for time access. Use row.get('col', default) for NaN-safe access.
+Output ONLY ```python ... ``` with no text outside.
+
+Strategy: {prompt_text}"""
+
+
+async def _run_freeform_backtest_async(df, prompt_text, symbol,
+                                        lot_size, contract_multiplier,
+                                        initial_capital, spread, commission,
+                                        provider, model, user_id=0) -> dict:
+    """AI writes arbitrary Python that simulates trades and produces backtest_result."""
+    system_prompt = _build_freeform_prompt_backtest(
+        df, prompt_text, symbol, initial_capital, lot_size, contract_multiplier
+    )
+    api_key = _get_api_key(provider, settings)
+    base_url = get_base_url(provider)
+    if not api_key:
+        return {"error": f"API key for {provider} not configured"}
+    client = AsyncOpenAI(base_url=base_url, api_key=api_key)
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"Write backtest simulation for {symbol}."}
+    ]
+    last_error = None
+
+    for attempt in range(3):
+        try:
+            response = await client.chat.completions.create(
+                model=model, messages=messages,
+                temperature=0.05 if attempt == 0 else 0.2, timeout=60,
+            )
+            raw = response.choices[0].message.content or ""
+            pm = re.search(r"```python\s*(.*?)(?:```|$)", raw, re.S)
+            if not pm:
+                messages.append({"role": "assistant", "content": raw})
+                messages.append({"role": "user", "content": "Output ONLY ```python ... ```."})
+                continue
+            code = pm.group(1).strip()
+            # Inject parameters as actual Python variables before AI code
+            params = f"""
+initial_capital = {initial_capital}
+lot_size = {lot_size}
+contract_multiplier = {contract_multiplier}
+spread_cost_per_lot = {spread}
+commission_per_lot = {commission}
+"""
+            full_code = params + "\n" + code
+            from .execute import run_python_code
+            res = await run_python_code(full_code, symbol=symbol, inject_df=df.copy(), user_id=user_id)
+            bt = res.get("backtest_result")
+            if not bt:
+                bt = res.get("session_state", {}).get("backtest_result")
+            if bt and "metrics" in bt:
+                bt = _validate_backtest_result(bt)
+                # Sample equity curve server-side to cap at 500 points
+                eq_raw = bt.get("equity_curve", [])
+                if len(eq_raw) > 500:
+                    step = max(1, len(eq_raw) // 500)
+                    eq_raw = eq_raw[::step]
+                eq_values = [e["balance"] for e in eq_raw]
+                return {
+                    "metrics": _map_freeform_metrics(bt["metrics"]),
+                    "equity_curve": eq_values,
+                    "trades": _map_freeform_trades(bt.get("trade_log", [])),
+                    "generated_code": code,
+                }
+            error_detail = res.get("error") or "Unknown error"
+            last_error = error_detail
+            messages.append({"role": "assistant", "content": raw})
+            messages.append({"role": "user", "content": f"Failed: {error_detail[:500]}. Fix and output ONLY valid Python."})
+        except Exception as e:
+            last_error = str(e)
+            await asyncio.sleep(1)
+    return {"error": f"Freeform AI failed after 3 attempts: {last_error}"}
+
 
 def run_vectorized_backtest(df, strategy_code, lot_size=0.01, contract_multiplier=100, initial_capital=10000.0, spread=0.0, commission=0.0):
     """Execute code and calculate PnL."""
@@ -429,63 +610,72 @@ async def run_backtest(request: BacktestRequest, current_user: dict = Depends(ge
                 df_primary[f"{col}{suffix}"] = df_higher[col].reindex(primary_idx, method='ffill').bfill().fillna(0)
         full_df = df_primary.reset_index()
 
-    # 4. Run Backtest with Auto-Retry / Self-Correction
-    max_retries = 3
-    last_error = None
-
+    # 4. Run Backtest
     lot_size = request.lot_size or 0.01
     contract_multiplier = CONTRACT_MULTIPLIERS.get(request.symbol, 100)
+    initial_capital = request.initial_capital or 10000.0
 
-    loop = asyncio.get_event_loop()
-    result = {"error": "No attempt made"}
-    
-    for attempt in range(max_retries):
-        try:
-            initial_capital = request.initial_capital or 10000.0
-            result = await asyncio.wait_for(
-                loop.run_in_executor(None, run_vectorized_backtest, full_df, strategy_code, lot_size, contract_multiplier, initial_capital, request.spread or 0.0, request.commission or 0.0),
-                timeout=60.0
-            )
-        except asyncio.TimeoutError:
-            result = {"error": "Code execution timed out (60s limit). Simplify the strategy logic."}
-        
-        if "error" not in result:
-            # Success! Break loop
-            break
-        
-        last_error = result["error"]
-        logger.warning(f"[Backtest] Attempt {attempt+1} failed: {last_error}. Retrying with correction...")
-        
-        # Self-Correction: Provide specific guidance for common errors like IndexError
-        hint = ""
-        if "IndexError" in last_error:
-            hint = " (HINT: Ensure you don't slice the DataFrame too small before calculating indicators like ATR, RSI, or SMA. Technical indicators need a sufficient historical window.)"
-        elif "NaN" in last_error:
-            hint = " (HINT: Use .dropna() after calculating indicators to avoid NaN issues in signals.)"
+    # ── Try freeform: AI writes arbitrary Python that produces backtest_result ──
+    logger.info(f"[Backtest] Trying freeform AI for {request.symbol}")
+    result = await _run_freeform_backtest_async(
+        full_df, prompt_text, request.symbol,
+        lot_size=lot_size, contract_multiplier=contract_multiplier,
+        initial_capital=initial_capital,
+        spread=request.spread or 0.0, commission=request.commission or 0.0,
+        provider=request.provider, model=request.model,
+        user_id=user_id,
+    )
 
-        # Call AI again with the error message + hint
-        try:
-            gen_result = await generate_strategy_code(
-                prompt_text, 
-                provider=request.provider,
-                model=request.model,
-                error_msg=f"{last_error}{hint}"
-            )
-            strategy_code = gen_result["code"]
-            raw_thinking = gen_result["raw_thinking"]
-            # Update cache with fixed code
-            async with AsyncSessionLocal() as db:
-                if request.prompt_id.startswith("custom_"):
-                    db_id = int(request.prompt_id.split("_")[1])
-                    await db.execute(update(UserPrompt).where(UserPrompt.id == db_id).values(strategy_code=strategy_code))
-                else:
-                    await db.execute(update(DefaultPromptStrategy).where(DefaultPromptStrategy.prompt_number == int(request.prompt_id)).values(strategy_code=strategy_code))
-                await db.commit()
-        except Exception:
-            logging.getLogger("backtest").error("[Backtest] AI retry generation failed", exc_info=True)
-            # If AI generation fails during retry, stop
-            break
-    
+    if "error" in result:
+        # ── Fallback: vectorized signal-based engine ──
+        logger.warning(f"[Backtest] Freeform failed: {result['error']}, using vectorized")
+        max_retries = 3
+        last_error = None
+        raw_thinking = None
+        loop = asyncio.get_event_loop()
+        result = {"error": "No attempt made"}
+
+        for attempt in range(max_retries):
+            try:
+                result = await asyncio.wait_for(
+                    loop.run_in_executor(None, run_vectorized_backtest, full_df, strategy_code,
+                                         lot_size, contract_multiplier, initial_capital,
+                                         request.spread or 0.0, request.commission or 0.0),
+                    timeout=60.0
+                )
+            except asyncio.TimeoutError:
+                result = {"error": "Code execution timed out (60s limit). Simplify the strategy logic."}
+
+            if "error" not in result:
+                break
+
+            last_error = result["error"]
+            logger.warning(f"[Backtest] Vectorized attempt {attempt+1} failed: {last_error}. Retrying...")
+
+            hint = ""
+            if "IndexError" in last_error:
+                hint = " (HINT: Ensure you don't slice the DataFrame too small before calculating indicators like ATR, RSI, or SMA. Technical indicators need a sufficient historical window.)"
+            elif "NaN" in last_error:
+                hint = " (HINT: Use .dropna() after calculating indicators to avoid NaN issues in signals.)"
+
+            try:
+                gen_result = await generate_strategy_code(
+                    prompt_text, provider=request.provider, model=request.model,
+                    error_msg=f"{last_error}{hint}"
+                )
+                strategy_code = gen_result["code"]
+                raw_thinking = gen_result["raw_thinking"]
+                async with AsyncSessionLocal() as db:
+                    if request.prompt_id.startswith("custom_"):
+                        db_id = int(request.prompt_id.split("_")[1])
+                        await db.execute(update(UserPrompt).where(UserPrompt.id == db_id).values(strategy_code=strategy_code))
+                    else:
+                        await db.execute(update(DefaultPromptStrategy).where(DefaultPromptStrategy.prompt_number == int(request.prompt_id)).values(strategy_code=strategy_code))
+                    await db.commit()
+            except Exception:
+                logging.getLogger("backtest").error("[Backtest] AI retry generation failed", exc_info=True)
+                break
+
     if "error" in result:
         return BacktestResponse(success=False, error=result["error"], generated_code=strategy_code)
 
@@ -503,7 +693,7 @@ async def run_backtest(request: BacktestRequest, current_user: dict = Depends(ge
             metrics=result["metrics"],
             equity_curve=result["equity_curve"],
             generated_code=strategy_code,
-            raw_thinking=raw_thinking
+            raw_thinking=raw_thinking if not result.get("generated_code") else None
         )
         db.add(backtest_rec)
         await db.commit()
@@ -511,7 +701,7 @@ async def run_backtest(request: BacktestRequest, current_user: dict = Depends(ge
     return BacktestResponse(
         success=True,
         metrics=result["metrics"],
-        equity_curve=result["equity_curve"],
+        equity_curve=result.get("equity_curve"),
         trades=result.get("trades"),
-        generated_code=strategy_code
+        generated_code=result.get("generated_code") or strategy_code
     )

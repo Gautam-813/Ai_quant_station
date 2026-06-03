@@ -58,7 +58,7 @@ _SESSION_EXCLUDE = {
     "__builtins__", "builtins", "_real_builtins", "_SAFE_IMPORT_MODULES",
     "_safe_import", "safe_builtins", "safe_globals",
     "show_chart", "show_table",
-    "_charts", "_tables",
+    "_charts", "_tables", "backtest_result",
     "pd", "np", "ta", "scipy", "stats", "cluster",
     "sm", "sklearn", "sns", "tabulate", "yf", "plt",
     "math", "json", "random", "itertools",
@@ -336,6 +336,10 @@ def _execute_sandbox_sync(
         # Capture new session state (JSON-safe only)
         new_session = _capture_json_safe_state(safe_globals)
 
+        # Capture backtest_result for BarByBacktestEngine runs
+        _raw_result = safe_globals.get('backtest_result')
+        backtest_result = _sanitize(_raw_result) if _raw_result is not None else None
+
         # Data preview
         data_preview = None
         if df is not None and len(df) > 0:
@@ -373,6 +377,7 @@ def _execute_sandbox_sync(
             "tables": _sanitize(tables) if tables else None,
             "modified_data": _sanitize(df.to_dict('records')) if df is not None else None,
             "session_state": new_session,
+            "backtest_result": backtest_result,
         }
 
     except Exception as e:
@@ -382,6 +387,7 @@ def _execute_sandbox_sync(
             "error": error_msg,
             "output": output.getvalue() if output.getvalue() else "",
             "session_state": {},
+            "backtest_result": None,
         }
 
 

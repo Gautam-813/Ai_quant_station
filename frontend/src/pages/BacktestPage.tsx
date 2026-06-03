@@ -249,12 +249,12 @@ export default function BacktestPage() {
               <Card>
                 <CardContent className="pt-6">
                   <div className="text-sm text-muted-foreground">Total Return</div>
-                  <div className={`text-2xl font-bold ${results.metrics.total_return >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                    {results.metrics.total_return}%
+                  <div className={`text-2xl font-bold ${(results.metrics.total_return ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                    {Number(results.metrics.total_return ?? 0).toFixed(2)}%
                   </div>
                   {"total_pnl" in results.metrics && (
-                    <div className={`text-xs mt-1 ${results.metrics.total_pnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                      ${results.metrics.total_pnl.toLocaleString()}
+                    <div className={`text-xs mt-1 ${(results.metrics.total_pnl ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                      ${Number(results.metrics.total_pnl ?? 0).toLocaleString()}
                     </div>
                   )}
                 </CardContent>
@@ -262,16 +262,16 @@ export default function BacktestPage() {
               <Card>
                 <CardContent className="pt-6">
                   <div className="text-sm text-muted-foreground">Win Rate</div>
-                  <div className="text-2xl font-bold">{results.metrics.win_rate}%</div>
+                  <div className="text-2xl font-bold">{Number(results.metrics.win_rate ?? 0).toFixed(2)}%</div>
                 </CardContent>
               </Card>
               <Card>
                 <CardContent className="pt-6">
                   <div className="text-sm text-muted-foreground">Max Drawdown</div>
-                  <div className="text-2xl font-bold text-red-400">{results.metrics.max_drawdown}%</div>
+                  <div className="text-2xl font-bold text-red-400">{Number(results.metrics.max_drawdown ?? 0).toFixed(2)}%</div>
                   {"max_dd_dollars" in results.metrics && (
                     <div className="text-xs mt-1 text-red-400">
-                      -${Math.abs(results.metrics.max_dd_dollars).toLocaleString()}
+                      -${Math.abs(Number(results.metrics.max_dd_dollars ?? 0)).toLocaleString()}
                     </div>
                   )}
                 </CardContent>
@@ -279,10 +279,10 @@ export default function BacktestPage() {
               <Card>
                 <CardContent className="pt-6">
                   <div className="text-sm text-muted-foreground">Trades</div>
-                  <div className="text-2xl font-bold">{results.metrics.trades}</div>
+                  <div className="text-2xl font-bold">{results.metrics.trades ?? 0}</div>
                   {"final_equity" in results.metrics && (
                     <div className="text-xs mt-1 text-muted-foreground">
-                      Final: ${results.metrics.final_equity.toLocaleString()}
+                      Final: ${Number(results.metrics.final_equity ?? 0).toLocaleString()}
                     </div>
                   )}
                 </CardContent>
@@ -344,14 +344,14 @@ export default function BacktestPage() {
                     <tbody>
                       {results.trades.map((t, i) => (
                         <tr key={i} className="border-b border-border/30 hover:bg-muted/10 transition-colors">
-                          <td className="p-2 text-muted-foreground whitespace-nowrap">{t.entry_time}</td>
-                          <td className="p-2 text-muted-foreground whitespace-nowrap">{t.exit_time}</td>
-                          <td className={`p-2 font-medium ${t.direction === 'BUY' ? 'text-green-500' : 'text-red-500'}`}>{t.direction}</td>
-                          <td className="p-2 text-right">{t.entry_price.toFixed(5)}</td>
-                          <td className="p-2 text-right">{t.exit_price.toFixed(5)}</td>
-                          <td className={`p-2 text-right font-medium ${t.pnl_dollars >= 0 ? 'text-green-500' : 'text-red-500'}`}>${t.pnl_dollars.toFixed(2)}</td>
-                          <td className={`p-2 text-right font-medium ${t.pnl_pct >= 0 ? 'text-green-500' : 'text-red-500'}`}>{t.pnl_pct.toFixed(2)}%</td>
-                          <td className="p-2 text-right text-muted-foreground">{t.holding_period}</td>
+                          <td className="p-2 text-muted-foreground whitespace-nowrap">{t.entry_time || '—'}</td>
+                          <td className="p-2 text-muted-foreground whitespace-nowrap">{t.exit_time || '—'}</td>
+                          <td className={`p-2 font-medium ${t.direction === 'BUY' ? 'text-green-500' : 'text-red-500'}`}>{t.direction || '—'}</td>
+                          <td className="p-2 text-right">{Number(t.entry_price ?? 0).toFixed(5)}</td>
+                          <td className="p-2 text-right">{Number(t.exit_price ?? 0).toFixed(5)}</td>
+                          <td className={`p-2 text-right font-medium ${(t.pnl_dollars ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}`}>${Number(t.pnl_dollars ?? 0).toFixed(2)}</td>
+                          <td className={`p-2 text-right font-medium ${(t.pnl_pct ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}`}>{Number(t.pnl_pct ?? 0).toFixed(2)}%</td>
+                          <td className="p-2 text-right text-muted-foreground">{t.holding_period ?? 0}</td>
                         </tr>
                       ))}
                     </tbody>
