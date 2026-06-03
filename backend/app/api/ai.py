@@ -767,7 +767,7 @@ Last 10 candles:
                     model=chat_req.model,
                     messages=messages,
                     temperature=0.2,
-                    max_tokens=8192,
+                    max_tokens=32768,
                     timeout=REQUEST_TIMEOUT
                 )
                 req_elapsed_ms = int((time_module.time() - req_start) * 1000)
@@ -862,8 +862,8 @@ Last 10 candles:
                 try:
                     # Provide specific guidance for common errors like IndexError
                     hint = ""
-                    if "IndexError" in error_msg and "index 13" in error_msg:
-                        hint = " (HINT: You likely sliced the DataFrame too small before calculating an indicator. Ensure the DataFrame has at least 30-50 rows before passing it to 'ta' functions.)"
+                    if "IndexError" in error_msg:
+                        hint = " (HINT: You likely sliced the DataFrame too small before calculating an indicator like ATR, RSI, or SMA. Ensure the DataFrame has enough rows—at least 50 to 200—before passing it to 'ta' functions.)"
                     elif "NaN" in error_msg or "NoneType" in error_msg:
                         hint = " (HINT: Check for NaNs produced by indicators and use .dropna() or handle them before further calculations.)"
                     
@@ -877,7 +877,7 @@ Last 10 candles:
                         model=chat_req.model,
                         messages=correction_messages,
                         temperature=0.1,
-                        max_tokens=4096
+                        max_tokens=8192
                     )
                     
                     msg = response.choices[0].message

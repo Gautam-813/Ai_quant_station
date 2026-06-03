@@ -575,7 +575,7 @@ Be precise, professional, and mathematically rigorous."""
                 model=request.model,
                 messages=messages,
                 temperature=0.2,
-                max_tokens=4000,
+                max_tokens=32768,
                 timeout=30
             )
             
@@ -592,40 +592,61 @@ Be precise, professional, and mathematically rigorous."""
                 if attempt == 0: continue
                 raise ValueError("Empty AI response")
 
-            # --- Agentic Execution Loop with Self-Correction ---
+            # --- Agentic Execution Loop with Multi-Attempt Self-Correction ---
             execution_results = None
+            MAX_EXEC_RETRIES = 2
+            exec_attempt = 0
+            
             python_match = re.search(r"```python\s*(.*?)(?:```|$)", ai_content, re.S)
             
-            if python_match:
-                from .execute import run_python_code
-                
-                df = _get_cached_df(request.backtest_id, record.symbol, record.start_date.strftime('%Y-%m-%d'), record.end_date.strftime('%Y-%m-%d'), record.timeframe)
-                if df is not None:
-                    code = python_match.group(1)
-                    execution_results = await run_python_code(code, symbol=record.symbol, inject_df=df.copy(), user_id=current_user["id"])
+            df = _get_cached_df(request.backtest_id, record.symbol, record.start_date.strftime('%Y-%m-%d'), record.end_date.strftime('%Y-%m-%d'), record.timeframe)
+            
+            while python_match and exec_attempt <= MAX_EXEC_RETRIES:
+                if df is None:
+                    break
+                    
+                code = python_match.group(1)
+                logger.info(f"[Historical Lab] Executing Python (attempt {exec_attempt + 1})...")
+                execution_results = await run_python_code(code, symbol=record.symbol, inject_df=df.copy(), user_id=current_user["id"])
 
-                    # Self-correction: if code failed, ask AI to fix it
-                    if not execution_results.get("success"):
-                        logger.warning(f"Code execution failed: {execution_results.get('error')}. Attempting self-correction...")
-                        try:
-                            correction_messages = messages + [
-                                {"role": "assistant", "content": ai_content},
-                                {"role": "user", "content": f"The Python code you provided failed with: {execution_results.get('error')}. Please provide a FIXED version."}
-                            ]
-                            response = await client.chat.completions.create(
-                                model=request.model,
-                                messages=correction_messages,
-                                temperature=0.1,
-                                max_tokens=4000,
-                                timeout=30
-                            )
-                            ai_content = response.choices[0].message.content or ""
-                            full_raw_response = _capture_raw_response(response)
-                            new_match = re.search(r"```python\s*(.*?)(?:```|$)", ai_content, re.S)
-                            if new_match:
-                                execution_results = await run_python_code(new_match.group(1), symbol=record.symbol, inject_df=df.copy(), user_id=current_user["id"])
-                        except Exception as ce:
-                            logger.error(f"Self-correction failed: {ce}")
+                if execution_results.get("success"):
+                    logger.info(f"[Historical Lab] Code execution successful.")
+                    break
+                else:
+                    error_msg = execution_results.get("error")
+                    exec_attempt += 1
+                    
+                    if exec_attempt > MAX_EXEC_RETRIES:
+                        logger.error(f"[Historical Lab] Code execution failed permanently.")
+                        break
+                        
+                    logger.warning(f"[Historical Lab] Code attempt {exec_attempt} failed: {error_msg}. Retrying self-correction...")
+                    
+                    try:
+                        # Provide specific guidance for common errors like IndexError
+                        hint = ""
+                        if "IndexError" in error_msg:
+                            hint = " (HINT: You likely sliced the DataFrame too small before calculating an indicator like ATR, RSI, or SMA. Ensure the DataFrame has enough rows—at least 50 to 200—before passing it to 'ta' functions.)"
+                        elif "NaN" in error_msg or "NoneType" in error_msg:
+                            hint = " (HINT: Check for NaNs produced by indicators and use .dropna() or handle them before further calculations.)"
+                        
+                        correction_messages = messages + [
+                            {"role": "assistant", "content": ai_content},
+                            {"role": "user", "content": f"The Python code you provided failed with: {error_msg}{hint}. Please provide a FIXED version of the code block wrapped in ```python ... ```."}
+                        ]
+                        response = await client.chat.completions.create(
+                            model=request.model,
+                            messages=correction_messages,
+                            temperature=0.1,
+                            max_tokens=8192,
+                            timeout=30
+                        )
+                        ai_content = response.choices[0].message.content or ""
+                        full_raw_response = _capture_raw_response(response)
+                        python_match = re.search(r"```python\s*(.*?)(?:```|$)", ai_content, re.S)
+                    except Exception as ce:
+                        logger.error(f"Self-correction failed: {ce}")
+                        break
 
             # Build structured message
             ai_msg_data = {
