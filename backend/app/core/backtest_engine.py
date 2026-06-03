@@ -128,15 +128,10 @@ class BacktestEngine:
         entry_price = None
 
         signals = df["signal"].values
-        opens = df["open"].values
         closes = df["close"].values
         datetimes = df["datetime"].values if "datetime" in df.columns else df.index.values
         bar_pnl_values = bar_pnl.values if isinstance(bar_pnl, pd.Series) else bar_pnl
         n = len(df)
-
-        def _next_bar(arr, i):
-            """Get value from next bar for entry (signal fires at bar close, entry at next bar open)."""
-            return arr[i + 1] if i + 1 < n else arr[i]
 
         for i in range(n):
             signal = signals[i]
@@ -146,8 +141,8 @@ class BacktestEngine:
                 in_trade = True
                 current_position = signal
                 trade_pnl = 0
-                entry_time = _next_bar(datetimes, i)
-                entry_price = _next_bar(opens, i)
+                entry_time = datetimes[i]
+                entry_price = closes[i]
             elif in_trade and signal == 0:
                 trade_returns.append(trade_pnl)
                 trade_log.append({
@@ -174,8 +169,8 @@ class BacktestEngine:
                 })
                 current_position = signal
                 trade_pnl = 0
-                entry_time = _next_bar(datetimes, i)
-                entry_price = _next_bar(opens, i)
+                entry_time = datetimes[i]
+                entry_price = closes[i]
 
         if in_trade:
             trade_returns.append(trade_pnl)

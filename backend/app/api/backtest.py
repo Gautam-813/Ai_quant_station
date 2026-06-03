@@ -218,7 +218,7 @@ def run_vectorized_backtest(df, strategy_code, lot_size=0.01, contract_multiplie
             entry_row = df.loc[entry_idx]
             exit_row = df.loc[exit_idx]
 
-            entry_price = float(entry_row['open'])
+            entry_price = float(entry_row['close'])
             exit_price = float(exit_row['close'])
             entry_time = str(entry_row['datetime']) if 'datetime' in df.columns else ''
             exit_time = str(exit_row['datetime']) if 'datetime' in df.columns else ''
