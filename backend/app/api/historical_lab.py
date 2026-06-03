@@ -190,6 +190,7 @@ class LabResponse(BaseModel):
     ai_report: Optional[str] = Field(default="")
     chat_history: List[dict] = []
     trade_log: Optional[list] = None
+    error_message: Optional[str] = None
 
 
 class ChatMessageRequest(BaseModel):
@@ -392,6 +393,11 @@ async def run_backtest_task(backtest_id: int, request_data: dict, user_id: int =
                     user_id=user_id
                 )
                 record.generated_code = generated_code
+                
+                # Fallback: if AI failed to produce a signal column, set all zeros
+                # so BacktestEngine doesn't silently return None
+                if "signal" not in df.columns:
+                    df["signal"] = 0
             
             # Engines expect 'datetime' as a column, not DatetimeIndex
             if isinstance(df.index, pd.DatetimeIndex):
@@ -514,6 +520,7 @@ async def get_status(
         ai_report=str(record.chat_history[-1].get("content", "") or "") if record.chat_history else "",
         chat_history=record.chat_history,
         trade_log=record.trade_log,
+        error_message=record.error_message,
     )
 
 

@@ -146,6 +146,9 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     stoch = ta.momentum.StochasticOscillator(high, low, close)
     df["stoch_k"] = stoch.stoch()
     df["stoch_d"] = stoch.stoch_signal()
+    df["adx_14"] = ta.trend.adx(high, low, close, window=14)
+    df["adx_pos_14"] = ta.trend.adx_pos(high, low, close, window=14)
+    df["adx_neg_14"] = ta.trend.adx_neg(high, low, close, window=14)
 
     # --- Volatility Indicators ---
     bb = ta.volatility.BollingerBands(close, window=20)
