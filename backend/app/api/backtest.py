@@ -67,6 +67,7 @@ class BacktestRequest(BaseModel):
     provider: Optional[str] = "nvidia"
     model: Optional[str] = "qwen/qwen3.5-122b-a10b"
     lot_size: Optional[float] = 0.01
+    initial_capital: Optional[float] = 10000.0
     spread: Optional[float] = 0.0
     commission: Optional[float] = 0.0
     strategy_code: Optional[str] = None
@@ -173,7 +174,7 @@ def calculate_signals(df):
         code = code.strip("`").strip()
     return {"code": code, "raw_thinking": full_raw_response}
 
-def run_vectorized_backtest(df, strategy_code, lot_size=0.01, contract_multiplier=100, spread=0.0, commission=0.0):
+def run_vectorized_backtest(df, strategy_code, lot_size=0.01, contract_multiplier=100, initial_capital=10000.0, spread=0.0, commission=0.0):
     """Execute code and calculate PnL."""
     try:
         # 1. Execute strategy code to define function - RESTRICTED builtins for security
@@ -280,21 +281,27 @@ def run_vectorized_backtest(df, strategy_code, lot_size=0.01, contract_multiplie
 
         # 5. Metrics
         total_return = (df['cum_returns'].iloc[-1] - 1) * 100
+        total_pnl = round(initial_capital * (df['cum_returns'].iloc[-1] - 1), 2)
+        final_equity = round(initial_capital * df['cum_returns'].iloc[-1], 2)
         winning_trades = sum(1 for t in trades if t['pnl_pct'] > 0)
         total_trades = len(trades)
         win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
         max_drawdown = (df['cum_returns'] / df['cum_returns'].cummax() - 1).min() * 100
+        max_dd_dollars = round(initial_capital * max_drawdown / 100, 2)
 
-        # Equity curve (sample to 100 points)
-        curve = df['cum_returns'].fillna(1.0).tolist()
+        # Equity curve (sample to 100 points, scaled to dollars)
+        curve = (df['cum_returns'] * initial_capital).fillna(initial_capital).tolist()
         step = max(1, len(curve) // 100)
         sampled_curve = curve[::step]
 
         return {
             "metrics": {
                 "total_return": round(total_return, 2),
+                "total_pnl": total_pnl,
+                "final_equity": final_equity,
                 "win_rate": round(win_rate, 2),
                 "max_drawdown": round(max_drawdown, 2),
+                "max_dd_dollars": max_dd_dollars,
                 "trades": total_trades,
             },
             "equity_curve": sampled_curve,
@@ -474,8 +481,9 @@ async def run_backtest(request: BacktestRequest, current_user: dict = Depends(ge
     
     for attempt in range(max_retries):
         try:
+            initial_capital = request.initial_capital or 10000.0
             result = await asyncio.wait_for(
-                loop.run_in_executor(None, run_vectorized_backtest, full_df, strategy_code, lot_size, contract_multiplier, request.spread or 0.0, request.commission or 0.0),
+                loop.run_in_executor(None, run_vectorized_backtest, full_df, strategy_code, lot_size, contract_multiplier, initial_capital, request.spread or 0.0, request.commission or 0.0),
                 timeout=60.0
             )
         except asyncio.TimeoutError:

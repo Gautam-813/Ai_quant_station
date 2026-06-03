@@ -4,8 +4,11 @@ import { persist } from 'zustand/middleware'
 interface BacktestResults {
   metrics: {
     total_return: number
+    total_pnl: number
+    final_equity: number
     win_rate: number
     max_drawdown: number
+    max_dd_dollars: number
     trades: number
   } | null
   equity_curve: number[] | null
@@ -33,6 +36,7 @@ interface BacktestState {
   provider: string
   model: string
   lotSize: string
+  initialCapital: string
 
   setSelectedPromptId: (v: string) => void
   setSymbol: (v: string) => void
@@ -43,6 +47,7 @@ interface BacktestState {
   setProvider: (v: string) => void
   setModel: (v: string) => void
   setLotSize: (v: string) => void
+  setInitialCapital: (v: string) => void
 }
 
 export const useBacktestStore = create<BacktestState>()(
@@ -57,6 +62,7 @@ export const useBacktestStore = create<BacktestState>()(
       provider: 'nvidia',
       model: 'qwen/qwen3.5-122b-a10b',
       lotSize: '0.01',
+      initialCapital: '10000',
 
       setSelectedPromptId: (v) => set({ selectedPromptId: v }),
       setSymbol: (v) => set({ symbol: v }),
@@ -67,6 +73,7 @@ export const useBacktestStore = create<BacktestState>()(
       setProvider: (v) => set({ provider: v }),
       setModel: (v) => set({ model: v }),
       setLotSize: (v) => set({ lotSize: v }),
+      setInitialCapital: (v) => set({ initialCapital: v }),
     }),
     {
       name: 'backtest-storage',
@@ -80,6 +87,7 @@ export const useBacktestStore = create<BacktestState>()(
         provider: state.provider,
         model: state.model,
         lotSize: state.lotSize,
+        initialCapital: state.initialCapital,
       }),
     }
   )

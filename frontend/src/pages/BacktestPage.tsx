@@ -35,6 +35,8 @@ export default function BacktestPage() {
   const setModel = useBacktestStore((s) => s.setModel)
   const lotSize = useBacktestStore((s) => s.lotSize)
   const setLotSize = useBacktestStore((s) => s.setLotSize)
+  const initialCapital = useBacktestStore((s) => s.initialCapital)
+  const setInitialCapital = useBacktestStore((s) => s.setInitialCapital)
 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -92,11 +94,13 @@ export default function BacktestPage() {
         end_date: endDate,
         provider,
         model,
-        lot_size: parseFloat(lotSize) || 0.01
+        lot_size: parseFloat(lotSize) || 0.01,
+        initial_capital: parseFloat(initialCapital) || 10000
       })
       if (res.data?.success) {
         setResults(res.data)
-        toast({ title: "Backtest Complete", description: `Return: ${res.data.metrics?.total_return}% | ${res.data.metrics?.trades} trades` })
+        const m = res.data.metrics
+        toast({ title: "Backtest Complete", description: `Return: ${m?.total_return}% ($${m?.total_pnl}) | ${m?.trades} trades` })
       } else {
         setError(res.data?.error || 'Backtest failed')
         toast({ title: "Backtest Failed", description: res.data?.error, variant: 'destructive' })
@@ -193,6 +197,10 @@ export default function BacktestPage() {
               <label className="text-sm font-medium">Lot Size</label>
               <Input type="number" step="0.01" min="0.01" value={lotSize} onChange={(e) => setLotSize(e.target.value)} />
             </div>
+            <div>
+              <label className="text-sm font-medium">Initial Capital ($)</label>
+              <Input type="number" step="100" min="100" value={initialCapital} onChange={(e) => setInitialCapital(e.target.value)} />
+            </div>
 
             <div className="pt-4 border-t border-border">
               <label className="text-sm font-medium block mb-2 text-primary">Model Selection</label>
@@ -244,6 +252,11 @@ export default function BacktestPage() {
                   <div className={`text-2xl font-bold ${results.metrics.total_return >= 0 ? 'text-green-500' : 'text-red-500'}`}>
                     {results.metrics.total_return}%
                   </div>
+                  {"total_pnl" in results.metrics && (
+                    <div className={`text-xs mt-1 ${results.metrics.total_pnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                      ${results.metrics.total_pnl.toLocaleString()}
+                    </div>
+                  )}
                 </CardContent>
               </Card>
               <Card>
@@ -256,12 +269,22 @@ export default function BacktestPage() {
                 <CardContent className="pt-6">
                   <div className="text-sm text-muted-foreground">Max Drawdown</div>
                   <div className="text-2xl font-bold text-red-400">{results.metrics.max_drawdown}%</div>
+                  {"max_dd_dollars" in results.metrics && (
+                    <div className="text-xs mt-1 text-red-400">
+                      -${Math.abs(results.metrics.max_dd_dollars).toLocaleString()}
+                    </div>
+                  )}
                 </CardContent>
               </Card>
               <Card>
                 <CardContent className="pt-6">
                   <div className="text-sm text-muted-foreground">Trades</div>
                   <div className="text-2xl font-bold">{results.metrics.trades}</div>
+                  {"final_equity" in results.metrics && (
+                    <div className="text-xs mt-1 text-muted-foreground">
+                      Final: ${results.metrics.final_equity.toLocaleString()}
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             </div>
