@@ -8,6 +8,7 @@ class ChatMemory(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    chat_session_id = Column(String, nullable=True, index=True) # New column for session-based history
     symbol = Column(String, nullable=True)
     role = Column(String, nullable=False)
     content = Column(Text, nullable=False)

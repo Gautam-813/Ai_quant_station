@@ -192,6 +192,7 @@ class ChatRequest(BaseModel):
     messages: List[ChatMessage]
     provider: str
     model: str
+    chat_session_id: Optional[str] = None  # NEW: used to isolate conversation history
     persona: Optional[str] = "technical_analyst"  # technical_analyst, risk_manager, quant, swing_trader, scalper
     symbol: Optional[str] = None
     load_market_data: Optional[str] = None  # "yahoo" or "mt5"
@@ -212,6 +213,7 @@ class ChatResponse(BaseModel):
     execution_charts: Optional[List[dict]] = None
     execution_tables: Optional[List[dict]] = None
     chat_memory_id: Optional[int] = None
+    chat_session_id: Optional[str] = None # NEW: echoes back the session ID
 
 
 

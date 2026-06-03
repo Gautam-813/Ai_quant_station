@@ -526,6 +526,21 @@ export default function AIAnalystPage() {
               </div>
 
               <div>
+                <Select value={model} onValueChange={setModel}>
+                  <SelectTrigger className="w-48">
+                    <SelectValue placeholder="Model" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableProviders.find(p => p.id === provider)?.models?.map((m) => (
+                      <SelectItem key={m} value={m}>
+                        {m}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div>
                 <Select value={persona} onValueChange={setPersona}>
                   <SelectTrigger className="w-44">
                     <SelectValue />

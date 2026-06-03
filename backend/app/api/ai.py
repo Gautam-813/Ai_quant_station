@@ -595,22 +595,26 @@ Last 10 candles:
 
         async with AsyncSessionLocal() as db:
             try:
-                # User's previous conversations about this symbol
-                if chat_req.symbol:
-                    result = await db.execute(
-                        select(ChatMemory)
-                        .where(
-                            ChatMemory.user_id == current_user["id"],
-                            ChatMemory.symbol == chat_req.symbol,
-                        )
-                        .order_by(ChatMemory.created_at.desc())
-                        .limit(10)
-                    )
-                    prev_chats = result.scalars().all()
+                # User's previous conversations
+                # PRIORITY: Filter by chat_session_id if provided, else fall back to symbol-based history
+                query = select(ChatMemory).where(ChatMemory.user_id == current_user["id"])
+                
+                if chat_req.chat_session_id:
+                    query = query.where(ChatMemory.chat_session_id == chat_req.chat_session_id)
+                elif chat_req.symbol:
+                    query = query.where(ChatMemory.symbol == chat_req.symbol)
+                else:
+                    # Generic global history if no symbol/session
+                    pass
+                    
+                result = await db.execute(
+                    query.order_by(ChatMemory.created_at.desc()).limit(10)
+                )
+                prev_chats = result.scalars().all()
 
-                    if prev_chats:
-                        recent_context = []
-                        for chat in reversed(prev_chats[:5]):  # Last 5 messages
+                if prev_chats:
+                    recent_context = []
+                    for chat in reversed(prev_chats[:5]):  # Last 5 messages
                             role_label = "User" if chat.role == "user" else "AI"
                             content_preview = (
                                 chat.content[:100] + "..."
@@ -898,22 +902,32 @@ Last 10 candles:
         async with AsyncSessionLocal() as db:
             try:
                 user_msg = ChatMemory(
-                    user_id=current_user["id"], symbol=chat_req.symbol,
-                    role="user", content=chat_req.messages[-1].content if chat_req.messages else "",
-                    provider=chat_req.provider, model=chat_req.model,
+                    user_id=current_user["id"], 
+                    symbol=chat_req.symbol,
+                    chat_session_id=chat_req.chat_session_id, # LINK TO SESSION
+                    role="user", 
+                    content=chat_req.messages[-1].content if chat_req.messages else "",
+                    provider=chat_req.provider, 
+                    model=chat_req.model,
                 )
                 db.add(user_msg)
                 await db.commit()
                 await db.refresh(user_msg)
 
                 assistant_msg = ChatMemory(
-                    user_id=current_user["id"], symbol=chat_req.symbol,
-                    role="assistant", content=assistant_message,
+                    user_id=current_user["id"], 
+                    symbol=chat_req.symbol,
+                    chat_session_id=chat_req.chat_session_id, # LINK TO SESSION
+                    role="assistant", 
+                    content=assistant_message,
                     reasoning=reasoning_text,
                     raw_thinking=full_raw_response,
-                    provider=chat_req.provider, model=chat_req.model,
-                    tokens_used=token_usage, latency_ms=req_elapsed_ms,
-                    detected_setup=detected_setup, detected_action=detected_action,
+                    provider=chat_req.provider, 
+                    model=chat_req.model,
+                    tokens_used=token_usage, 
+                    latency_ms=req_elapsed_ms,
+                    detected_setup=detected_setup, 
+                    detected_action=detected_action,
                 )
                 db.add(assistant_msg)
                 await db.commit()
@@ -959,7 +973,8 @@ Last 10 candles:
             execution_output=execution_output,
             execution_charts=exec_charts,
             execution_tables=exec_tables,
-            chat_memory_id=saved_chat_memory_id
+            chat_memory_id=saved_chat_memory_id,
+            chat_session_id=chat_req.chat_session_id # ECHO BACK
         )
 
 
