@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from typing import Optional, Dict, Any, List
@@ -111,3 +112,65 @@ async def fetch_ohlc_range(symbol: str, timeframe: str, start_dt: datetime, end_
         if offset_hours != 0:
             df['time'] = df['time'] - (offset_hours * 3600)
         return df.to_dict("records")
+
+
+async def fetch_latest_candles(symbol: str, count: int = 5000, timeframe: str = "1m") -> List[Dict[str, Any]]:
+    """Fetch the latest N candles for a symbol.
+
+    Abstracts direct MT5 vs External Connector.
+    Returns a list of dicts with keys: time, open, high, low, close, tick_volume
+    or empty list on failure.
+    """
+    if not await init_mt5_connection():
+        return []
+
+    connector_url = settings.MT5_CONNECTOR_URL
+
+    if connector_url and settings.MT5_USE_EXTERNAL_CONNECTOR:
+        try:
+            res = await connector_client.get_latest_data(symbol, timeframe, count)
+            if res.get("success"):
+                return res.get("data", [])
+        except Exception as e:
+            logger.error(f"Connector fetch_latest error for {symbol}: {e}")
+            return []
+    else:
+        mt5 = _get_mt5()
+        if mt5 is None:
+            return []
+        tf_map = {
+            '1m': mt5.TIMEFRAME_M1, '5m': mt5.TIMEFRAME_M5, '15m': mt5.TIMEFRAME_M15,
+            '30m': mt5.TIMEFRAME_M30, '1h': mt5.TIMEFRAME_H1, '4h': mt5.TIMEFRAME_H4,
+            '1d': mt5.TIMEFRAME_D1, '1w': mt5.TIMEFRAME_W1, '1M': mt5.TIMEFRAME_MN1,
+        }
+        tf = tf_map.get(timeframe, mt5.TIMEFRAME_M1)
+
+        if not mt5.symbol_select(symbol, True):
+            logger.error(f"Symbol {symbol} not found in MT5.")
+            return []
+
+        import pandas as pd
+        loop = asyncio.get_running_loop()
+        rates = await loop.run_in_executor(None, mt5.copy_rates_from_pos, symbol, tf, 0, count)
+        if rates is None or len(rates) == 0:
+            return []
+
+        df = pd.DataFrame(rates)
+        offset_hours = settings.MT5_BROKER_UTC_OFFSET
+        if offset_hours != 0:
+            df['time'] = df['time'] - (offset_hours * 3600)
+        records = df.to_dict("records")
+        # Standardise field names to match API schema
+        result = []
+        for r in records:
+            result.append({
+                "time": int(r.get("time", 0)),
+                "open": float(r.get("open", 0)),
+                "high": float(r.get("high", 0)),
+                "low": float(r.get("low", 0)),
+                "close": float(r.get("close", 0)),
+                "tick_volume": int(r.get("tick_volume", 0)),
+                "spread": int(r.get("spread", 0)),
+                "real_volume": int(r.get("real_volume", 0)),
+            })
+        return result

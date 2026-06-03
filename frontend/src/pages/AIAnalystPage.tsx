@@ -257,8 +257,8 @@ export default function AIAnalystPage() {
     if (/4h\b|4[-\s]?hour|four\s*hour|h4\b|4hrs?\b/i.test(lower)) return 10000
     if (/1h\b|1[-\s]?hour|one\s*hour|hourly|h1\b|1hrs?\b/i.test(lower)) return 5000
     if (/30m\b|30[-\s]?min|m30|thirty\s*min/i.test(lower)) return 3000
-    return 2000
-  }
+    return 10000
+}
 
   const handleLoadData = async (count?: number) => {
     if (loadData === 'none' || !getSymbolValue()) {
@@ -268,7 +268,7 @@ export default function AIAnalystPage() {
     setDataLoading(true)
     try {
       let data: CandleData[] = []
-      const candleCount = count || 2000
+      const candleCount = count || 10000
 
       if (loadData === 'yahoo') {
         const res = await axios.get(`/api/data/yahoo/${getSymbolValue()}?period=${dataPeriod}`)

@@ -42,8 +42,8 @@ async def blacklist_token(token: str, expires_at: Optional[datetime] = None) -> 
                 ),
                 {
                     "jti": jti,
-                    "exp": exp,
-                    "created": datetime.now(timezone.utc),
+                    "exp": exp.isoformat(),
+                    "created": datetime.now(timezone.utc).isoformat(),
                 },
             )
 
@@ -61,7 +61,11 @@ async def is_token_blacklisted(token: str) -> bool:
             ).fetchone()
             if row is None:
                 return False
-            expires_at: datetime = row[0]
+            raw = row[0]
+            if isinstance(raw, str):
+                expires_at = datetime.fromisoformat(raw.replace(' ', 'T'))
+            else:
+                expires_at = raw
             if expires_at.tzinfo is None:
                 expires_at = expires_at.replace(tzinfo=timezone.utc)
             return expires_at > datetime.now(timezone.utc)
@@ -76,7 +80,7 @@ async def cleanup_expired_tokens() -> int:
         with _sync_engine.begin() as conn:
             result = conn.execute(
                 text("DELETE FROM revoked_tokens WHERE expires_at < :now"),
-                {"now": datetime.now(timezone.utc)},
+                {"now": datetime.now(timezone.utc).isoformat()},
             )
             return result.rowcount  # type: ignore[attr-defined]
 

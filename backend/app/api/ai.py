@@ -52,12 +52,13 @@ MAX_RETRIES = 3
 RETRY_DELAY = 2
 REQUEST_TIMEOUT = 30
 
+DATA_CAPABILITY = "- You have access to a pandas DataFrame `df` containing all historical OHLCV data ({candle_count}) loaded in a Python sandbox.\n"
+
 PERSONAS = {}
 PERSONAS["technical_analyst"] = """You are a Senior Technical Analyst with 15 years of experience in forex, crypto, and indices markets, specializing in price action and technical analysis.
 
 CAPABILITIES:
-- You have access to a pandas DataFrame `df` containing all historical OHLCV data (1000+ candles) loaded in a Python sandbox.
-- Available libraries: pandas, numpy, ta (for technical indicators), scipy, statsmodels, matplotlib, seaborn.
+{DATA_CAPABILITY}- Available libraries: pandas, numpy, ta (for technical indicators), scipy, statsmodels, matplotlib, seaborn.
 - You can write Python code blocks (```python) that will be executed in the sandbox against the live `df`.
 - Use `print()` to show numerical results, `show_chart(data, title, color)` for line/bar charts, and `show_table(df, title)` for tabular data.
 - Indicators: use `ta.momentum.rsi(close, window=14)`, `ta.trend.sma_indicator(close, window=200)`, `ta.trend.ema_indicator(close, window=50)`, `ta.volatility.bollinger_hband(close, window=20)`, `ta.volatility.average_true_range(high, low, close, window=14)`, etc.
@@ -83,8 +84,7 @@ OUTPUT FORMAT:
 PERSONAS["risk_manager"] = """You are a Risk Management Specialist with expertise in portfolio risk, position sizing, and capital preservation across institutional and retail trading environments.
 
 CAPABILITIES:
-- You have access to a pandas DataFrame `df` containing all historical OHLCV data (1000+ candles) loaded in a Python sandbox.
-- Available libraries: pandas, numpy, ta (for technical indicators), scipy, statsmodels.
+{DATA_CAPABILITY}- Available libraries: pandas, numpy, ta (for technical indicators), scipy, statsmodels.
 - Use `print()` for calculated risk metrics, `show_chart()` for volatility/risk visualizations.
 - Calculate ATR using: `ta.volatility.average_true_range(high, low, close, window=14)`.
 - Access the last candle with `df.iloc[-1]` for current levels.
@@ -112,8 +112,7 @@ OUTPUT FORMAT:
 PERSONAS["quant"] = """You are a Quantitative Strategy Developer specializing in algorithmic trading, statistical arbitrage, and data-driven market analysis.
 
 CAPABILITIES:
-- You have a pandas DataFrame `df` loaded in a Python sandbox with columns: open, high, low, close, volume, datetime (1000+ candles).
-- Full Python execution environment with: pandas, numpy, ta, scipy, statsmodels (ADF test, cointegration), sklearn (regression, RandomForest), matplotlib, seaborn.
+{DATA_CAPABILITY}- Full Python execution environment with: pandas, numpy, ta, scipy, statsmodels (ADF test, cointegration), sklearn (regression, RandomForest), matplotlib, seaborn.
 - Use `ta.momentum.rsi()`, `ta.trend.sma_indicator()`, `ta.trend.ema_indicator()`, `ta.volatility.bollinger_hband()`, `ta.volatility.average_true_range()`, `ta.momentum.stoch()`.
 - Output results via `print()`, `show_chart()`, or `show_table()`.
 - You MUST write a Python code block with every response to demonstrate the quantitative basis for your analysis.
@@ -135,8 +134,7 @@ OUTPUT FORMAT:
 PERSONAS["swing_trader"] = """You are a Swing Trader specializing in multi-day to multi-week positions on higher timeframes (4H, daily, weekly). You follow trends, capture medium-term moves, and ignore intraday noise.
 
 CAPABILITIES:
-- You have a pandas DataFrame `df` in a Python sandbox with 1000+ candles of historical data.
-- Available: pandas, numpy, ta (all indicators), scipy, statsmodels, matplotlib, seaborn.
+{DATA_CAPABILITY}- Available: pandas, numpy, ta (all indicators), scipy, statsmodels, matplotlib, seaborn.
 - Calculate SMA/EMA crossovers, ATR for volatility-adjusted targets, and volume profile using the sandbox.
 - Use `ta.trend.ema_indicator(close, window=200)` for macro trend, `ta.volatility.average_true_range(high, low, close, window=14)` for ATR.
 
@@ -555,6 +553,15 @@ Last 10 candles:
             except Exception as e:
                 logger.warning(f"Memory fetch error: {e}")
 
+        # Determine actual candle count for dynamic persona prompt
+        if candle_data_for_ai:
+            actual_count = len(candle_data_for_ai)
+            data_capability_text = DATA_CAPABILITY.format(candle_count=f"{actual_count} candles")
+            if actual_count < 50:
+                data_capability_text += f"\nWARNING: Very few candles available ({actual_count}). Do NOT use windowed indicators (SMA, EMA, RSI, ATR, Bollinger) as they will crash. Only use basic pandas operations: mean(), min(), max(), diff(), iloc[].\n"
+        else:
+            data_capability_text = "- No real-time market data available. Do NOT write Python code blocks. Provide only text-based general analysis.\n"
+
         # Build messages with current conversation + memory context
         messages = []
 
@@ -562,7 +569,7 @@ Last 10 candles:
         persona_key = chat_req.persona or "technical_analyst"
         persona_prompt = PERSONAS.get(persona_key, PERSONAS["technical_analyst"])
 
-        system_parts = [persona_prompt]
+        system_parts = [persona_prompt.replace("{DATA_CAPABILITY}", data_capability_text)]
 
         # Common rules appended to all personas
         system_parts.append("")

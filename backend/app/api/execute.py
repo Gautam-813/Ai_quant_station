@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 import io
 import contextlib
+import logging
 import traceback
 import math
 import json
@@ -153,6 +154,14 @@ def _execute_sandbox_sync(
                 df.index.name = None
         except Exception as e:
             return {"success": False, "error": f"Failed to create DataFrame: {str(e)}"}
+
+    # Guard: reject tiny DataFrames that would crash windowed indicators
+    if df is not None and len(df) < 10:
+        return {
+            "success": False,
+            "error": f"Insufficient data: DataFrame has only {len(df)} rows. Most indicators require at least 20-200 candles. Please load more data and try again.",
+            "output": f"DataFrame has {len(df)} rows — too few for technical indicator calculations.",
+        }
 
     # Build execution environment with RESTRICTED builtins
     import random, itertools, collections, decimal, warnings
@@ -422,6 +431,18 @@ async def run_python_code(
             md = _sanitize(records) if isinstance(records, list) else records
         except Exception:
             md = None
+
+    # ── Auto-fetch more candles if data is insufficient ──────────────────────
+    if md is not None and len(md) < 100 and symbol:
+        try:
+            from ..core.mt5_service import fetch_latest_candles
+            more = await fetch_latest_candles(symbol, count=10000)
+            if more and len(more) > len(md):
+                logger = logging.getLogger(__name__)
+                logger.info(f"[AutoFetch] {symbol}: {len(md)} → {len(more)} candles fetched from MT5")
+                md = more
+        except Exception:
+            pass
 
     # ── Decide execution mode ───────────────────────────────────────────────
     use_subprocess = user_id > 0
