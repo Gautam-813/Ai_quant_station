@@ -823,75 +823,71 @@ Last 10 candles:
         detected_setup = _detect_trade_setup(assistant_message)
         detected_action = _detect_trade_action(assistant_message)
         
-        # AUTOMATIC CODE EXECUTION with Self-Correction
+        # AUTOMATIC CODE EXECUTION with Multi-Attempt Self-Correction
         execution_output = None
         exec_data_preview = None
         exec_charts = None
         exec_tables = None
         
-        # Initial code detection - use a robust regex that handles missing closing backticks
+        MAX_EXEC_RETRIES = 2
+        exec_attempt = 0
+        
+        # Initial code detection
         python_match = re.search(r"```python\s*(.*?)(?:```|$)", assistant_message, re.S)
-        if python_match:
+        
+        while python_match and exec_attempt <= MAX_EXEC_RETRIES:
             code = python_match.group(1)
-            logger.info(f"[AI Chat] Detected Python code block - executing...")
+            logger.info(f"[AI Chat] Executing Python code (attempt {exec_attempt + 1})...")
             
             exec_res = await run_python_code(code, candle_data_for_ai, chat_req.symbol, user_id=current_user["id"])
             
-            # Self-Correction Loop
-            if not exec_res.get("success"):
-                error_msg = exec_res.get("error")
-                logger.warning(f"[AI Chat] Code execution failed: {error_msg}. Attempting self-correction...")
-                
-                try:
-                    # Ask the AI to fix its own code
-                    correction_messages = messages + [
-                        {"role": "assistant", "content": assistant_message},
-                        {"role": "user", "content": f"The Python code you provided failed with this error: {error_msg}. Please provide a FIXED version of the code block."}
-                    ]
-                    
-                    import time as time_module
-                    req_start = time_module.time()
-                    response = await client.chat.completions.create(
-                        model=chat_req.model,
-                        messages=correction_messages,
-                        temperature=0.1,
-                        max_tokens=8192
-                    )
-                    req_elapsed_ms = int((time_module.time() - req_start) * 1000)
-                    
-                    msg = response.choices[0].message
-                    assistant_message = msg.content or msg.reasoning_content or ""
-                    reasoning_text = msg.reasoning_content if hasattr(msg, 'reasoning_content') and msg.reasoning_content else reasoning_text
-                    if hasattr(response, 'usage') and response.usage:
-                        token_usage = response.usage.total_tokens
-                    
-                    # Capture full raw API response for self-correction
-                    try:
-                        full_raw_response = response.model_dump(mode='json')
-                    except Exception:
-                        try:
-                            full_raw_response = response.dict()
-                        except Exception:
-                            pass
-                    
-                    # Try executing the NEW code - use the same robust regex
-                    new_match = re.search(r"```python\s*(.*?)(?:```|$)", assistant_message, re.S)
-                    if new_match:
-                        code = new_match.group(1)
-                        exec_res = await run_python_code(code, candle_data_for_ai, chat_req.symbol, user_id=current_user["id"])
-                except Exception as e:
-                    logger.error(f"[AI Chat] Self-correction failed: {str(e)}")
-
-            # Handle final result (success or failure)
             if exec_res.get("success"):
                 execution_output = exec_res.get("output")
                 exec_data_preview = exec_res.get("data_preview")
                 exec_charts = exec_res.get("charts")
                 exec_tables = exec_res.get("tables")
-                logger.info(f"[AI Chat] Code executed (final attempt).")
+                logger.info(f"[AI Chat] Code execution successful.")
+                break
             else:
-                execution_output = f"Error executing code: {exec_res.get('error')}"
-                logger.error(f"[AI Chat] Code execution failed permanently.")
+                error_msg = exec_res.get("error")
+                exec_attempt += 1
+                
+                if exec_attempt > MAX_EXEC_RETRIES:
+                    execution_output = f"Error executing code after {exec_attempt} attempts: {error_msg}"
+                    logger.error(f"[AI Chat] Code execution failed permanently.")
+                    break
+                
+                logger.warning(f"[AI Chat] Code attempt {exec_attempt} failed: {error_msg}. Retrying self-correction...")
+                
+                try:
+                    # Provide specific guidance for common errors like IndexError
+                    hint = ""
+                    if "IndexError" in error_msg and "index 13" in error_msg:
+                        hint = " (HINT: You likely sliced the DataFrame too small before calculating an indicator. Ensure the DataFrame has at least 30-50 rows before passing it to 'ta' functions.)"
+                    elif "NaN" in error_msg or "NoneType" in error_msg:
+                        hint = " (HINT: Check for NaNs produced by indicators and use .dropna() or handle them before further calculations.)"
+                    
+                    # Ask the AI to fix its own code
+                    correction_messages = messages + [
+                        {"role": "assistant", "content": assistant_message},
+                        {"role": "user", "content": f"The Python code you provided failed with this error: {error_msg}{hint}. Please provide a FIXED version of the code block wrapped in ```python ... ```."}
+                    ]
+                    
+                    response = await client.chat.completions.create(
+                        model=chat_req.model,
+                        messages=correction_messages,
+                        temperature=0.1,
+                        max_tokens=4096
+                    )
+                    
+                    msg = response.choices[0].message
+                    assistant_message = msg.content or msg.reasoning_content or ""
+                    # Look for the new code block in the updated message
+                    python_match = re.search(r"```python\s*(.*?)(?:```|$)", assistant_message, re.S)
+                except Exception as e:
+                    logger.error(f"[AI Chat] Self-correction request failed: {str(e)}")
+                    execution_output = f"Error during self-correction: {str(e)}"
+                    break
 
         # Combine data previews
         final_data_preview = exec_data_preview or _detect_data_preview(assistant_message)
