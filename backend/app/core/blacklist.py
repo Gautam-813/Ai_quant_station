@@ -64,15 +64,14 @@ async def is_token_blacklisted(token: str) -> bool:
             raw = row[0]
             if isinstance(raw, str):
                 expires_at = datetime.fromisoformat(raw.replace(' ', 'T'))
+                # Handle cases where isoformat might be naive
+                if expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=timezone.utc)
             else:
                 expires_at = raw
-            
-            # Ensure expires_at is timezone-aware
-            if hasattr(expires_at, 'tzinfo') and expires_at.tzinfo is None:
-                expires_at = expires_at.replace(tzinfo=timezone.utc)
-            elif not hasattr(expires_at, 'tzinfo'):
-                 # Fallback if raw object doesn't have tzinfo attribute
-                expires_at = expires_at.replace(tzinfo=timezone.utc)
+                # Ensure expires_at is timezone-aware if it's a datetime object
+                if hasattr(expires_at, 'tzinfo') and expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=timezone.utc)
                 
             return expires_at > datetime.now(timezone.utc)
 
