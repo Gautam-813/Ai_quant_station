@@ -8,7 +8,7 @@ import asyncio
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from sqlalchemy import select, update, text
 from openai import AsyncOpenAI
 from pathlib import Path
@@ -22,6 +22,8 @@ from ..core.providers import PROVIDERS, get_api_key as _get_api_key, get_base_ur
 from ..core.historical_loader import add_indicators
 from ..models.ai_memory import UserPrompt, DefaultPromptStrategy
 from ..models.historical_lab import HistoricalBacktest
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/backtest", tags=["Backtest"])
 
@@ -519,8 +521,8 @@ async def run_backtest(request: BacktestRequest, current_user: dict = Depends(ge
         backtest_rec = HistoricalBacktest(
             user_id=user_id,
             symbol=request.symbol,
-            start_date=start_dt,
-            end_date=end_dt,
+            start_date=start_dt.replace(tzinfo=timezone.utc),
+            end_date=end_dt.replace(tzinfo=timezone.utc),
             timeframe=request.timeframe,
             mode="backtest",
             prompt=prompt_text,

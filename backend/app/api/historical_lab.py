@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException, Depends, status, BackgroundTasks
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import logging
 import pandas as pd
@@ -462,8 +462,8 @@ async def run_lab(
     backtest_record = HistoricalBacktest(
         user_id=current_user["id"],
         symbol=request.symbol,
-        start_date=pd.to_datetime(request.start_date),
-        end_date=pd.to_datetime(request.end_date),
+        start_date=datetime.strptime(request.start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc),
+        end_date=datetime.strptime(request.end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc),
         timeframe=request.timeframe,
         timeframes=detected_tfs,
         mode=request.mode,
