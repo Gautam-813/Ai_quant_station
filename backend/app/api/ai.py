@@ -615,20 +615,20 @@ Last 10 candles:
                 if prev_chats:
                     recent_context = []
                     for chat in reversed(prev_chats[:5]):  # Last 5 messages
-                            role_label = "User" if chat.role == "user" else "AI"
-                            content_preview = (
-                                chat.content[:100] + "..."
-                                if len(chat.content) > 100
-                                else chat.content
-                            )
-                            recent_context.append(f"{role_label}: {content_preview}")
+                        role_label = "User" if chat.role == "user" else "AI"
+                        content_preview = (
+                            chat.content[:100] + "..."
+                            if len(chat.content) > 100
+                            else chat.content
+                        )
+                        recent_context.append(f"{role_label}: {content_preview}")
 
-                        if recent_context:
-                            user_memory_context = (
-                                f"\n[Your recent chats about {chat_req.symbol}:\n"
-                                + "\n".join(recent_context)
-                                + "\n]"
-                            )
+                    if recent_context:
+                        user_memory_context = (
+                            f"\n[Your recent chats about {chat_req.symbol}:\n"
+                            + "\n".join(recent_context)
+                            + "\n]"
+                        )
 
                 # Global memory (anonymized aggregated insights)
                 global_result = await db.execute(
