@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { useAuthStore } from '@/store/authStore'
 
 vi.mock('axios', () => {
@@ -369,7 +369,7 @@ describe('authStore', () => {
         response: { status: 401 },
         config: { url: '/api/test', headers: {} },
       }
-      const result = await responseErrorHandler(error)
+      await responseErrorHandler(error)
       expect(useAuthStore.getState().accessToken).toBe('new-access')
       expect(useAuthStore.getState().storedRefreshToken).toBe('new-refresh')
     })

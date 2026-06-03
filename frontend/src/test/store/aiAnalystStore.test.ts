@@ -39,14 +39,14 @@ describe('AIAnalystStore', () => {
 
   describe('setMessages', () => {
     it('replaces all messages', () => {
-      const msgs = [{ role: 'user', content: 'hello' }]
+      const msgs = [{ role: 'user' as const, content: 'hello' }]
       useAIAnalystStore.getState().setMessages(msgs)
       expect(useAIAnalystStore.getState().messages).toEqual(msgs)
     })
 
     it('overwrites previous messages', () => {
-      useAIAnalystStore.setState({ messages: [{ role: 'user', content: 'old' }] })
-      useAIAnalystStore.getState().setMessages([{ role: 'assistant', content: 'new' }])
+      useAIAnalystStore.setState({ messages: [{ role: 'user' as const, content: 'old' }] })
+      useAIAnalystStore.getState().setMessages([{ role: 'assistant' as const, content: 'new' }])
       expect(useAIAnalystStore.getState().messages).toHaveLength(1)
       expect(useAIAnalystStore.getState().messages[0].content).toBe('new')
     })
@@ -54,14 +54,14 @@ describe('AIAnalystStore', () => {
 
   describe('addMessage', () => {
     it('appends a message', () => {
-      useAIAnalystStore.getState().addMessage({ role: 'user', content: 'first' })
-      useAIAnalystStore.getState().addMessage({ role: 'assistant', content: 'second' })
+      useAIAnalystStore.getState().addMessage({ role: 'user' as const, content: 'first' })
+      useAIAnalystStore.getState().addMessage({ role: 'assistant' as const, content: 'second' })
       expect(useAIAnalystStore.getState().messages).toHaveLength(2)
     })
 
     it('preserves existing messages', () => {
-      useAIAnalystStore.setState({ messages: [{ role: 'user', content: 'existing' }] })
-      useAIAnalystStore.getState().addMessage({ role: 'assistant', content: 'new' })
+      useAIAnalystStore.setState({ messages: [{ role: 'user' as const, content: 'existing' }] })
+      useAIAnalystStore.getState().addMessage({ role: 'assistant' as const, content: 'new' })
       expect(useAIAnalystStore.getState().messages[0].content).toBe('existing')
     })
   })
@@ -144,7 +144,7 @@ describe('AIAnalystStore', () => {
   describe('clearMessages', () => {
     it('clears messages and feedbackSet', () => {
       useAIAnalystStore.setState({
-        messages: [{ role: 'user', content: 'test' }],
+        messages: [{ role: 'user' as const, content: 'test' }],
         feedbackSet: [0, 1],
       })
       useAIAnalystStore.getState().clearMessages()
@@ -156,7 +156,7 @@ describe('AIAnalystStore', () => {
   describe('clearAll', () => {
     it('resets to initial state', () => {
       useAIAnalystStore.setState({
-        messages: [{ role: 'user', content: 'test' }],
+        messages: [{ role: 'user' as const, content: 'test' }],
         provider: 'groq',
         model: 'llama-3.3-70b',
         persona: 'synthesizer',
