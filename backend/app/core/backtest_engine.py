@@ -59,12 +59,15 @@ class BacktestEngine:
         df["bar_pnl"] = df["signal"].shift(1).fillna(0) * self.lot_size * self.contract_multiplier * df["price_move"]
 
         # Spread cost (pips → price units; for XAUUSD 1 pip ≈ 0.01)
-        df["signal_change"] = df["signal"].diff().abs()
-        df["spread_cost"] = df["signal_change"] * (self.spread_pips / 100) * self.lot_size * self.contract_multiplier
-        df["bar_pnl"] -= df["spread_cost"]
+        # Charge spread only on entries (0→1, 0→-1, or 1→-1 / -1→1 reversals)
+        # NOT on exits (1→0, -1→0)
+        signal_prev = df["signal"].shift(1).fillna(0)
+        df["is_entry"] = (df["signal"] != 0) & (signal_prev != df["signal"])
+        df["entry_cost"] = df["is_entry"].astype(float) * (self.spread_pips / 100) * self.lot_size * self.contract_multiplier
+        df["bar_pnl"] -= df["entry_cost"]
 
-        # Commission per round-turn
-        df["commission_cost"] = df["signal_change"] * self.commission * self.lot_size
+        # Commission per round-turn (charged on entry only)
+        df["commission_cost"] = df["is_entry"].astype(float) * self.commission * self.lot_size
         df["bar_pnl"] -= df["commission_cost"]
 
         # Equity curve
@@ -125,11 +128,17 @@ class BacktestEngine:
         entry_price = None
 
         signals = df["signal"].values
+        opens = df["open"].values
         closes = df["close"].values
         datetimes = df["datetime"].values if "datetime" in df.columns else df.index.values
         bar_pnl_values = bar_pnl.values if isinstance(bar_pnl, pd.Series) else bar_pnl
+        n = len(df)
 
-        for i in range(len(df)):
+        def _next_bar(arr, i):
+            """Get value from next bar for entry (signal fires at bar close, entry at next bar open)."""
+            return arr[i + 1] if i + 1 < n else arr[i]
+
+        for i in range(n):
             signal = signals[i]
             if in_trade:
                 trade_pnl += bar_pnl_values[i]
@@ -137,8 +146,8 @@ class BacktestEngine:
                 in_trade = True
                 current_position = signal
                 trade_pnl = 0
-                entry_time = datetimes[i]
-                entry_price = closes[i]
+                entry_time = _next_bar(datetimes, i)
+                entry_price = _next_bar(opens, i)
             elif in_trade and signal == 0:
                 trade_returns.append(trade_pnl)
                 trade_log.append({
@@ -165,8 +174,8 @@ class BacktestEngine:
                 })
                 current_position = signal
                 trade_pnl = 0
-                entry_time = datetimes[i]
-                entry_price = closes[i]
+                entry_time = _next_bar(datetimes, i)
+                entry_price = _next_bar(opens, i)
 
         if in_trade:
             trade_returns.append(trade_pnl)

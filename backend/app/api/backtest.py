@@ -2,14 +2,13 @@ import os
 import pandas as pd
 import ta
 import numpy as np
-import json
 import re
 import asyncio
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
-from datetime import datetime, timedelta, timezone
-from sqlalchemy import select, update, text
+from datetime import datetime, timezone
+from sqlalchemy import select, update
 from openai import AsyncOpenAI
 from pathlib import Path
 import logging
@@ -80,7 +79,7 @@ class BacktestResponse(BaseModel):
     generated_code: Optional[str] = None
     trades: Optional[List[Dict[str, Any]]] = None
 
-async def generate_strategy_code(prompt_text: str, provider: str = "nvidia", model: str = "qwen/qwen3.5-122b-a10b", error_msg: Optional[str] = None, previous_results: Optional[list] = None):
+async def generate_strategy_code(prompt_text: str, provider: str = "nvidia", model: str = "qwen/qwen3.5-122b-a10b", error_msg: Optional[str] = None):
     api_key = _get_api_key(provider, settings)
     if not api_key:
         raise Exception(f"AI API Key for {provider} not configured")
@@ -91,35 +90,7 @@ async def generate_strategy_code(prompt_text: str, provider: str = "nvidia", mod
         api_key=api_key
     )
 
-    # Build context from previous runs
-    improvement_context = ""
-    if previous_results:
-        def _get_metric(m: dict, *keys):
-            for k in keys:
-                v = m.get(k)
-                if v is not None:
-                    return v
-            return None
-
-        best = max(previous_results, key=lambda r: _get_metric(r, "total_return", "total_return_pct") or -999)
-        worst = min(previous_results, key=lambda r: _get_metric(r, "total_return", "total_return_pct") or 999)
-
-        def _fmt(m):
-            return (
-                f"{_get_metric(m, 'total_return', 'total_return_pct') or 'N/A'}% return, "
-                f"{_get_metric(m, 'win_rate', 'win_rate_pct') or 'N/A'}% win rate, "
-                f"{_get_metric(m, 'max_drawdown', 'max_drawdown_pct') or 'N/A'}% max drawdown"
-            )
-        improvement_context = f"""
-PREVIOUS RESULTS for this strategy:
-- Total runs: {len(previous_results)}
-- Best result: {_fmt(best)}
-- Worst result: {_fmt(worst)}
-
-OBJECTIVE: Generate an IMPROVED version that outperforms the previous best result. Try different parameters, add filters, or combine indicators to increase return while reducing drawdown.
-"""
-
-    system_prompt = f"""You are a Quantitative Developer. Convert the following natural language trading strategy into a Python function.
+    system_prompt = """You are a Quantitative Developer. Convert the following natural language trading strategy into a Python function.
 
 RULES:
 1. Use the variable 'df' which is a pandas DataFrame with columns: open, high, low, close, volume.
@@ -145,8 +116,7 @@ def calculate_signals(df):
     signal[(rsi < 30) & (close > sma200)] = 1
     signal[(rsi > 70)] = -1
     return signal
-```
-{improvement_context}"""
+```"""
     
     user_content = f"Convert this strategy: {prompt_text}"
     if error_msg:
@@ -229,12 +199,7 @@ def run_vectorized_backtest(df, strategy_code, lot_size=0.01, contract_multiplie
         df = df.copy()
         df['signal'] = signal
 
-        # 3. Vectorized P&L
-        df['returns'] = np.log(df['close'] / df['close'].shift(1))
-        df['strategy_returns'] = df['signal'].shift(1) * df['returns']
-        df['cum_returns'] = df['strategy_returns'].cumsum().apply(np.exp)
-
-        # 4. Extract individual trades from signal transitions
+        # 3. Extract individual trades from signal transitions
         trades = []
         entry_mask = (df['signal'] != 0) & (df['signal'].shift(1).fillna(0) == 0)
         exit_mask = (df['signal'] == 0) & (df['signal'].shift(1).fillna(0) != 0)
@@ -277,31 +242,47 @@ def run_vectorized_backtest(df, strategy_code, lot_size=0.01, contract_multiplie
                 'pnl_pct': round(pnl_pct, 2),
                 'pnl_dollars': round(pnl_dollars, 2),
                 'holding_period': holding_period,
+                'entry_idx': entry_idx,
+                'exit_idx': exit_idx,
             })
 
+        # 4. Build equity curve from actual trade P&Ls
+        trades_by_exit: dict[int, list] = {}
+        for t in trades:
+            trades_by_exit.setdefault(t['exit_idx'], []).append(t)
+
+        equity_curve_bar = [float(initial_capital)] * len(df)
+        current_equity = float(initial_capital)
+        for i in range(len(df)):
+            if i in trades_by_exit:
+                for t in trades_by_exit[i]:
+                    current_equity += t['pnl_dollars']
+            equity_curve_bar[i] = current_equity
+
         # 5. Metrics
-        total_return = (df['cum_returns'].iloc[-1] - 1) * 100
-        total_pnl = round(initial_capital * (df['cum_returns'].iloc[-1] - 1), 2)
-        final_equity = round(initial_capital * df['cum_returns'].iloc[-1], 2)
+        total_pnl = round(current_equity - initial_capital, 2)
+        total_return = round((current_equity / initial_capital - 1) * 100, 2)
+        final_equity = round(current_equity, 2)
         winning_trades = sum(1 for t in trades if t['pnl_pct'] > 0)
         total_trades = len(trades)
-        win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
-        max_drawdown = (df['cum_returns'] / df['cum_returns'].cummax() - 1).min() * 100
-        max_dd_dollars = round(initial_capital * max_drawdown / 100, 2)
+        win_rate = round((winning_trades / total_trades * 100), 2) if total_trades > 0 else 0.0
 
-        # Equity curve (sample to 100 points, scaled to dollars)
-        curve = (df['cum_returns'] * initial_capital).fillna(initial_capital).tolist()
-        step = max(1, len(curve) // 100)
-        sampled_curve = curve[::step]
+        equity_series = pd.Series(equity_curve_bar)
+        running_max = equity_series.cummax()
+        dd_pct = ((equity_series / running_max - 1) * 100).min()
+        dd_dollars = round((running_max - equity_series).max(), 2)
+
+        step = max(1, len(equity_curve_bar) // 100)
+        sampled_curve = equity_curve_bar[::step]
 
         return {
             "metrics": {
-                "total_return": round(total_return, 2),
+                "total_return": total_return,
                 "total_pnl": total_pnl,
                 "final_equity": final_equity,
-                "win_rate": round(win_rate, 2),
-                "max_drawdown": round(max_drawdown, 2),
-                "max_dd_dollars": max_dd_dollars,
+                "win_rate": win_rate,
+                "max_drawdown": round(dd_pct, 2),
+                "max_dd_dollars": dd_dollars,
                 "trades": total_trades,
             },
             "equity_curve": sampled_curve,
@@ -371,34 +352,13 @@ async def run_backtest(request: BacktestRequest, current_user: dict = Depends(ge
             if strategy_obj:
                 strategy_code = strategy_obj.strategy_code
 
-    # 2. Generate Code — query previous results for iterative improvement
-    previous_results = []
-    if prompt_text:
-        async with AsyncSessionLocal() as db:
-            # Use raw SQL to bypass any ORM reflection/caching issues
-            query = text("""
-                SELECT metrics 
-                FROM historical_backtests 
-                WHERE prompt = :prompt 
-                AND status = 'completed' 
-                AND metrics IS NOT NULL 
-                ORDER BY created_at DESC 
-                LIMIT 5
-            """)
-            prev_result = await db.execute(query, {"prompt": prompt_text})
-            prev_runs = prev_result.fetchall()
-            for row in prev_runs:
-                if row[0]:
-                    previous_results.append(row[0])
-    
     raw_thinking = None
     if not strategy_code:
         try:
             gen_result = await generate_strategy_code(
                 prompt_text, 
                 provider=request.provider, 
-                model=request.model,
-                previous_results=previous_results if previous_results else None
+                model=request.model
             )
             strategy_code = gen_result["code"]
             raw_thinking = gen_result["raw_thinking"]
