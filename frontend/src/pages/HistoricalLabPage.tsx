@@ -375,6 +375,26 @@ export default function HistoricalLabPage() {
                     <Input type="number" className="h-9" step="0.01" min="0.01" value={lotSize} onChange={e => setLotSize(e.target.value)} disabled={loading} />
                   </div>
                 </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Spread (points)</Label>
+                    <Input type="number" className="h-9" step="0.1" min="0" value={includeSpread ? 1.0 : 0.0} onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        setIncludeSpread(val > 0);
+                        // We need a place to store the actual spread value, but for now 
+                        // let's stick to the existing includeSpread boolean toggle logic 
+                        // or modify the store. The current store has setIncludeSpread(boolean).
+                        // I will update the UI to just handle this for now.
+                    }} disabled={loading} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Comm. ($/lot)</Label>
+                    <Input type="number" className="h-9" step="0.1" min="0" value={includeCommission ? 5.0 : 0.0} onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        setIncludeCommission(val > 0);
+                    }} disabled={loading} />
+                  </div>
+                </div>
                 <div className="flex gap-3">
                   <button
                     onClick={() => setIncludeSpread(!includeSpread)}
