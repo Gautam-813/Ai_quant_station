@@ -14,6 +14,7 @@ from openai import RateLimitError, APIError, Timeout
 from .execute import run_python_code
 from ..core.historical_loader import add_indicators
 from ..core.utils import detect_trade_setup as _detect_trade_setup
+from ..core.mt5_service import fetch_latest_candles
 
 
 from ..core.config import settings
@@ -47,6 +48,55 @@ from ..core.encryption import encrypt_api_key
 router = APIRouter(prefix="/ai", tags=["AI"])
 
 logger = logging.getLogger(__name__)
+
+# Timeframe detection helpers
+TF_MAPPING = {
+    "M1": "1m", "M5": "5m", "M15": "15m", "M30": "30m",
+    "H1": "1h", "H2": "2h", "H4": "4h",
+    "D1": "1d", "W1": "1w",
+}
+
+# Robust regex patterns for timeframes
+# Handles: 1m, 1 m, 1-m, 1min, 1 minute, 1-minute, etc.
+_NL_TF_PATTERNS = [
+    (r'\b1[-\s]?(?:m|min(?:ute)?s?)\b', "1m"),
+    (r'\b5[-\s]?(?:m|min(?:ute)?s?)\b', "5m"),
+    (r'\b15[-\s]?(?:m|min(?:ute)?s?)\b', "15m"),
+    (r'\b30[-\s]?(?:m|min(?:ute)?s?)\b', "30m"),
+    (r'\b1[-\s]?(?:h|hour(?:ly)?s?)\b|\bhourly\b', "1h"),
+    (r'\b2[-\s]?(?:h|hour(?:s)?)\b', "2h"),
+    (r'\b4[-\s]?(?:h|hour(?:s)?)\b|\bfour[-\s]?hour\b', "4h"),
+    (r'\b1[-\s]?(?:d|day(?:s)?)\b|\bdaily\b', "1d"),
+    (r'\b1[-\s]?(?:w|week(?:s)?)\b|\bweekly\b', "1w"),
+]
+
+def _detect_timeframe(text: str) -> Optional[str]:
+    """Detect timeframe from user query. If multiple are mentioned, returns the smallest (most granular)."""
+    if not text:
+        return None
+    
+    detected = []
+    for label, tf in TF_MAPPING.items():
+        if re.search(rf'\b{label}\b', text, re.IGNORECASE):
+            detected.append(tf)
+    for pattern, tf in _NL_TF_PATTERNS:
+        if re.search(pattern, text, re.IGNORECASE):
+            detected.append(tf)
+            
+    if not detected:
+        return None
+        
+    # Sort by granularity and return the smallest
+    def tf_to_minutes(tf_str):
+        unit = tf_str[-1]
+        val = int(tf_str[:-1])
+        if unit == 'm': return val
+        if unit == 'h': return val * 60
+        if unit == 'd': return val * 1440
+        if unit == 'w': return val * 10080
+        return 999999
+        
+    return min(detected, key=tf_to_minutes)
 
 MAX_RETRIES = 3
 RETRY_DELAY = 2
@@ -422,8 +472,23 @@ async def chat(chat_req: ChatRequest, current_user: dict = Depends(get_current_u
         raise HTTPException(status_code=400, detail=f"No API key for {chat_req.provider}")
     provider_config = PROVIDERS[chat_req.provider]
 
+    # ── TIMEFRAME DETECTION & DATA FETCHING ────────────────────────────────
+    # Detect if user is asking for a specific timeframe (e.g., "on 5m", "for 1h")
+    requested_tf = None
+    if chat_req.messages:
+        last_msg = chat_req.messages[-1].content
+        requested_tf = _detect_timeframe(last_msg)
+        if requested_tf and requested_tf != chat_req.timeframe:
+            logger.info(f"[AI] Detected requested timeframe change: {chat_req.timeframe} -> {requested_tf}")
+            chat_req.timeframe = requested_tf
+            # Force refresh from MT5 if timeframe changed
+            if chat_req.symbol:
+                if not chat_req.load_market_data:
+                    chat_req.load_market_data = "mt5"
+                chat_req.candle_data = [] # Clear frontend data as it's likely wrong timeframe
+
     try:
-        logger.info(f"[AI] Received - symbol: {chat_req.symbol}, candle_data: {len(chat_req.candle_data) if chat_req.candle_data else 0}")
+        logger.info(f"[AI] Received - symbol: {chat_req.symbol}, timeframe: {chat_req.timeframe}, candle_data: {len(chat_req.candle_data) if chat_req.candle_data else 0}")
         
         # Fetch market data if requested
         market_context = ""
@@ -456,6 +521,41 @@ SAMPLES (Last 10 candles): {', '.join(samples)}
 """
                 data_loaded = True
                 logger.info(f"[AI] Market context built - using {len(candle_data_for_ai)} candles")
+
+            # FALLBACK TO MT5 if requested or if candle_data is missing/insufficient
+            if not data_loaded and chat_req.load_market_data == "mt5" and chat_req.symbol:
+                try:
+                    logger.info(f"[AI] Fetching {chat_req.timeframe} data for {chat_req.symbol} from MT5...")
+                    count = chat_req.candle_count or 1000
+                    
+                    # Increase count for smaller timeframes to support higher-TF resampling
+                    if chat_req.timeframe in ['1m', '5m', '15m']:
+                        count = max(count, 2000)
+                    elif count < 300: 
+                        count = 300
+                    
+                    mt5_data = await fetch_latest_candles(chat_req.symbol, count=count, timeframe=chat_req.timeframe or "1h")
+                    
+                    if mt5_data:
+                        candle_data_for_ai = mt5_data
+                        latest = mt5_data[-1]
+                        samples = []
+                        for c in mt5_data[-10:]:
+                            samples.append(f"O:{c['open']:.2f} H:{c['high']:.2f} L:{c['low']:.2f} C:{c['close']:.2f}")
+                        
+                        market_context = f"""
+Current market data for {chat_req.symbol} (Source: MT5 Backend):
+- Timeframe: {chat_req.timeframe}
+- Latest: Open={latest['open']:.2f} High={latest['high']:.2f} Low={latest['low']:.2f} Close={latest['close']:.2f}
+- Latest Time: {latest['time']}
+
+SAMPLES (Last 10 candles): {', '.join(samples)}
+"""
+                        data_loaded = True
+                        logger.info(f"[AI] Market context built from MT5 - {len(candle_data_for_ai)} candles")
+                except Exception as e:
+                    logger.error(f"[AI] MT5 fallback error: {e}")
+                    market_context = f"\n[Note: Could not fetch MT5 data for {chat_req.symbol}: {str(e)}]\n"
 
             # FALLBACK TO YAHOO if no candle data and yahoo requested
             elif not data_loaded and chat_req.load_market_data == "yahoo":
@@ -557,8 +657,8 @@ Last 10 candles:
         if candle_data_for_ai:
             actual_count = len(candle_data_for_ai)
             data_capability_text = DATA_CAPABILITY.format(candle_count=f"{actual_count} candles")
-            if actual_count < 50:
-                data_capability_text += f"\nWARNING: Very few candles available ({actual_count}). Do NOT use windowed indicators (SMA, EMA, RSI, ATR, Bollinger) as they will crash. Only use basic pandas operations: mean(), min(), max(), diff(), iloc[].\n"
+            if actual_count < 100:
+                data_capability_text += f"\nWARNING: Limited historical data ({actual_count} candles). Indicators with large windows (like SMA 200) will fail or return NaNs. However, indicators like ATR(14), RSI(14), or Bollinger Bands(20) are safe to use as long as at least 30+ candles are present.\n"
         else:
             data_capability_text = "- No real-time market data available. Do NOT write Python code blocks. Provide only text-based general analysis.\n"
 

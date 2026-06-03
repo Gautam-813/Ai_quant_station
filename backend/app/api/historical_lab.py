@@ -47,15 +47,15 @@ TF_MAPPING = {
 }
 
 _NL_TF_PATTERNS = [
-    (r'\b1[-\s]?min(?:ute)?s?\b', "1T"),
-    (r'\b5[-\s]?min(?:ute)?s?\b', "5T"),
-    (r'\b15[-\s]?min(?:ute)?s?\b', "15T"),
-    (r'\b30[-\s]?min(?:ute)?s?\b', "30T"),
-    (r'\b1[-\s]?hour\b|\bhourly\b', "1H"),
-    (r'\b2[-\s]?hour\b', "2H"),
-    (r'\b4[-\s]?hour\b|\bfour\s*hour\b', "4H"),
-    (r'\bdaily\b|\b1[-\s]?day\b', "1D"),
-    (r'\bweekly\b|\b1[-\s]?week\b', "1W"),
+    (r'\b1[-\s]?(?:m|min(?:ute)?s?)\b', "1T"),
+    (r'\b5[-\s]?(?:m|min(?:ute)?s?)\b', "5T"),
+    (r'\b15[-\s]?(?:m|min(?:ute)?s?)\b', "15T"),
+    (r'\b30[-\s]?(?:m|min(?:ute)?s?)\b', "30T"),
+    (r'\b1[-\s]?(?:h|hour(?:ly)?s?)\b|\bhourly\b', "1H"),
+    (r'\b2[-\s]?(?:h|hour(?:s)?)\b', "2H"),
+    (r'\b4[-\s]?(?:h|hour(?:s)?)\b|\bfour[-\s]?hour\b', "4H"),
+    (r'\b1[-\s]?(?:d|day(?:s)?)\b|\bdaily\b', "1D"),
+    (r'\b1[-\s]?(?:w|week(?:s)?)\b|\bweekly\b', "1W"),
 ]
 
 def _extract_timeframes(prompt: str, primary_tf: str) -> list:

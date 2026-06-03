@@ -389,11 +389,11 @@ async def run_autopilot_cycle(user_id: int):
     # Detect required candle count based on prompt text
     def _detect_required_candles(text: str) -> int:
         lower = text.lower()
-        if re.search(r'daily|weekly|d1|w1|previous\s*day|yesterday', lower):
+        if re.search(r'\b1[-\s]?(?:d|day|w|week)\b|daily|weekly|d1|w1|previous\s*day|yesterday', lower):
             return 3000
-        if re.search(r'4h\b|4[-\s]?hour|four\s*hour|h4\b|4hrs?\b', lower):
+        if re.search(r'\b4[-\s]?(?:h|hour)\b|four[-\s]?hour|h4\b|4hrs?\b', lower):
             return 2000
-        if re.search(r'1h\b|1[-\s]?hour|one\s*hour|hourly|h1\b|1hrs?\b', lower):
+        if re.search(r'\b1[-\s]?(?:h|hour)\b|one[-\s]?hour|hourly|h1\b|1hrs?\b', lower):
             return 1000
         return 500
 
