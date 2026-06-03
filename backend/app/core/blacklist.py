@@ -66,8 +66,14 @@ async def is_token_blacklisted(token: str) -> bool:
                 expires_at = datetime.fromisoformat(raw.replace(' ', 'T'))
             else:
                 expires_at = raw
-            if expires_at.tzinfo is None:
+            
+            # Ensure expires_at is timezone-aware
+            if hasattr(expires_at, 'tzinfo') and expires_at.tzinfo is None:
                 expires_at = expires_at.replace(tzinfo=timezone.utc)
+            elif not hasattr(expires_at, 'tzinfo'):
+                 # Fallback if raw object doesn't have tzinfo attribute
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+                
             return expires_at > datetime.now(timezone.utc)
 
     return await asyncio.get_running_loop().run_in_executor(None, _lookup, token)
