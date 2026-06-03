@@ -65,6 +65,8 @@ class BacktestRequest(BaseModel):
     provider: Optional[str] = "nvidia"
     model: Optional[str] = "qwen/qwen3.5-122b-a10b"
     lot_size: Optional[float] = 0.01
+    spread: Optional[float] = 0.0
+    commission: Optional[float] = 0.0
     strategy_code: Optional[str] = None
 
 class BacktestResponse(BaseModel):
@@ -169,7 +171,7 @@ def calculate_signals(df):
         code = code.strip("`").strip()
     return {"code": code, "raw_thinking": full_raw_response}
 
-def run_vectorized_backtest(df, strategy_code, lot_size=0.01, contract_multiplier=100):
+def run_vectorized_backtest(df, strategy_code, lot_size=0.01, contract_multiplier=100, spread=0.0, commission=0.0):
     """Execute code and calculate PnL."""
     try:
         # 1. Execute strategy code to define function - RESTRICTED builtins for security
@@ -249,12 +251,12 @@ def run_vectorized_backtest(df, strategy_code, lot_size=0.01, contract_multiplie
             exit_time = str(df.loc[exit_idx, 'datetime']) if 'datetime' in df.columns else ''
 
             if direction == 'BUY':
-                pnl_points = exit_price - entry_price
+                pnl_points = exit_price - entry_price - spread
             else:
-                pnl_points = entry_price - exit_price
+                pnl_points = entry_price - exit_price - spread
 
             pnl_pct = (pnl_points / entry_price) * 100 if entry_price else 0
-            pnl_dollars = pnl_points * contract_multiplier * lot_size
+            pnl_dollars = (pnl_points * contract_multiplier * lot_size) - commission
             holding_period = len(group)
 
             trades.append({
@@ -462,7 +464,7 @@ async def run_backtest(request: BacktestRequest, current_user: dict = Depends(ge
     for attempt in range(max_retries):
         try:
             result = await asyncio.wait_for(
-                loop.run_in_executor(None, run_vectorized_backtest, full_df, strategy_code, lot_size, contract_multiplier),
+                loop.run_in_executor(None, run_vectorized_backtest, full_df, strategy_code, lot_size, contract_multiplier, request.spread or 0.0, request.commission or 0.0),
                 timeout=60.0
             )
         except asyncio.TimeoutError:
