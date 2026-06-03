@@ -361,17 +361,21 @@ async def run_backtest(request: BacktestRequest, current_user: dict = Depends(ge
     previous_results = []
     if prompt_text:
         async with AsyncSessionLocal() as db:
-            prev_result = await db.execute(
-                select(HistoricalBacktest).where(
-                    HistoricalBacktest.prompt == prompt_text,
-                    HistoricalBacktest.status == "completed",
-                    HistoricalBacktest.metrics.isnot(None)
-                ).order_by(HistoricalBacktest.created_at.desc()).limit(5)
-            )
-            prev_runs = prev_result.scalars().all()
-            for run in prev_runs:
-                if run.metrics:
-                    previous_results.append(run.metrics)
+            # Use raw SQL to bypass any ORM reflection/caching issues
+            query = text("""
+                SELECT metrics 
+                FROM historical_backtests 
+                WHERE prompt = :prompt 
+                AND status = 'completed' 
+                AND metrics IS NOT NULL 
+                ORDER BY created_at DESC 
+                LIMIT 5
+            """)
+            prev_result = await db.execute(query, {"prompt": prompt_text})
+            prev_runs = prev_result.fetchall()
+            for row in prev_runs:
+                if row[0]:
+                    previous_results.append(row[0])
     
     raw_thinking = None
     if not strategy_code:
