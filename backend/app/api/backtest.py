@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
-from sqlalchemy import select, update
+from sqlalchemy import select, update, text
 from openai import AsyncOpenAI
 from pathlib import Path
 import logging
