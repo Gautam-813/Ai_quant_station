@@ -545,6 +545,14 @@ class CalculateIndicatorRequest(BaseModel):
 async def calculate_indicator(request: CalculateIndicatorRequest, current_user: dict = Depends(get_current_user)):
     try:
         import pandas as pd
+        
+        # Guard: Ensure enough data
+        if len(request.market_data) < request.period + 5:
+            return {
+                "success": False, 
+                "error": f"Insufficient data: period is {request.period} but provided data has only {len(request.market_data)} rows. Please provide at least {request.period + 10} candles."
+            }
+
         df = pd.DataFrame(request.market_data)
 
         if request.indicator.upper() == 'ATR':

@@ -154,6 +154,7 @@ def calculate_signals(df):
             {"role": "user", "content": user_content}
         ],
         temperature=0.1,
+        max_tokens=8192,
         timeout=120
     )
 
@@ -449,13 +450,15 @@ async def run_backtest(request: BacktestRequest, current_user: dict = Depends(ge
         full_df = df_primary.reset_index()
 
     # 4. Run Backtest with Auto-Retry / Self-Correction
-    max_retries = 2
+    max_retries = 3
     last_error = None
 
     lot_size = request.lot_size or 0.01
     contract_multiplier = CONTRACT_MULTIPLIERS.get(request.symbol, 100)
 
     loop = asyncio.get_event_loop()
+    result = {"error": "No attempt made"}
+    
     for attempt in range(max_retries):
         try:
             result = await asyncio.wait_for(
@@ -463,22 +466,29 @@ async def run_backtest(request: BacktestRequest, current_user: dict = Depends(ge
                 timeout=60.0
             )
         except asyncio.TimeoutError:
-            result = {"error": "Code execution timed out (30s limit). Simplify the strategy logic."}
+            result = {"error": "Code execution timed out (60s limit). Simplify the strategy logic."}
         
         if "error" not in result:
             # Success! Break loop
             break
         
         last_error = result["error"]
-        print(f"Backtest Attempt {attempt+1} failed: {last_error}. Retrying with correction...")
+        logger.warning(f"[Backtest] Attempt {attempt+1} failed: {last_error}. Retrying with correction...")
         
-        # Call AI again with the error message
+        # Self-Correction: Provide specific guidance for common errors like IndexError
+        hint = ""
+        if "IndexError" in last_error:
+            hint = " (HINT: Ensure you don't slice the DataFrame too small before calculating indicators like ATR, RSI, or SMA. Technical indicators need a sufficient historical window.)"
+        elif "NaN" in last_error:
+            hint = " (HINT: Use .dropna() after calculating indicators to avoid NaN issues in signals.)"
+
+        # Call AI again with the error message + hint
         try:
             gen_result = await generate_strategy_code(
                 prompt_text, 
                 provider=request.provider,
                 model=request.model,
-                error_msg=last_error
+                error_msg=f"{last_error}{hint}"
             )
             strategy_code = gen_result["code"]
             raw_thinking = gen_result["raw_thinking"]
@@ -491,7 +501,7 @@ async def run_backtest(request: BacktestRequest, current_user: dict = Depends(ge
                     await db.execute(update(DefaultPromptStrategy).where(DefaultPromptStrategy.prompt_number == int(request.prompt_id)).values(strategy_code=strategy_code))
                 await db.commit()
         except Exception:
-            logging.getLogger("backtest").error("AI retry generation failed", exc_info=True)
+            logging.getLogger("backtest").error("[Backtest] AI retry generation failed", exc_info=True)
             # If AI generation fails during retry, stop
             break
     
