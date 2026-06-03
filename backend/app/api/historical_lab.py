@@ -18,7 +18,7 @@ from app.core.database import get_db, AsyncSessionLocal
 from app.core.security import get_current_user
 from app.models.historical_lab import HistoricalBacktest
 from app.core.config import settings
-from app.core.utils import sanitize_for_json as _clean_for_json
+from app.core.utils import sanitize_for_json as _clean_for_json, get_robust_code_gen_prompt
 from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
@@ -258,12 +258,13 @@ async def _generate_signals_from_prompt(df: pd.DataFrame, prompt: str, symbol: s
         shown = extra_tf_cols[:10]
         extra_info = f"\nNOTE: Columns ending with _1h, _4h, _5min, _15min etc. are from higher timeframes merged into this df. For example, rsi_14_1h is the H1 RSI value."
 
-    system_prompt = f"""You are a Strategy Developer. You MUST write Python code — NO text, NO explanations.
+    system_prompt = get_robust_code_gen_prompt(base_instructions=f"""You are a Strategy Developer. You MUST write Python code — NO text, NO explanations.
 
-GIVEN:
-- A pandas DataFrame `df` loaded in the sandbox with columns: {indicator_str}
-- df already has a datetime index. Do NOT modify or recreate it.
-- The 'ta' library is available. Use existing columns first; only calculate new ones if needed.{extra_info}
+    GIVEN:
+    - A pandas DataFrame `df` loaded in the sandbox with columns: {indicator_str}
+    - df already has a datetime index. Do NOT modify or recreate it.
+    - The 'ta' library is available. Use existing columns first; only calculate new ones if needed.{extra_info}
+    """)
 
 CRITICAL — NEVER do any of these:
 - NEVER create or assign datetime, date, or time columns (df already has them)
@@ -510,13 +511,16 @@ commission_per_lot = {7.0 if record.include_commission else 0.0}
 
 def _generate_initial_report(mode: str, symbol: str, start: str, end: str,
                              metrics: Optional[dict], analysis: Optional[dict]) -> str:
-    if mode == "backtest" and metrics:
-        return (
-            f"**Strategy Analysis ({symbol} | {start} → {end})**\n\n"
-            f"**Total Return:** {metrics.get('total_return_pct', 0):+.2f}% | **Sharpe:** {metrics.get('sharpe_ratio', 0):.2f}\n"
-            f"**Win Rate:** {metrics.get('win_rate_pct', 0):.1f}% | **Max Drawdown:** {metrics.get('max_drawdown_pct', 0):.1f}%\n\n"
-            f"What specific details would you like to discuss?"
-        )
+    if mode == "backtest":
+        if metrics:
+            return (
+                f"**Strategy Analysis ({symbol} | {start} → {end})**\n\n"
+                f"**Total Return:** {metrics.get('total_return_pct', 0):+.2f}% | **Sharpe:** {metrics.get('sharpe_ratio', 0):.2f}\n"
+                f"**Win Rate:** {metrics.get('win_rate_pct', 0):.1f}% | **Max Drawdown:** {metrics.get('max_drawdown_pct', 0):.1f}%\n\n"
+                f"What specific details would you like to discuss?"
+            )
+        else:
+            return "Backtest failed: No valid metrics were generated. Please refine your strategy prompt or check the data range."
     elif mode == "analysis" and analysis:
         stats = analysis.get("stats", {})
         hourly = analysis.get("hourly_volatility", [])
@@ -637,10 +641,15 @@ async def run_backtest_task(backtest_id: int, request_data: dict, user_id: int =
             record.analysis_data = analysis
             record.trade_log = trade_log
             record.chat_history = [{"role": "assistant", "content": report}]
-            record.status = "completed"
+            
+            if record.mode == "backtest" and metrics is None:
+                record.status = "failed"
+                record.error_message = "Backtest failed: No valid metrics generated."
+            else:
+                record.status = "completed"
             
             await db.commit()
-            logger.info(f"Background Backtest {backtest_id} completed successfully.")
+            logger.info(f"Background Backtest {backtest_id} completed (status: {record.status}).")
             
         except Exception as e:
             logger.error(f"Background Backtest Error: {e}")

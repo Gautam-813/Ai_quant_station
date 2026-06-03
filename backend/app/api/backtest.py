@@ -19,6 +19,7 @@ from ..core.security import get_current_user
 from ..core.database import AsyncSessionLocal
 from ..core.providers import PROVIDERS, get_api_key as _get_api_key, get_base_url
 from ..core.historical_loader import add_indicators
+from ..core.utils import get_robust_code_gen_prompt
 from ..models.ai_memory import UserPrompt, DefaultPromptStrategy
 from ..models.historical_lab import HistoricalBacktest
 
@@ -125,33 +126,13 @@ async def generate_strategy_code(prompt_text: str, provider: str = "nvidia", mod
         api_key=api_key
     )
 
-    system_prompt = """You are a Quantitative Developer. Convert the following natural language trading strategy into a Python function.
-
+    system_prompt = get_robust_code_gen_prompt(base_instructions="""
 RULES:
-1. Use the variable 'df' which is a pandas DataFrame with columns: open, high, low, close, volume.
-2. The DataFrame also has indicator columns from higher timeframes with _1h, _4h, _1d suffixes, e.g.: rsi_14_1h, ema_9_4h, sma_50_1d. Reference them as: df['rsi_14_1h'], df['ema_9_4h'], etc.
-3. Use 'ta' library for technical indicators (e.g., ta.momentum.rsi, ta.trend.sma_indicator, ta.trend.ema_indicator).
-4. The function must be named 'calculate_signals(df)'.
-5. It must return a pandas Series named 'signal' where:
-   - 1 = Buy Signal
-   - -1 = Sell Signal
-   - 0 = No Signal
-6. Be precise with logic. If multiple conditions are mentioned, all must be met.
-7. Output ONLY the code block, no explanations.
-8. CRITICAL: You MUST create `signal = pd.Series(0, index=df.index)` and you MUST `return signal` at the end.
-9. KEEP IT SIMPLE. Use basic indicators (SMA, EMA, RSI). Avoid complex loops.
-
-EXAMPLE:
-```python
-def calculate_signals(df):
-    close = df['close']
-    rsi = ta.momentum.rsi(close, window=14)
-    sma200 = ta.trend.sma_indicator(close, window=200)
-    signal = pd.Series(0, index=df.index)
-    signal[(rsi < 30) & (close > sma200)] = 1
-    signal[(rsi > 70)] = -1
-    return signal
-```"""
+1. The DataFrame also has indicator columns from higher timeframes with _1h, _4h, _1d suffixes, e.g.: rsi_14_1h, ema_9_4h, sma_50_1d. Reference them as: df['rsi_14_1h'], df['ema_9_4h'], etc.
+2. Use 'ta' library for technical indicators (e.g., ta.momentum.rsi, ta.trend.sma_indicator, ta.trend.ema_indicator).
+3. Be precise with logic. If multiple conditions are mentioned, all must be met.
+4. CRITICAL: You MUST create `signal = pd.Series(0, index=df.index)` and you MUST `return signal` at the end.
+""")
     
     user_content = f"Convert this strategy: {prompt_text}"
     if error_msg:

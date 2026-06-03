@@ -468,7 +468,7 @@ async def run_python_code(
                 input=json.dumps(request_data),
                 capture_output=True,
                 text=True,
-                timeout=25,
+                timeout=60,
                 encoding='utf-8',
             )
             if proc.returncode != 0:
@@ -526,12 +526,12 @@ async def execute_code(request: ExecuteCodeRequest, current_user: dict = Depends
                 request.session_id,
                 user_id=user_id,
             ),
-            timeout=30.0,
+            timeout=60.0,
         )
     except asyncio.TimeoutError:
         result = {
             "success": False,
-            "error": "Execution timed out (30s limit). Simplify your code or reduce loop iterations.",
+            "error": "Execution timed out (60s limit). Simplify your code or reduce loop iterations.",
             "output": "",
         }
     return ExecuteCodeResponse(**result)

@@ -13,7 +13,7 @@ from openai import AsyncOpenAI
 from openai import RateLimitError, APIError, Timeout
 from .execute import run_python_code
 from ..core.historical_loader import add_indicators
-from ..core.utils import detect_trade_setup as _detect_trade_setup
+from ..core.utils import detect_trade_setup as _detect_trade_setup, get_robust_code_gen_prompt
 from ..core.mt5_service import fetch_latest_candles
 
 
@@ -677,23 +677,25 @@ Last 10 candles:
 
         # Common rules appended to all personas
         system_parts.append("")
-        system_parts.append("GENERAL RULES:")
-        system_parts.append("1. Analyze only based on the provided market data. Never use local system time.")
-        system_parts.append("2. For position management (analyzing open positions), use:")
-        system_parts.append("```json")
-        system_parts.append('{"action": "MODIFY_SLTP", "ticket": 123456, "new_sl": 2345.50, "new_tp": 2370.00, "reasoning": "Trail SL to lock profit"}')
-        system_parts.append("```")
-        system_parts.append("Available actions: CLOSE_POSITION, MODIFY_SL, MODIFY_TP, MODIFY_SLTP, ADD_TO_POSITION")
-        system_parts.append("")
-        system_parts.append("3. For visualizing numeric series or analysis results, use:")
-        system_parts.append("```json")
-        system_parts.append('{"action": "SHOW_CHART", "title": "RSI (14)", "data": [45.2, 48.5, 52.1, 50.4, 49.8], "color": "#22c55e"}')
-        system_parts.append("```")
-        system_parts.append("OR use show_chart(data, title) within your Python code block.")
-        system_parts.append("")
-        system_parts.append("4. For displaying tables, use show_table(df, title) within your Python code block.")
-        system_parts.append("")
-        system_parts.append("5. Never guarantee profits — always mention risk. If unsure, say so rather than guessing.")
+        system_parts.append(get_robust_code_gen_prompt(base_instructions="""
+GENERAL RULES:
+1. Analyze only based on the provided market data. Never use local system time.
+2. For position management (analyzing open positions), use:
+```json
+{"action": "MODIFY_SLTP", "ticket": 123456, "new_sl": 2345.50, "new_tp": 2370.00, "reasoning": "Trail SL to lock profit"}
+```
+Available actions: CLOSE_POSITION, MODIFY_SL, MODIFY_TP, MODIFY_SLTP, ADD_TO_POSITION
+
+3. For visualizing numeric series or analysis results, use:
+```json
+{"action": "SHOW_CHART", "title": "RSI (14)", "data": [45.2, 48.5, 52.1, 50.4, 49.8], "color": "#22c55e"}
+```
+OR use show_chart(data, title) within your Python code block.
+
+4. For displaying tables, use show_table(df, title) within your Python code block.
+
+5. Never guarantee profits — always mention risk. If unsure, say so rather than guessing.
+"""))
 
         # Add market data if available (like Streamlit - include full data samples)
         if market_context:

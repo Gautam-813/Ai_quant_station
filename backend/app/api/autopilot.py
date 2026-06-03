@@ -24,7 +24,7 @@ from ..core.config import settings
 from ..core.security import get_current_user
 from ..core.database import AsyncSessionLocal
 from ..core.providers import PROVIDERS, get_api_key as _get_api_key, get_base_url, resolve_api_key
-from ..core.utils import detect_trade_setup
+from ..core.utils import detect_trade_setup, get_robust_code_gen_prompt
 from ..models.ai_memory import AutopilotTrade, AutopilotSettings, UserPrompt
 
 router = APIRouter(prefix="/autopilot", tags=["Autopilot"])
@@ -478,7 +478,7 @@ PREVIOUS TRADE ERROR FEEDBACK (learn from this):
 - Do NOT repeat the same mistake.
 """
 
-    system_prompt = f"""You are a Lead Quant in 2026. Analyze market data and find trade opportunities.
+    system_prompt = get_robust_code_gen_prompt(base_instructions=f"""You are a Lead Quant in 2026. Analyze market data and find trade opportunities.
 
 CURRENT MARKET DATA for {symbol}:
 - Latest: O:{latest.get('open', 0):.2f} H:{latest.get('high', 0):.2f} L:{latest.get('low', 0):.2f} C:{latest.get('close', 0):.2f}
@@ -501,7 +501,7 @@ RULES:
 3. Choose the right order_type for market conditions (limit for pullbacks, stop for breakouts, market for strong momentum)
 4. Always consider risk-reward ratio (1:2 or better)
 5. Consider technical indicators (RSI, MACD, moving averages) if helpful
-"""
+""")
 
     api_key = await resolve_api_key(provider, settings, user_id, AsyncSessionLocal)
     if not api_key:
