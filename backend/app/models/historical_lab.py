@@ -18,7 +18,7 @@ class HistoricalBacktest(Base):
     timeframe = Column(String, default="1m")
     timeframes = Column(JSON, nullable=True)  # List of Pandas offset strings for multi-TF
     mode = Column(String, nullable=False)
-    prompt_text = Column(Text, nullable=True) # Renamed from 'prompt'
+    prompt = Column(Text, nullable=True) # Reverting back to 'prompt'
     provider = Column(String, default="nvidia")
     model = Column(String, default="qwen/qwen3.5-122b-a10b")
     

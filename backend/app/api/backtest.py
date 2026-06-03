@@ -363,7 +363,7 @@ async def run_backtest(request: BacktestRequest, current_user: dict = Depends(ge
         async with AsyncSessionLocal() as db:
             prev_result = await db.execute(
                 select(HistoricalBacktest).where(
-                    HistoricalBacktest.prompt_text == prompt_text,
+                    HistoricalBacktest.prompt == prompt_text,
                     HistoricalBacktest.status == "completed",
                     HistoricalBacktest.metrics.isnot(None)
                 ).order_by(HistoricalBacktest.created_at.desc()).limit(5)
