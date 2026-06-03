@@ -234,23 +234,28 @@ def run_vectorized_backtest(df, strategy_code, lot_size=0.01, contract_multiplie
         df['cum_returns'] = df['strategy_returns'].cumsum().apply(np.exp)
 
         # 4. Extract individual trades from signal transitions
-        position = df['signal'].shift(1).fillna(0)
-        pos_change = position.diff().fillna(0) != 0
-        df['_pos_group'] = pos_change.cumsum()
-
         trades = []
-        for group_id, group in df[position != 0].groupby('_pos_group'):
-            first_signal = int(group['signal'].iloc[0])
-            if first_signal not in (1, -1):
-                continue  # skip signal=0 transitions
-            direction = 'BUY' if first_signal == 1 else 'SELL'
-            entry_idx = group.index[0]
-            exit_idx = group.index[-1]
+        entry_mask = (df['signal'] != 0) & (df['signal'].shift(1).fillna(0) == 0)
+        exit_mask = (df['signal'] == 0) & (df['signal'].shift(1).fillna(0) != 0)
 
-            entry_price = float(df.loc[entry_idx, 'open'])
-            exit_price = float(df.loc[exit_idx, 'close'])
-            entry_time = str(df.loc[entry_idx, 'datetime']) if 'datetime' in df.columns else ''
-            exit_time = str(df.loc[exit_idx, 'datetime']) if 'datetime' in df.columns else ''
+        entry_indices = df.index[entry_mask].tolist()
+        exit_indices = df.index[exit_mask].tolist()
+
+        # Handle case where signal ends non-zero (still in position at last bar)
+        if len(entry_indices) > len(exit_indices):
+            exit_indices.append(df.index[-1])
+
+        for entry_idx, exit_idx in zip(entry_indices, exit_indices):
+            entry_signal = int(df.loc[entry_idx, 'signal'])
+            direction = 'BUY' if entry_signal == 1 else 'SELL'
+
+            entry_row = df.loc[entry_idx]
+            exit_row = df.loc[exit_idx]
+
+            entry_price = float(entry_row['open'])
+            exit_price = float(exit_row['close'])
+            entry_time = str(entry_row['datetime']) if 'datetime' in df.columns else ''
+            exit_time = str(exit_row['datetime']) if 'datetime' in df.columns else ''
 
             if direction == 'BUY':
                 pnl_points = exit_price - entry_price - spread
@@ -259,7 +264,7 @@ def run_vectorized_backtest(df, strategy_code, lot_size=0.01, contract_multiplie
 
             pnl_pct = (pnl_points / entry_price) * 100 if entry_price else 0
             pnl_dollars = (pnl_points * contract_multiplier * lot_size) - commission
-            holding_period = len(group)
+            holding_period = exit_idx - entry_idx
 
             trades.append({
                 'entry_time': entry_time,
