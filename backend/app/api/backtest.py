@@ -303,7 +303,7 @@ commission_per_lot = {commission}
         except Exception as e:
             last_error = str(e)
             await asyncio.sleep(1)
-    return {"error": f"Freeform AI failed after 3 attempts: {last_error}"}
+    return {"error": "AI service temporarily unavailable. Please check your API key configuration and try again."}
 
 
 def run_vectorized_backtest(df, strategy_code, lot_size=0.01, contract_multiplier=100, initial_capital=10000.0, spread=0.0, commission=0.0):

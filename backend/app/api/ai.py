@@ -822,7 +822,7 @@ OR use show_chart(data, title) within your Python code block.
             logger.error(f"[AI Chat] All {MAX_RETRIES} attempts failed. Last error: {last_error}")
             raise HTTPException(
                 status_code=503,
-                detail=f"AI service unavailable after {MAX_RETRIES} attempts. Last error: {last_error}"
+                detail="AI service temporarily unavailable. Please check your API key configuration and try again."
             )
 
         # Parse for trade setup or action

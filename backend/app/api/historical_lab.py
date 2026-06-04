@@ -900,7 +900,7 @@ Be precise, professional, and mathematically rigorous."""
             if attempt < 1:
                 await asyncio.sleep(1)
             else:
-                raise HTTPException(status_code=500, detail=f"AI service error after retries: {last_error}")
+                raise HTTPException(status_code=500, detail="AI service temporarily unavailable. Please check your API key configuration and try again.")
 
 @router.get("/available-symbols")
 async def get_symbols(current_user: dict = Depends(get_current_user)):
