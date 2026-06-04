@@ -48,6 +48,17 @@ interface CandleData {
   close: number
 }
 
+function getDigitsForSymbol(symbol: string): number {
+  const s = symbol.toUpperCase()
+  if (/JPY/.test(s)) return 3
+  if (/XAU|XAG|XPT|XPD/.test(s)) return 2
+  if (/BTC|ETH|XRP|SOL|ADA|DOT|LINK|AVAX|MATIC|LTC|BCH|UNI/.test(s)) return 2
+  if (/US30|SPX500|NAS100|DAX|FTSE|CAC|NI225|HK50|AUS200|UK100/.test(s)) return 2
+  if (/COCOA|COFFEE|SUGAR|CORN|WHEAT|Soybean|OIL|NGAS/.test(s)) return 2
+  if (/USD|EUR|GBP|AUD|NZD|CAD|CHF/.test(s)) return 5
+  return 2
+}
+
 export default function AIAnalystPage() {
   const { toast } = useToast()
   const chartContainerRef = useRef<HTMLDivElement>(null)
@@ -89,6 +100,7 @@ export default function AIAnalystPage() {
   const [availableProviders, setAvailableProviders] = useState<AIProvider[]>([])
   const [executingTrade, setExecutingTrade] = useState(false)
   const [tradeExecMsgIdx, setTradeExecMsgIdx] = useState<number | null>(null)
+  const [symbolDigits, setSymbolDigits] = useState(5)
 
   // Fetch providers from backend on mount
   useEffect(() => {
@@ -164,13 +176,19 @@ export default function AIAnalystPage() {
       }
     })
 
+    const initialDigits = getDigitsForSymbol(getSymbolValue())
     const candlestickSeries = chart.addSeries(CandlestickSeries, {
       upColor: '#22c55e',
       downColor: '#ef4444',
       borderUpColor: '#22c55e',
       borderDownColor: '#ef4444',
       wickUpColor: '#22c55e',
-      wickDownColor: '#ef4444'
+      wickDownColor: '#ef4444',
+      priceFormat: {
+        type: 'price',
+        precision: initialDigits,
+        minMove: 1 / Math.pow(10, initialDigits)
+      }
     })
 
     chartRef.current = chart
@@ -234,12 +252,34 @@ export default function AIAnalystPage() {
     }
   }, [candleData])
 
+  // Update priceFormat on the chart series when symbol changes
+  useEffect(() => {
+    if (seriesRef.current) {
+      const minMove = 1 / Math.pow(10, symbolDigits)
+      seriesRef.current.applyOptions({
+        priceFormat: {
+          type: 'price',
+          precision: symbolDigits,
+          minMove
+        }
+      })
+    }
+  }, [symbolDigits])
+
   // Auto-reload data on re-mount if we have persisted symbol+source
   useEffect(() => {
     if (loadData !== 'none' && getSymbolValue() && candleData.length === 0) {
       handleLoadData()
     }
   }, [])
+
+  // Derive decimal precision from symbol name
+  useEffect(() => {
+    const sym = getSymbolValue()
+    if (sym) {
+      setSymbolDigits(getDigitsForSymbol(sym))
+    }
+  }, [symbol, customSymbol])
 
   const getSymbolValue = () => {
     if (symbol === 'custom' && customSymbol.trim()) {
