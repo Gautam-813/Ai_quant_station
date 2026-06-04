@@ -26,6 +26,7 @@ import os
 import sys
 import subprocess
 import uuid
+import re
 
 from ..core.utils import sanitize_for_json as _sanitize
 
@@ -122,8 +123,28 @@ def _strip_docstrings(code: str) -> str:
     return code
 
 
+_DANGEROUS_DUNDERS = [
+    '__class__', '__bases__', '__mro__', '__subclasses__',
+    '__globals__', '__builtins__', '__code__', '__closure__',
+]
+
 def _code_has_dunder_access(code: str) -> bool:
-    """Check if code accesses any __dunder__ attributes — blocks Python object hierarchy escapes."""
+    """Check for __dunder__ escapes via AST (dot access) AND via text-level scan (getattr strings, comments, etc)."""
+
+    # Text-level scan: dangerous dunders anywhere in the code (catches getattr strings)
+    for d in _DANGEROUS_DUNDERS:
+        if d in code:
+            return True
+
+    # Scan for chr(95) / chr(0x5f) / chr(0X5F) — obfuscated underscore construction
+    if re.search(r'chr\s*\(\s*(?:95|0[xX]5[fF])\s*\)', code):
+        return True
+
+    # Scan for hex escape in string literals (e.g. "\x5f\x5fclass\x5f\x5f")
+    if re.search(r'\\x5[fF]', code):
+        return True
+
+    # AST-level attribute scan (catches obj.__class__ dot access)
     import ast
     try:
         tree = ast.parse(code)

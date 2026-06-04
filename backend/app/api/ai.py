@@ -855,7 +855,7 @@ OR use show_chart(data, title) within your Python code block.
 
         # Security: skip execution if user message contains embedded code indicators
         _last_user_msg = chat_req.messages[-1].content if chat_req.messages else ""
-        if re.search(r'```(?:python)?|__class__|__subclasses__|__import__|__builtins__|__bases__|__mro__', _last_user_msg, re.I):
+        if re.search(r'```(?:python)?|__class__|__subclasses__|__import__|__builtins__|__bases__|__mro__|chr\s*\(\s*(?:95|0[xX]5[fF])|\\x5[fF]|getattr\s*\(', _last_user_msg, re.I):
             execution_output = "[Security: Code execution skipped — user message contains embedded code patterns. AI analysis provided as text only.]"
             python_match = None
         else:
