@@ -264,9 +264,8 @@ async def _generate_signals_from_prompt(df: pd.DataFrame, prompt: str, symbol: s
     - A pandas DataFrame `df` loaded in the sandbox with columns: {indicator_str}
     - df already has a datetime index. Do NOT modify or recreate it.
     - The 'ta' library is available. Use existing columns first; only calculate new ones if needed.{extra_info}
-    """)
 
-CRITICAL — NEVER do any of these:
+CRITICAL -- NEVER do any of these:
 - NEVER create or assign datetime, date, or time columns (df already has them)
 - NEVER use string literals like '2020-01-01' or pd.date_range()
 - NEVER use groupby, shift, rolling with date-offset strings
@@ -276,7 +275,7 @@ CRITICAL — NEVER do any of these:
 YOUR TASK:
 Write code that adds a 'signal' column to 'df' where:
   - 1 = BUY
-  - -1 = SELL  
+  - -1 = SELL
   - 0 = NO SIGNAL
 
 If the strategy references concepts not in 'df' (e.g., session times, spread, position management rules), ADAPT the logic to use only what's available. For example, use ATR instead of ADX.
@@ -289,7 +288,7 @@ RULES:
 
 Strategy: {prompt}
 
-Write ONLY the code block now:"""
+Write ONLY the code block now:""")
 
     try:
         client = await _get_ai_client(provider, user_id=user_id)
