@@ -44,6 +44,7 @@ from ..models.ai_memory import (
 from ..core.providers import PROVIDERS, get_api_key as _get_api_key, get_base_url, resolve_api_key
 from ..models.user import UserApiKey
 from ..core.encryption import encrypt_api_key
+from ..core.rag_service import build_rag_context, generate_embedding
 
 router = APIRouter(prefix="/ai", tags=["AI"])
 
@@ -592,6 +593,7 @@ Last 10 candles:
         # Fetch user memory (previous conversations about same symbol)
         user_memory_context = ""
         global_memory_context = ""
+        rag_context = ""
 
         async with AsyncSessionLocal() as db:
             try:
@@ -604,7 +606,6 @@ Last 10 candles:
                 elif chat_req.symbol:
                     query = query.where(ChatMemory.symbol == chat_req.symbol)
                 else:
-                    # Generic global history if no symbol/session
                     pass
                     
                 result = await db.execute(
@@ -614,7 +615,7 @@ Last 10 candles:
 
                 if prev_chats:
                     recent_context = []
-                    for chat in reversed(prev_chats[:5]):  # Last 5 messages
+                    for chat in reversed(prev_chats[:5]):
                         role_label = "User" if chat.role == "user" else "AI"
                         content_preview = (
                             chat.content[:100] + "..."
@@ -656,6 +657,18 @@ Last 10 candles:
                         global_memory_context = f"\n[Community insights for {chat_req.symbol}: {buy_count} BUY signals, {sell_count} SELL signals suggested recently]"
             except Exception as e:
                 logger.warning(f"Memory fetch error: {e}")
+
+        # RAG context: semantically similar past analyses with performance data
+        if chat_req.symbol and any(m.get("role") == "user" for m in chat_req.messages):
+            try:
+                last_user_msg = next(
+                    (m.content for m in reversed(chat_req.messages) if m.role == "user"),
+                    None
+                )
+                if last_user_msg:
+                    rag_context = await build_rag_context(chat_req.symbol, last_user_msg)
+            except Exception as e:
+                logger.warning(f"RAG context build error: {e}")
 
         # Determine actual candle count for dynamic persona prompt
         if candle_data_for_ai:
@@ -721,6 +734,11 @@ OR use show_chart(data, title) within your Python code block.
         # Add global insights (community data)
         if global_memory_context:
             system_parts.append(f"\n{global_memory_context}")
+
+        # Add RAG context (semantically similar past analyses with performance data)
+        if rag_context:
+            system_parts.append(f"\n[RELEVANT PAST PERFORMANCE:\n{rag_context}\n]")
+            system_parts.append("\nNote: The above shows past analyses similar to the current query, weighted by profit outcome and user feedback. Use this track record to inform your analysis — repeat what worked, avoid what didn't.")
 
         system_prompt = "\n".join(system_parts)
         messages.append({"role": "system", "content": system_prompt})
@@ -935,6 +953,14 @@ OR use show_chart(data, title) within your Python code block.
                 await db.commit()
                 await db.refresh(assistant_msg)
                 saved_chat_memory_id = assistant_msg.id
+
+                # Fire-and-forget: generate and store embedding for RAG
+                try:
+                    asyncio.create_task(
+                        generate_embedding(saved_chat_memory_id, assistant_message)
+                    )
+                except Exception:
+                    pass
 
                 if chat_req.symbol and detected_setup:
                     result = await db.execute(select(GlobalInsights).where(GlobalInsights.symbol == chat_req.symbol))

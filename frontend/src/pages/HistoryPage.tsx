@@ -7,6 +7,22 @@ import axios from 'axios'
 
 interface Trade { ticket: number; symbol: string; direction: string; volume: number; price: number; profit: number; time: string; comment: string }
 
+interface StrategyScore {
+  prompt_text: string
+  symbol: string
+  direction: string | null
+  source: string
+  total_trades: number
+  winning_trades: number
+  total_pnl: number
+  win_rate: number
+  avg_confidence: number | null
+  avg_profit: number | null
+  avg_loss: number | null
+  profit_factor: number | null
+  last_used: string | null
+}
+
 export default function HistoryPage() {
   const { toast } = useToast()
   const [trades, setTrades] = useState<Trade[]>([])
@@ -14,13 +30,27 @@ export default function HistoryPage() {
   const hours = useHistoryStore((s) => s.hours)
   const setHours = useHistoryStore((s) => s.setHours)
 
+  const [scores, setScores] = useState<StrategyScore[]>([])
+  const [scoresLoading, setScoresLoading] = useState(true)
+
   useEffect(() => { fetchHistory() }, [hours])
+
+  useEffect(() => { fetchScores() }, [])
 
   const fetchHistory = async () => {
     setLoading(true)
     try { setTrades((await axios.get(`/api/mt5/history?hours=${hours}`)).data?.deals || []) }
     catch { toast({ title: "Error", description: "Failed to fetch trade history", variant: 'destructive' }) }
     finally { setLoading(false) }
+  }
+
+  const fetchScores = async () => {
+    setScoresLoading(true)
+    try {
+      const res = await axios.get('/api/analytics/strategy-scores')
+      setScores(res.data || [])
+    } catch { /* scores optional */ }
+    finally { setScoresLoading(false) }
   }
 
   const totalProfit = trades.reduce((sum, t) => sum + t.profit, 0)
@@ -115,6 +145,63 @@ export default function HistoryPage() {
                         ${(trade.profit ?? 0).toFixed(2)}
                       </td>
                       <td className="py-2 px-1 sm:px-2 text-xs text-muted-foreground truncate max-w-[80px] sm:max-w-[150px] hidden lg:table-cell">{trade.comment}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className="mt-4 sm:mt-6">
+        <CardHeader className="px-3 sm:px-4 md:px-6 pt-3 sm:pt-4 md:pt-6 pb-2 sm:pb-3">
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-sm sm:text-base md:text-lg">Strategy Analytics</CardTitle>
+            <button onClick={fetchScores} className="text-xs text-muted-foreground hover:text-foreground" disabled={scoresLoading}>
+              {scoresLoading ? '...' : 'Refresh'}
+            </button>
+          </div>
+        </CardHeader>
+        <CardContent className="px-3 sm:px-4 md:px-6 pb-3 sm:pb-4 md:pb-6">
+          {scores.length === 0 ? (
+            <p className="text-muted-foreground text-center py-4 text-sm">
+              {scoresLoading ? 'Loading...' : 'No strategy data yet. Scores are calculated hourly from closed trades.'}
+            </p>
+          ) : (
+            <div className="overflow-x-auto -mx-3 sm:mx-0">
+              <table className="w-full text-xs sm:text-sm">
+                <thead>
+                  <tr className="border-b border-border">
+                    <th className="text-left py-2 px-1 sm:px-2 font-medium text-muted-foreground">Prompt</th>
+                    <th className="text-left py-2 px-1 sm:px-2 font-medium text-muted-foreground">Symbol</th>
+                    <th className="text-right py-2 px-1 sm:px-2 font-medium text-muted-foreground">Trades</th>
+                    <th className="text-right py-2 px-1 sm:px-2 font-medium text-muted-foreground">Win Rate</th>
+                    <th className="text-right py-2 px-1 sm:px-2 font-medium text-muted-foreground">P&L</th>
+                    <th className="text-right py-2 px-1 sm:px-2 font-medium text-muted-foreground hidden md:table-cell">Avg Profit</th>
+                    <th className="text-right py-2 px-1 sm:px-2 font-medium text-muted-foreground hidden md:table-cell">Avg Loss</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {scores.map((s, idx) => (
+                    <tr key={idx} className="border-b border-border/50 hover:bg-muted/50">
+                      <td className="py-2 px-1 sm:px-2 text-[10px] sm:text-xs max-w-[120px] sm:max-w-[200px] truncate" title={s.prompt_text}>
+                        {s.prompt_text.substring(0, 40)}...
+                      </td>
+                      <td className="py-2 px-1 sm:px-2 font-medium">{s.symbol}</td>
+                      <td className="py-2 px-1 sm:px-2 text-right">{s.total_trades}</td>
+                      <td className={`py-2 px-1 sm:px-2 text-right font-medium ${s.win_rate >= 50 ? 'text-green-500' : 'text-red-500'}`}>
+                        {s.win_rate.toFixed(1)}%
+                      </td>
+                      <td className={`py-2 px-1 sm:px-2 text-right font-medium ${s.total_pnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                        ${s.total_pnl.toFixed(2)}
+                      </td>
+                      <td className="py-2 px-1 sm:px-2 text-right text-green-500 hidden md:table-cell">
+                        {s.avg_profit ? `$${s.avg_profit.toFixed(2)}` : '-'}
+                      </td>
+                      <td className="py-2 px-1 sm:px-2 text-right text-red-500 hidden md:table-cell">
+                        {s.avg_loss ? `$${s.avg_loss.toFixed(2)}` : '-'}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

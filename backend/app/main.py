@@ -142,6 +142,15 @@ async def startup_event():
 
     start_sync_scheduler()
 
+    # Start strategy score aggregator (hourly cron)
+    try:
+        from .core.strategy_scorer import start_strategy_scorer, update_strategy_scores
+        start_strategy_scorer()
+        import asyncio
+        asyncio.create_task(update_strategy_scores())
+    except Exception as e:
+        print(f"  Strategy scorer start: {e}")
+
 @app.on_event("shutdown")
 async def shutdown_event():
     from .core.mt5_connector import shutdown_connector

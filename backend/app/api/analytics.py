@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.database import get_db
 from ..core.security import get_current_user
+from ..models.strategy_score import StrategyScore
 
 router = APIRouter(prefix="/analytics", tags=["User Analytics"])
 
@@ -224,5 +225,48 @@ async def get_feedback_stats(
             "not_helpful_count": total - helpful,
             "helpful_percentage": round((helpful / total * 100), 1) if total > 0 else 0
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/strategy-scores")
+async def get_strategy_scores(
+    symbol: Optional[str] = None,
+    sort: str = "win_rate",
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get strategy scoreboard with win rate and P&L per prompt."""
+    try:
+        from sqlalchemy import select, desc
+
+        query = select(StrategyScore)
+        if symbol:
+            query = query.where(StrategyScore.symbol == symbol)
+
+        sort_col = getattr(StrategyScore, sort, StrategyScore.win_rate)
+        query = query.order_by(desc(sort_col)).limit(50)
+
+        result = await db.execute(query)
+        scores = result.scalars().all()
+
+        return [
+            {
+                "prompt_text": s.prompt_text,
+                "symbol": s.symbol,
+                "direction": s.direction,
+                "source": s.source,
+                "total_trades": s.total_trades,
+                "winning_trades": s.winning_trades,
+                "total_pnl": float(s.total_pnl) if s.total_pnl else 0,
+                "win_rate": float(s.win_rate) if s.win_rate else 0,
+                "avg_confidence": float(s.avg_confidence) if s.avg_confidence else None,
+                "avg_profit": float(s.avg_profit) if s.avg_profit else None,
+                "avg_loss": float(s.avg_loss) if s.avg_loss else None,
+                "profit_factor": float(s.profit_factor) if s.profit_factor else None,
+                "last_used": s.last_used.isoformat() if s.last_used else None,
+            }
+            for s in scores
+        ]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

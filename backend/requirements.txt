@@ -34,3 +34,6 @@ statsmodels>=0.14.0
 seaborn>=0.13.0
 tabulate>=0.10.0
 scikit-learn>=1.5.0
+
+# RAG / Vector Embeddings
+sentence-transformers>=3.0.0

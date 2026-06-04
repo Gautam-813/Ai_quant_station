@@ -26,6 +26,7 @@ from ..core.database import AsyncSessionLocal
 from ..core.providers import PROVIDERS, get_api_key as _get_api_key, get_base_url, resolve_api_key
 from ..core.utils import detect_trade_setup, get_robust_code_gen_prompt
 from ..models.ai_memory import AutopilotTrade, AutopilotSettings, UserPrompt
+from ..models.strategy_score import StrategyScore
 
 router = APIRouter(prefix="/autopilot", tags=["Autopilot"])
 
@@ -375,7 +376,41 @@ async def run_autopilot_cycle(user_id: int):
         state["stats"]["skipped_count"] += 1
         return
 
-    chosen = random.choice(prompt_pool)
+    # Score-weighted prompt selection (fallback to random if no scores)
+    chosen = None
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(StrategyScore).where(
+                    StrategyScore.symbol == symbol,
+                    StrategyScore.total_trades >= 3,
+                ).order_by(StrategyScore.win_rate.desc())
+            )
+            scores = result.scalars().all()
+
+        if scores:
+            weighted = []
+            for p in prompt_pool:
+                matching_scores = [
+                    s for s in scores
+                    if s.prompt_text == p["text"] and s.direction is None
+                ]
+                if matching_scores:
+                    s = matching_scores[0]
+                    weight = max(int(s.win_rate) - 30, 5) if s.total_trades >= 5 else 10
+                else:
+                    weight = 10
+                weighted.extend([p] * weight)
+
+            if weighted:
+                chosen = random.choice(weighted)
+
+    except Exception:
+        pass
+
+    if not chosen:
+        chosen = random.choice(prompt_pool)
+
     prompt_id_val = chosen["id"]
     prompt_text = chosen["text"]
     if chosen["is_custom"]:

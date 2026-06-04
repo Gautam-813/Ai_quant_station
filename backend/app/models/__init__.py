@@ -21,6 +21,8 @@ from .ai_memory import (
     AutopilotSettings,
 )
 from .historical_lab import HistoricalBacktest
+from .strategy_score import StrategyScore
+from .chat_embedding import ChatEmbedding
 
 __all__ = [
     "User",
@@ -38,4 +40,6 @@ __all__ = [
     "DefaultPromptStrategy",
     "AutopilotSettings",
     "HistoricalBacktest",
+    "StrategyScore",
+    "ChatEmbedding",
 ]
