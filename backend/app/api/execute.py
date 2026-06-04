@@ -122,6 +122,19 @@ def _strip_docstrings(code: str) -> str:
     return code
 
 
+def _code_has_dunder_access(code: str) -> bool:
+    """Check if code accesses any __dunder__ attributes — blocks Python object hierarchy escapes."""
+    import ast
+    try:
+        tree = ast.parse(code)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr.startswith('__'):
+                return True
+        return False
+    except SyntaxError:
+        return True
+
+
 # ── Core Sandbox (Synchronous) ─────────────────────────────────────────────
 def _execute_sandbox_sync(
     code: str,
@@ -322,12 +335,21 @@ def _execute_sandbox_sync(
     except ImportError:
         traceback.print_exc()
 
+    # Security: reject code with __dunder__ attribute access (bypasses builtin restrictions)
+    stripped_code = _strip_docstrings(code)
+    if _code_has_dunder_access(stripped_code):
+        return {
+            "success": False,
+            "error": "Code contains restricted attribute access (__dunder__ patterns). Only user-defined variables and standard library calls are allowed.",
+            "output": "",
+        }
+
     # Output capture
     output = io.StringIO()
 
     try:
         with contextlib.redirect_stdout(output):
-            exec(_strip_docstrings(code), safe_globals)
+            exec(stripped_code, safe_globals)
 
         output_text = output.getvalue()
         charts = safe_globals.get('_charts', [])
