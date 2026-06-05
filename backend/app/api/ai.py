@@ -690,35 +690,27 @@ Last 10 candles:
 
         # Common rules appended to all personas
         system_parts.append("")
-        system_parts.append(get_robust_code_gen_prompt(base_instructions="""
-GENERAL RULES:
-1. Analyze only based on the provided market data. Never use local system time.
-2. For position management (analyzing open positions), use:
-```json
-{"action": "MODIFY_SLTP", "ticket": 123456, "new_sl": 2345.50, "new_tp": 2370.00, "reasoning": "Trail SL to lock profit"}
+        system_parts.append("""CRITICAL CODE EXECUTION RULES:
+1. Write DIRECT executable Python statements — NOT a function definition. The sandbox runs your code via exec() and does NOT call any function.
+2. DO NOT write "def calculate_signals(df):" — write statements that use the existing 'df' variable directly.
+3. Correct: ```python
+import ta
+atr = ta.volatility.average_true_range(df['high'], df['low'], df['close'], window=14)
+print(f"ATR(14): {atr.iloc[-1]:.2f}")
+show_chart(atr.dropna().values, "ATR(14)")
 ```
-Available actions: CLOSE_POSITION, MODIFY_SL, MODIFY_TP, MODIFY_SLTP, ADD_TO_POSITION
-
-3. For visualizing numeric series or analysis results, use:
-```json
-{"action": "SHOW_CHART", "title": "RSI (14)", "data": [45.2, 48.5, 52.1, 50.4, 49.8], "color": "#22c55e"}
+4. Incorrect (will produce NO output): ```python
+def calculate_signals(df): ...
 ```
-OR use show_chart(data, title) within your Python code block.
 
-4. For displaying tables, use show_table(df, title) within your Python code block.
-
-        5. Never guarantee profits — always mention risk. If unsure, say so rather than guessing.
-
-6. CRITICAL — DO NOT crash on IndexError: NEVER use hardcoded integer indices like df.iloc[13] or df.values[13]. Always use df.iloc[-1] (last row), df.iloc[-min(N, len(df)):] (last N rows safely), or df.tail(N). After any resample(), dropna(), or .loc[] slicing, always verify len(df) >= required minimum before accessing elements. Print the actual row count with print(f"DF rows: {len(df)}") to help debugging.
-
-7. Indicator calculations: Use the 'ta' library. For ATR: ta.volatility.average_true_range(high, low, close, window=14). For RSI: ta.momentum.rsi(close, window=14). For moving averages: ta.trend.sma_indicator(close, window=20), ta.trend.ema_indicator(close, window=50). Always check the result has enough non-NaN values with .dropna() before printing.
-
-8. CRITICAL — You MUST include a ```python code block with EVERY response. NEVER describe what code would do. ALWAYS execute real calculations and print real numbers. The Python sandbox WILL run your code — use it. Do NOT write text like "When the block runs it will print...". Instead, write the code block that actually runs and let it produce the output.
-
-9. Calculation-first format for indicator requests: Begin with a ```python block that: (a) calculates the indicator on the actual df, (b) prints the current value with print(f"ATR(14): {val:.2f}"), (c) shows a chart with show_chart(). After the code block, explain the result in text using the REAL printed values, not placeholders.
-
-10. Never make up numbers. If the code execution fails, explain honestly: "The calculation failed — here is the data overview instead" and show relevant raw statistics from df.describe().
-"""))
+- Analyze only based on the provided market data. Never use local system time.
+- Never guarantee profits — always mention risk.
+- NEVER use hardcoded integer indices like df.iloc[13]. Use df.iloc[-1] or df.tail(N) instead.
+- After resample() or dropna(), check len(df) before accessing elements.
+- Use 'ta' library: ta.volatility.average_true_range(), ta.momentum.rsi(), ta.trend.sma_indicator(), ta.trend.ema_indicator().
+- Always include a ```python block that executes real calculations and prints real numbers. Show result with print() and optionally show_chart().
+- If the data timeframe is 1h candles, you CANNOT resample it to 1m — that would create fake data. Only work with the timeframe actually provided.
+""")
 
         # Add market data if available (like Streamlit - include full data samples)
         if market_context:
