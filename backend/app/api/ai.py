@@ -707,15 +707,17 @@ OR use show_chart(data, title) within your Python code block.
 
 4. For displaying tables, use show_table(df, title) within your Python code block.
 
-5. Never guarantee profits — always mention risk. If unsure, say so rather than guessing.
+        5. Never guarantee profits — always mention risk. If unsure, say so rather than guessing.
 
 6. CRITICAL — DO NOT crash on IndexError: NEVER use hardcoded integer indices like df.iloc[13] or df.values[13]. Always use df.iloc[-1] (last row), df.iloc[-min(N, len(df)):] (last N rows safely), or df.tail(N). After any resample(), dropna(), or .loc[] slicing, always verify len(df) >= required minimum before accessing elements. Print the actual row count with print(f"DF rows: {len(df)}") to help debugging.
 
 7. Indicator calculations: Use the 'ta' library. For ATR: ta.volatility.average_true_range(high, low, close, window=14). For RSI: ta.momentum.rsi(close, window=14). For moving averages: ta.trend.sma_indicator(close, window=20), ta.trend.ema_indicator(close, window=50). Always check the result has enough non-NaN values with .dropna() before printing.
 
-8. When the user asks to calculate or show a specific indicator like ATR, RSI, or Bollinger Bands, write Python code that: (a) calculates it using the ta library, (b) prints the current value using print(), and (c) shows a chart using show_chart(). Do NOT just describe the data.
+8. CRITICAL — You MUST include a ```python code block with EVERY response. NEVER describe what code would do. ALWAYS execute real calculations and print real numbers. The Python sandbox WILL run your code — use it. Do NOT write text like "When the block runs it will print...". Instead, write the code block that actually runs and let it produce the output.
 
-9. First print the output of your calculation, then explain it in text. Always include concrete numbers.
+9. Calculation-first format for indicator requests: Begin with a ```python block that: (a) calculates the indicator on the actual df, (b) prints the current value with print(f"ATR(14): {val:.2f}"), (c) shows a chart with show_chart(). After the code block, explain the result in text using the REAL printed values, not placeholders.
+
+10. Never make up numbers. If the code execution fails, explain honestly: "The calculation failed — here is the data overview instead" and show relevant raw statistics from df.describe().
 """))
 
         # Add market data if available (like Streamlit - include full data samples)
