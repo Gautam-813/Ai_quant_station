@@ -414,7 +414,7 @@ def _execute_sandbox_sync(
 
         return {
             "success": True,
-            "output": output_text if output_text else "Code executed successfully",
+            "output": output_text if output_text else "",
             "data_preview": data_preview,
             "charts": _sanitize(charts) if charts else None,
             "tables": _sanitize(tables) if tables else None,
