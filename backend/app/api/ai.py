@@ -659,7 +659,7 @@ Last 10 candles:
                 logger.warning(f"Memory fetch error: {e}")
 
         # RAG context: semantically similar past analyses with performance data
-        if chat_req.symbol and any(m.get("role") == "user" for m in chat_req.messages):
+        if chat_req.symbol and any(m.role == "user" for m in chat_req.messages):
             try:
                 last_user_msg = next(
                     (m.content for m in reversed(chat_req.messages) if m.role == "user"),
