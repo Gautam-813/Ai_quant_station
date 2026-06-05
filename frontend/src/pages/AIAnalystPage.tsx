@@ -87,6 +87,7 @@ export default function AIAnalystPage() {
   const setLoadedData = useAIAnalystStore((s) => s.setLoadedData)
   const liveMode = useAIAnalystStore((s) => s.liveMode)
   const setLiveMode = useAIAnalystStore((s) => s.setLiveMode)
+  const clearMessages = useAIAnalystStore((s) => s.clearMessages)
   const feedbackSet = useAIAnalystStore((s) => s.feedbackSet)
   const addFeedback = useAIAnalystStore((s) => s.addFeedback)
 
@@ -593,6 +594,21 @@ export default function AIAnalystPage() {
                     <SelectItem value="scalper">Scalper</SelectItem>
                   </SelectContent>
                 </Select>
+              </div>
+
+              <div className="border-l pl-4">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    if (messages.length === 0) return
+                    if (window.confirm('Clear all chat messages?')) {
+                      clearMessages()
+                    }
+                  }}
+                >
+                  Clear Chat
+                </Button>
               </div>
               
               <div className="flex items-center gap-2 border-l pl-4">
