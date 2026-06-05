@@ -708,6 +708,14 @@ OR use show_chart(data, title) within your Python code block.
 4. For displaying tables, use show_table(df, title) within your Python code block.
 
 5. Never guarantee profits — always mention risk. If unsure, say so rather than guessing.
+
+6. CRITICAL — DO NOT crash on IndexError: NEVER use hardcoded integer indices like df.iloc[13] or df.values[13]. Always use df.iloc[-1] (last row), df.iloc[-min(N, len(df)):] (last N rows safely), or df.tail(N). After any resample(), dropna(), or .loc[] slicing, always verify len(df) >= required minimum before accessing elements. Print the actual row count with print(f"DF rows: {len(df)}") to help debugging.
+
+7. Indicator calculations: Use the 'ta' library. For ATR: ta.volatility.average_true_range(high, low, close, window=14). For RSI: ta.momentum.rsi(close, window=14). For moving averages: ta.trend.sma_indicator(close, window=20), ta.trend.ema_indicator(close, window=50). Always check the result has enough non-NaN values with .dropna() before printing.
+
+8. When the user asks to calculate or show a specific indicator like ATR, RSI, or Bollinger Bands, write Python code that: (a) calculates it using the ta library, (b) prints the current value using print(), and (c) shows a chart using show_chart(). Do NOT just describe the data.
+
+9. First print the output of your calculation, then explain it in text. Always include concrete numbers.
 """))
 
         # Add market data if available (like Streamlit - include full data samples)
@@ -725,7 +733,7 @@ OR use show_chart(data, title) within your Python code block.
             system_parts.append(f"TOTAL_CANDLES_IN_DF: {total_candles}")
             system_parts.append(f"LATEST_SAMPLES: {', '.join(samples)}")
             system_parts.append("\nNote: The 'df' variable in the Python environment contains ALL these candles. Use it for your calculations.")
-            system_parts.append(f"\nNote on timeframes: 'df' contains raw {chat_req.timeframe or '1m'} data. To analyze higher timeframes, resample in your Python code using pandas: df.resample('1H').agg({{'open':'first','high':'max','low':'min','close':'last'}}).dropna(). Available aliases: '1T'=1min, '5T'=5min, '15T'=15min, '30T'=30min, '1H'=1h, '4H'=4h, '1D'=1d. You can also compute multi-TF indicators by resampling to each TF and merging.")
+            system_parts.append(f"\nNote on timeframes: 'df' contains raw {chat_req.timeframe or '1m'} data. To analyze higher timeframes, resample in your Python code using pandas: df.resample('1H').agg({{'open':'first','high':'max','low':'min','close':'last'}}).dropna(). Available aliases: '1T'=1min, '5T'=5min, '15T'=15min, '30T'=30min, '1H'=1h, '4H'=4h, '1D'=1d. You can also compute multi-TF indicators by resampling to each TF and merging. WARNING: After resample().dropna(), check len(df) before accessing elements — resampling reduces row count significantly.")
 
         # Add current session context (recent conversation from database)
         if user_memory_context:
