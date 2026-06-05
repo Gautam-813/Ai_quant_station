@@ -85,6 +85,18 @@ PROVIDERS: Dict[str, Dict[str, Any]] = {
         "needs_nvapi_prefix": False,
         "models": ["mistral-large-latest", "mistral-small-latest", "open-mistral-nemo"],
     },
+    "anthropic": {
+        "name": "Anthropic Claude",
+        "env_key": "ANTHROPIC_API_KEY",
+        "base_url": "https://api.anthropic.com/v1",
+        "needs_nvapi_prefix": False,
+        "models": [
+            "claude-sonnet-4-20250514",
+            "claude-3-5-sonnet-20241022",
+            "claude-3-5-haiku-20241022",
+            "claude-opus-4-20250514",
+        ],
+    },
 }
 
 

@@ -75,6 +75,7 @@ Optional:
 | `OPEN_ROUTER_API_KEY` | — | OpenRouter API key |
 | `GEMINI_API_KEY` | — | Google Gemini API key |
 | `CEREBRAS_API_KEY` | — | Cerebras API key |
+| `ANTHROPIC_API_KEY` | — | Anthropic Claude API key |
 | `MT5_API_TOKEN` | — | MT5 Connector auth token |
 | `MT5_CONNECTOR_URL` | — | External MT5 connector URL |
 | `MT5_USE_EXTERNAL_CONNECTOR` | False | Use external MT5 connector |

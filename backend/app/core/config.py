@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     GITHUB_API_KEY: str = ""
     CEREBRAS_API_KEY: str = ""
     MISTRAL_API_KEY: str = ""
+    ANTHROPIC_API_KEY: str = ""
 
     # CORS
     CORS_ORIGINS: str = "http://localhost:5173,http://localhost:3000"
