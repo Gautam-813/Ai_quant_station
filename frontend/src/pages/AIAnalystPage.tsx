@@ -83,6 +83,7 @@ export default function AIAnalystPage() {
   const dataPeriod = useAIAnalystStore((s) => s.dataPeriod)
   const setDataPeriod = useAIAnalystStore((s) => s.setDataPeriod)
   const timeframe = useAIAnalystStore((s) => s.timeframe)
+  const setTimeframe = useAIAnalystStore((s) => s.setTimeframe)
   const loadedData = useAIAnalystStore((s) => s.loadedData)
   const setLoadedData = useAIAnalystStore((s) => s.setLoadedData)
   const liveMode = useAIAnalystStore((s) => s.liveMode)
@@ -334,7 +335,7 @@ export default function AIAnalystPage() {
       } else if (loadData === 'mt5') {
         const res = await axios.post('/api/mt5/data/latest', {
           symbol: getSymbolValue(),
-          timeframe: '1m',
+          timeframe: timeframe,
           count: candleCount
         })
         if (res.data?.success && res.data.data?.length > 0) {
@@ -423,7 +424,7 @@ export default function AIAnalystPage() {
           setDataLoading(true)
           const res = await axios.post('/api/mt5/data/latest', {
             symbol: getSymbolValue(),
-            timeframe: '1m',
+            timeframe: timeframe,
             count: required
           })
           if (res.data?.success && res.data.data?.length > 0) {
@@ -666,6 +667,23 @@ export default function AIAnalystPage() {
                           <SelectItem value="1w">1W</SelectItem>
                           <SelectItem value="1mo">1M</SelectItem>
                           <SelectItem value="3mo">3M</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    )}
+                    {loadData === 'mt5' && (
+                      <Select value={timeframe} onValueChange={(v) => { setTimeframe(v); setCandleData([]); setLoadedData(null) }}>
+                        <SelectTrigger className="w-20 h-8">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="1m">M1</SelectItem>
+                          <SelectItem value="5m">M5</SelectItem>
+                          <SelectItem value="15m">M15</SelectItem>
+                          <SelectItem value="30m">M30</SelectItem>
+                          <SelectItem value="1h">H1</SelectItem>
+                          <SelectItem value="4h">H4</SelectItem>
+                          <SelectItem value="1d">D1</SelectItem>
+                          <SelectItem value="1w">W1</SelectItem>
                         </SelectContent>
                       </Select>
                     )}
