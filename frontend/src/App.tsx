@@ -17,6 +17,7 @@ import SettingsPage from '@/pages/SettingsPage'
 import AutopilotPage from '@/pages/AutopilotPage'
 import UserManagementPage from '@/pages/UserManagementPage'
 import BacktestPage from '@/pages/BacktestPage'
+import ReportsPage from '@/pages/ReportsPage'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated } = useAuthStore()
@@ -51,6 +52,7 @@ function App() {
           <Route path="settings" element={<SettingsPage />} />
           <Route path="autopilot" element={<AutopilotPage />} />
           <Route path="backtest" element={<BacktestPage />} />
+          <Route path="reports" element={<ReportsPage />} />
           <Route path="users" element={<UserManagementPage />} />
         </Route>
       </Routes>

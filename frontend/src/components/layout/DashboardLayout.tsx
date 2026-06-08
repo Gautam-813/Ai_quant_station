@@ -4,7 +4,7 @@ import { useAuthStore } from '@/store/authStore'
 import { Button } from '@/components/ui/button'
 import {
   LayoutDashboard, Terminal, BrainCircuit, History, Settings,
-  LogOut, Zap, Users, BarChart3, FlaskConical, Menu, X
+  LogOut, Zap, Users, BarChart3, FlaskConical, Menu, X, FileText
 } from 'lucide-react'
 import { cn } from '@/utils/utils'
 
@@ -15,6 +15,7 @@ const navItems = [
   { to: '/historical-lab', icon: BarChart3, label: 'Historical Lab' },
   { to: '/backtest', icon: FlaskConical, label: 'Backtesting' },
   { to: '/autopilot', icon: Zap, label: 'Autopilot' },
+  { to: '/reports', icon: FileText, label: 'Reports' },
   { to: '/history', icon: History, label: 'History' },
   { to: '/settings', icon: Settings, label: 'Settings' },
   { to: '/users', icon: Users, label: 'Users', adminOnly: true },
