@@ -45,7 +45,6 @@ from ..core.providers import PROVIDERS, get_api_key as _get_api_key, get_base_ur
 from ..models.user import UserApiKey
 from ..core.encryption import encrypt_api_key
 from ..core.rag_service import build_rag_context, generate_embedding
-from ..core.memory_service import update_memory_from_chat, get_long_term_context, update_user_preferences_async
 
 router = APIRouter(prefix="/ai", tags=["AI"])
 
@@ -671,16 +670,6 @@ Last 10 candles:
             except Exception as e:
                 logger.warning(f"RAG context build error: {e}")
 
-        # Long-term memory: knowledge graph + user profile
-        long_term_memory_context = ""
-        try:
-            long_term_memory_context = await get_long_term_context(
-                current_user["id"],
-                symbol=chat_req.symbol,
-            )
-        except Exception as e:
-            logger.warning(f"Long-term memory build error: {e}")
-
         # Determine actual candle count for dynamic persona prompt
         if candle_data_for_ai:
             actual_count = len(candle_data_for_ai)
@@ -752,10 +741,6 @@ def calculate_signals(df): ...
         if rag_context:
             system_parts.append(f"\n[RELEVANT PAST PERFORMANCE:\n{rag_context}\n]")
             system_parts.append("\nNote: The above shows past analyses similar to the current query, weighted by profit outcome and user feedback. Use this track record to inform your analysis — repeat what worked, avoid what didn't.")
-
-        # Add long-term memory (knowledge graph + user profile)
-        if long_term_memory_context:
-            system_parts.append(f"\n{long_term_memory_context}")
 
         system_prompt = "\n".join(system_parts)
         messages.append({"role": "system", "content": system_prompt})
@@ -980,29 +965,6 @@ def calculate_signals(df): ...
                 try:
                     asyncio.create_task(
                         generate_embedding(saved_chat_memory_id, assistant_message)
-                    )
-                except Exception:
-                    pass
-
-                # Fire-and-forget: update long-term memory (knowledge graph)
-                try:
-                    asyncio.create_task(
-                        update_memory_from_chat(
-                            current_user["id"],
-                            chat_req.messages[-1].content if chat_req.messages else "",
-                            assistant_message,
-                            symbol=chat_req.symbol,
-                            timeframe=chat_req.timeframe,
-                        )
-                    )
-                    asyncio.create_task(
-                        update_user_preferences_async(
-                            current_user["id"],
-                            symbol=chat_req.symbol,
-                            timeframe=chat_req.timeframe,
-                            provider=chat_req.provider,
-                            model=chat_req.model,
-                        )
                     )
                 except Exception:
                     pass
