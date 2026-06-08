@@ -95,7 +95,8 @@ MANDATORY RULES:
 6. ERROR HANDLING: If an error occurs, you MUST print a structured JSON error object to stdout: `print(json.dumps({{"status": "failed", "error": "description"}}))`.
 7. SCHEMA: Ensure output adheres to expected formats.
 8. PRECISION: Handle NaN values explicitly using .fillna() or .dropna().
-9. MEMORY: You MUST slice the DataFrame to the minimum necessary date range before any resampling or heavy calculations. If analyzing a large timeframe, work on a copy: `df_subset = df.loc[start:end].copy()`.
+9. SAFETY: Always check `if len(df) == 0:` before accessing `.iloc[-1]` or similar index operations to avoid IndexError on empty DataFrames. If the DataFrame is empty after filtering, return an empty signal series.
+10. MEMORY: You MUST slice the DataFrame to the minimum necessary date range before any resampling or heavy calculations. If analyzing a large timeframe, work on a copy: `df_subset = df.loc[start:end].copy()`.
 
 Output ONLY the code block enclosed in ```python ... ```, no explanations.
 """

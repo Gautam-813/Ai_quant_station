@@ -884,8 +884,7 @@ def calculate_signals(df): ...
                 exec_attempt += 1
                 
                 if exec_attempt > MAX_EXEC_RETRIES:
-                    execution_output = f"Error executing code after {exec_attempt} attempts: {error_msg}"
-                    logger.error(f"[AI Chat] Code execution failed permanently.")
+                    logger.error(f"[AI Chat] Code execution failed permanently: {error_msg}")
                     break
                 
                 logger.warning(f"[AI Chat] Code attempt {exec_attempt} failed: {error_msg}. Retrying self-correction...")
@@ -917,7 +916,6 @@ def calculate_signals(df): ...
                     python_match = re.search(r"```python\s*(.*?)(?:```|$)", assistant_message, re.S)
                 except Exception as e:
                     logger.error(f"[AI Chat] Self-correction request failed: {str(e)}")
-                    execution_output = f"Error during self-correction: {str(e)}"
                     break
 
         # Combine data previews
