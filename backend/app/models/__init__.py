@@ -23,6 +23,8 @@ from .ai_memory import (
 from .historical_lab import HistoricalBacktest
 from .strategy_score import StrategyScore
 from .chat_embedding import ChatEmbedding
+from .memory_node import MemoryNode
+from .memory_edge import MemoryEdge
 
 __all__ = [
     "User",
@@ -42,4 +44,6 @@ __all__ = [
     "HistoricalBacktest",
     "StrategyScore",
     "ChatEmbedding",
+    "MemoryNode",
+    "MemoryEdge",
 ]
