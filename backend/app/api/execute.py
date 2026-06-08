@@ -8,7 +8,7 @@ Multi-user isolation:
   - Each subprocess exits after one execution (no state persistence risk)
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 import io
@@ -29,6 +29,7 @@ import uuid
 import re
 
 from ..core.utils import sanitize_for_json as _sanitize
+from ..core.rate_limit import limiter
 
 router = APIRouter(prefix="/execute", tags=["AI"])
 
@@ -557,16 +558,17 @@ async def run_python_code(
 
 # ── API Endpoint ───────────────────────────────────────────────────────────
 @router.post("/code", response_model=ExecuteCodeResponse)
-async def execute_code(request: ExecuteCodeRequest, current_user: dict = Depends(get_current_user)):
+@limiter.limit("20/minute")
+async def execute_code(request: Request, exec_request: ExecuteCodeRequest, current_user: dict = Depends(get_current_user)):
     """Execute Python code with market data (df) and common libraries."""
     user_id = current_user.get("user_id", 0)
     try:
         result = await asyncio.wait_for(
             run_python_code(
-                request.code,
-                request.market_data,
-                request.symbol,
-                request.session_id,
+                exec_request.code,
+                exec_request.market_data,
+                exec_request.symbol,
+                exec_request.session_id,
                 user_id=user_id,
             ),
             timeout=60.0,

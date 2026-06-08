@@ -483,7 +483,11 @@ export default function AIAnalystPage() {
       addMessage(assistantMessage)
     } catch (error: any) {
       console.error('Chat error:', error)
-      const errorMsg = error.response?.data?.detail || error.message || 'An error occurred'
+      const status = error.response?.status
+      let errorMsg = error.response?.data?.detail || error.message || 'An error occurred'
+      if (status === 429) {
+        errorMsg = 'AI request limit reached. Please wait a moment before sending another message.'
+      }
       addMessage({ 
         role: 'assistant', 
         content: `Error: ${errorMsg}` 

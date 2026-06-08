@@ -1,12 +1,18 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+from slowapi.errors import RateLimitExceeded
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.middleware import SlowAPIMiddleware
 import os
 import logging
 import logging.config
 import json
 from pathlib import Path
+
+from .core.rate_limit import limiter
 
 from .core.config import settings
 from .core.database import AsyncSessionLocal
@@ -60,6 +66,35 @@ app = FastAPI(
     description="Professional Quantitative Trading Platform API",
     version="2.0.0"
 )
+
+# ── Rate Limiting Setup ──────────────────────────────────────────────────────
+
+# Middleware that decodes JWT and sets request.state.user for rate limit key
+from .core.security import decode_token
+
+
+class UserIdentityMiddleware(BaseHTTPMiddleware):
+    """Extract authenticated user from JWT and attach to request.state for rate limiting."""
+    async def dispatch(self, request: Request, call_next):
+        request.state.user = None
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            try:
+                payload = await decode_token(auth[7:])
+                if payload:
+                    request.state.user = {
+                        "id": payload.get("user_id"),
+                        "username": payload.get("sub"),
+                        "role": payload.get("role"),
+                    }
+            except Exception:
+                pass
+        response = await call_next(request)
+        return response
+
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
 async def create_default_users():
@@ -160,7 +195,8 @@ async def shutdown_event():
     shutdown_scheduler()
     await shutdown_http_client()
 
-# CORS Middleware (still needed for development when frontend runs separately)
+# Middleware chain: UserIdentity (innermost) → CORS → SlowAPI (outermost)
+app.add_middleware(UserIdentityMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
@@ -168,6 +204,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(SlowAPIMiddleware)
 
 # Include API routers
 app.include_router(auth.router, prefix="/api")

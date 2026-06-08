@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Body
+from fastapi import APIRouter, Depends, HTTPException, Body, Request
 from typing import Optional, List
 import json
 import re
@@ -45,6 +45,7 @@ from ..core.providers import PROVIDERS, get_api_key as _get_api_key, get_base_ur
 from ..models.user import UserApiKey
 from ..core.encryption import encrypt_api_key
 from ..core.rag_service import build_rag_context, generate_embedding
+from ..core.rate_limit import limiter
 
 router = APIRouter(prefix="/ai", tags=["AI"])
 
@@ -465,7 +466,8 @@ async def test_connection(
 
 
 @router.post("/chat", response_model=ChatResponse)
-async def chat(chat_req: ChatRequest, current_user: dict = Depends(get_current_user)):
+@limiter.limit("10/minute")
+async def chat(request: Request, chat_req: ChatRequest, current_user: dict = Depends(get_current_user)):
     if chat_req.provider not in PROVIDERS:
         raise HTTPException(status_code=400, detail="Invalid provider")
     api_key = await resolve_api_key(chat_req.provider, settings, current_user["id"], AsyncSessionLocal)
