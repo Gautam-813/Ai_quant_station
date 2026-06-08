@@ -293,7 +293,9 @@ export default function AIAnalystPage() {
     return symbol
   }
 
-  const detectRequiredCandles = (query: string): number => {
+  const MAX_CONVERSATION_TURNS = 20  // Sliding window: only last N turns sent to AI
+
+const detectRequiredCandles = (query: string): number => {
     const lower = query.toLowerCase()
     if (/daily|weekly|d1|w1|1d\b|previous\s*day|yesterday/i.test(lower)) return 30000
     if (/4h\b|4[-\s]?hour|four\s*hour|h4\b|4hrs?\b/i.test(lower)) return 10000
@@ -450,7 +452,9 @@ export default function AIAnalystPage() {
         }
       }
 
-      const allMessages = [...messages, userMessage].map(m => ({
+      // Sliding window: only last N turns sent to AI (store keeps full history for display)
+      const recentMessages = [...messages, userMessage].slice(-MAX_CONVERSATION_TURNS)
+      const allMessages = recentMessages.map(m => ({
         role: m.role,
         content: m.content
       }))
