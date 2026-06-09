@@ -45,6 +45,7 @@ interface JournalTrade {
 
 interface JournalSummary {
   total_trades: number; autopilot_trades: number; manual_trades: number; mt5_trades: number
+  mt5_available: boolean
   wins: number; losses: number; pnl: number
   best_trade: { symbol: string; direction: string; profit: number; source: string } | null
   worst_trade: { symbol: string; direction: string; profit: number; source: string } | null
@@ -457,7 +458,7 @@ export default function ReportsPage() {
                   <CardContent className="px-3 pb-3 sm:px-4 sm:pb-4">
                     <div className="text-xl sm:text-2xl font-bold">{journalData.summary.total_trades}</div>
                     <div className="text-xs text-muted-foreground mt-0.5">
-                      {journalData.summary.autopilot_trades} auto / {journalData.summary.manual_trades} manual{journalData.summary.mt5_trades > 0 ? ` / ${journalData.summary.mt5_trades} mt5` : ''}
+                      from MT5 connector{!journalData.summary.mt5_available ? ' (DB fallback)' : ''}
                     </div>
                   </CardContent>
                 </Card>
