@@ -76,23 +76,26 @@ async def get_reports(current_user: dict = Depends(get_current_user)):
         )
         today_trades = today_result.scalars().all()
 
-        wins = sum(1 for t in today_trades if (t.profit or 0) > 0)
-        losses = sum(1 for t in today_trades if (t.profit or 0) <= 0)
-        pnl = sum(t.profit or 0 for t in today_trades)
+        closed_trades = [t for t in today_trades if t.profit is not None]
+        wins = sum(1 for t in closed_trades if t.profit > 0)
+        losses = sum(1 for t in closed_trades if t.profit < 0)
+        pnl = sum(t.profit or 0 for t in closed_trades)
 
         best_prompt = ""
-        if today_trades:
+        if closed_trades:
             prompt_pnl: dict[int, float] = {}
-            for t in today_trades:
+            for t in closed_trades:
                 prompt_pnl[t.prompt_number] = prompt_pnl.get(t.prompt_number, 0) + (t.profit or 0)
-            best_pn = max(prompt_pnl, key=prompt_pnl.get)
-            best_prompt = f"#{best_pn}" if best_pn > 0 else f"Custom-{abs(best_pn)}"
+            if prompt_pnl:
+                best_pn = max(prompt_pnl, key=prompt_pnl.get)
+                best_prompt = f"#{best_pn}" if best_pn > 0 else f"Custom-{abs(best_pn)}"
 
+        total_closed = len(closed_trades)
         today_summary = TodaySummary(
-            trades=len(today_trades),
+            trades=total_closed,
             wins=wins,
             losses=losses,
-            win_rate=round(wins / len(today_trades) * 100, 1) if today_trades else 0.0,
+            win_rate=round(wins / total_closed * 100, 1) if total_closed > 0 else 0.0,
             pnl=round(pnl, 2),
             best_prompt=best_prompt,
         )
@@ -309,8 +312,29 @@ async def get_journal(
     mt5_trades: list[dict] = []
     mt5_available = False
     try:
+        # Resolve MT5 connector URL: try .env first, then user's autopilot settings
         mt5_url = settings.MT5_CONNECTOR_URL
+        if not mt5_url:
+            from app.models.ai_memory import AutopilotSettings
+            async with AsyncSessionLocal() as db2:
+                s_result = await db2.execute(
+                    select(AutopilotSettings).where(AutopilotSettings.user_id == user_id)
+                )
+                s_obj = s_result.scalar_one_or_none()
+                if s_obj and s_obj.mt5_connector_url:
+                    mt5_url = s_obj.mt5_connector_url
         if mt5_url:
+            mt5_base = mt5_url.rstrip("/")
+            hours = int((day_end - day_start).total_seconds() / 3600) + 1
+            params: dict = {"hours": max(hours, 24)}
+            if settings.MT5_API_TOKEN:
+                params["authorization"] = settings.MT5_API_TOKEN
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(
+                    f"{mt5_base}/history",
+                    params=params,
+                    timeout=15,
+                )
             mt5_base = mt5_url.rstrip("/")
             hours = int((day_end - day_start).total_seconds() / 3600) + 1
             async with httpx.AsyncClient(timeout=15) as client:

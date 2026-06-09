@@ -401,7 +401,7 @@ export default function ReportsPage() {
                               {(t.profit ?? 0) >= 0 ? '+' : ''}${(t.profit ?? 0).toFixed(2)}
                             </td>
                             <td className="px-3 sm:px-4 py-2 text-center text-muted-foreground text-xs">
-                              {t.confidence ? `${(t.confidence * 100).toFixed(0)}%` : '-'}
+                              {t.confidence != null ? `${Math.round(t.confidence)}%` : '-'}
                             </td>
                           </tr>
                         ))}
