@@ -189,12 +189,14 @@ class AutopilotTrade(Base):
     ai_response = Column(Text, nullable=True)
     raw_thinking = Column(JSON, nullable=True)
 
+    cycle_number = Column(Integer, nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (
         Index("ix_autopilot_trades_user_executed", "user_id", "executed_at"),
         Index("ix_autopilot_trades_user_result", "user_id", "result"),
         Index("ix_autopilot_trades_user_prompt", "user_id", "prompt_number"),
+        Index("ix_autopilot_trades_user_cycle", "user_id", "cycle_number"),
     )
 
 

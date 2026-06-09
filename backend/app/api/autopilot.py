@@ -643,7 +643,7 @@ RULES:
                 symbol=symbol, direction=direction, order_type=order_type, entry_price=entry_price,
                 stop_loss=sl, take_profit=tp, lot_size=lot,
                 mt5_ticket=ticket, execution_price=exec_price, execution_status="executed",
-                reasoning=reasoning, confidence=confidence, ai_response=ai_response, raw_thinking=full_raw_response
+                reasoning=reasoning, confidence=confidence, ai_response=ai_response, raw_thinking=full_raw_response, cycle_number=state["stats"]["total_runs"]
             )
             db.add(trade)
             await db.commit()
