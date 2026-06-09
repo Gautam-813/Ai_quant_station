@@ -327,20 +327,14 @@ async def get_journal(
             mt5_base = mt5_url.rstrip("/")
             hours = int((day_end - day_start).total_seconds() / 3600) + 1
             params: dict = {"hours": max(hours, 24)}
+            headers: dict = {}
             if settings.MT5_API_TOKEN:
-                params["authorization"] = settings.MT5_API_TOKEN
+                headers["Authorization"] = f"Bearer {settings.MT5_API_TOKEN}"
             async with httpx.AsyncClient(timeout=15) as client:
                 resp = await client.get(
                     f"{mt5_base}/history",
                     params=params,
-                    timeout=15,
-                )
-            mt5_base = mt5_url.rstrip("/")
-            hours = int((day_end - day_start).total_seconds() / 3600) + 1
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.get(
-                    f"{mt5_base}/history",
-                    params={"hours": max(hours, 24)},
+                    headers=headers,
                     timeout=15,
                 )
                 if resp.status_code == 200:
