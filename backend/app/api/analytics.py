@@ -10,7 +10,7 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, text, case
 
-from ..core.database import get_db, AsyncSessionLocal
+from ..core.database import get_db
 from ..core.security import get_current_user
 from ..core.config import settings
 from ..models.strategy_score import StrategyScore
@@ -61,156 +61,191 @@ class ReportsResponse(BaseModel):
 
 @router.get("/reports")
 async def get_reports(current_user: dict = Depends(get_current_user)):
-    """Consolidated reports endpoint: today's summary, daily history, prompt stats, recent trades."""
-    user_id = current_user["id"]
-    
-    # Sync trade results before calculating reports
-    try:
-        from .autopilot import sync_trade_results
-        await sync_trade_results(user_id)
-    except Exception:
-        pass
-
+    """Consolidated reports — reads [AUTOPILOT] trades from MT5 connector.
+    No database queries — all data comes from the MT5 connector."""
     today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     thirty_days_ago = today_start - timedelta(days=30)
 
-    async with AsyncSessionLocal() as db:
-        from app.models.ai_memory import AutopilotTrade
+    trades: list[dict] = []
 
-        # ── Today's trades ──
-        today_result = await db.execute(
-            select(AutopilotTrade).where(
-                AutopilotTrade.user_id == user_id,
-                AutopilotTrade.executed_at >= today_start,
-            ).order_by(AutopilotTrade.executed_at.desc())
-        )
-        today_trades = today_result.scalars().all()
+    mt5_url = settings.MT5_CONNECTOR_URL
+    if mt5_url:
+        mt5_base = mt5_url.rstrip("/")
+        headers = {}
+        if settings.MT5_API_TOKEN:
+            headers["Authorization"] = f"Bearer {settings.MT5_API_TOKEN}"
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(
+                    f"{mt5_base}/history",
+                    params={"hours": 720},
+                    headers=headers,
+                    timeout=30,
+                )
+                if resp.status_code == 200:
+                    mt5_deals = resp.json().get("deals", [])
 
-        closed_trades = [t for t in today_trades if t.profit is not None]
-        wins = sum(1 for t in closed_trades if t.profit > 0)
-        losses = sum(1 for t in closed_trades if t.profit < 0)
-        pnl = sum(t.profit or 0 for t in closed_trades)
+                    autopilot_pids = {
+                        d.get("position_id")
+                        for d in mt5_deals
+                        if d.get("position_id") and (d.get("comment") or "").strip().startswith("[AUTOPILOT]")
+                    }
+                    auto_deals = [d for d in mt5_deals if d.get("position_id") in autopilot_pids]
 
-        best_prompt = ""
-        if closed_trades:
-            prompt_pnl: dict[int, float] = {}
-            for t in closed_trades:
-                prompt_pnl[t.prompt_number] = prompt_pnl.get(t.prompt_number, 0) + (t.profit or 0)
-            if prompt_pnl:
-                best_pn = max(prompt_pnl, key=prompt_pnl.get)
-                best_prompt = f"#{best_pn}" if best_pn > 0 else f"Custom-{abs(best_pn)}"
+                    pos_map: dict = {}
+                    for deal in auto_deals:
+                        pid = deal.get("position_id")
+                        if not pid:
+                            continue
+                        if pid not in pos_map:
+                            pos_map[pid] = {"open": None, "close": None}
+                        if deal.get("entry") == "OPEN":
+                            pos_map[pid]["open"] = deal
+                        else:
+                            pos_map[pid]["close"] = deal
 
-        total_closed = len(closed_trades)
-        today_summary = TodaySummary(
-            trades=total_closed,
-            wins=wins,
-            losses=losses,
-            win_rate=round(wins / total_closed * 100, 1) if total_closed > 0 else 0.0,
-            pnl=round(pnl, 2),
-            best_prompt=best_prompt,
-        )
+                    for pid, pair in pos_map.items():
+                        open_deal = pair["open"]
+                        close_deal = pair["close"]
+                        if not open_deal:
+                            continue
 
-        # ── Daily history (last 30 days) ──
-        daily_rows = await db.execute(
-            select(
-                func.date(AutopilotTrade.executed_at).label("date"),
-                func.count(AutopilotTrade.id).label("trades"),
-                func.sum(case((AutopilotTrade.profit > 0, 1), else_=0)).label("wins"),
-                func.sum(AutopilotTrade.profit).label("pnl"),
-            ).where(
-                AutopilotTrade.user_id == user_id,
-                AutopilotTrade.executed_at >= thirty_days_ago,
-            ).group_by(text("date"))
-            .order_by(text("date DESC"))
-        )
-        daily_map = {}
-        for r in daily_rows:
-            daily_map[str(r[0])] = {
-                "trades": r[1],
-                "wins": r[2] or 0,
-                "pnl": float(r[3] or 0),
-            }
+                        deal_time = open_deal.get("time", "")
+                        try:
+                            deal_dt = datetime.strptime(deal_time, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                        except (ValueError, TypeError):
+                            continue
+                        if deal_dt < thirty_days_ago:
+                            continue
 
-        daily_history = []
-        for i in range(29, -1, -1):
-            day = (today_start - timedelta(days=i)).strftime("%Y-%m-%d")
-            if day in daily_map:
-                d = daily_map[day]
-                w = d["wins"]
-                l = d["trades"] - w
-                daily_history.append(DailySummary(
-                    date=day,
-                    trades=d["trades"],
-                    wins=w,
-                    losses=l,
-                    win_rate=round(w / d["trades"] * 100, 1) if d["trades"] > 0 else 0.0,
-                    pnl=d["pnl"],
-                ))
-            else:
-                daily_history.append(DailySummary(date=day, trades=0, wins=0, losses=0, win_rate=0.0, pnl=0.0))
+                        direction = open_deal.get("direction", "")
+                        profit = close_deal.get("profit", 0) if close_deal else 0
+                        comment = open_deal.get("comment", "") or ""
+                        prompt_match = __import__("re").search(r"P(\d+)", comment)
+                        prompt_number = int(prompt_match.group(1)) if prompt_match else None
 
-        # ── Prompt stats ──
-        prompt_result = await db.execute(
-            select(AutopilotTrade).where(
-                AutopilotTrade.user_id == user_id,
-                AutopilotTrade.profit.isnot(None),
-            )
-        )
-        all_closed = prompt_result.scalars().all()
+                        close_comment = (close_deal.get("comment", "") or "").lower() if close_deal else ""
+                        if close_deal:
+                            if "sl" in close_comment:
+                                res_type = "SL_HIT"
+                            elif "tp" in close_comment:
+                                res_type = "TP_HIT"
+                            elif profit > 0:
+                                res_type = "PROFIT"
+                            else:
+                                res_type = "LOSS"
+                        else:
+                            res_type = "OPEN"
 
-        groups: dict[int, dict] = {}
-        for t in all_closed:
-            pn = t.prompt_number
-            if pn not in groups:
-                groups[pn] = {"prompt_number": pn, "prompt_text": t.prompt_text, "total_trades": 0, "wins": 0, "losses": 0, "total_profit": 0.0}
-            groups[pn]["total_trades"] += 1
-            groups[pn]["total_profit"] += t.profit or 0
-            if (t.profit or 0) > 0:
-                groups[pn]["wins"] += 1
-            else:
-                groups[pn]["losses"] += 1
+                        trades.append({
+                            "id": -pid,
+                            "prompt_number": prompt_number,
+                            "prompt_text": f"Prompt #{prompt_number}" if prompt_number else "Autopilot",
+                            "symbol": open_deal.get("symbol", ""),
+                            "direction": direction,
+                            "entry_price": open_deal.get("price"),
+                            "stop_loss": None,
+                            "take_profit": None,
+                            "lot_size": open_deal.get("volume", 0),
+                            "mt5_ticket": pid,
+                            "executed_at": open_deal.get("time", "").replace(" ", "T"),
+                            "result": res_type,
+                            "profit": float(profit) if profit else 0.0,
+                            "closed_at": close_deal.get("time", "").replace(" ", "T") if close_deal else None,
+                            "reasoning": comment,
+                            "confidence": None,
+                        })
+        except Exception:
+            pass
 
-        prompt_stats = []
-        for g in groups.values():
-            g["win_rate"] = round(g["wins"] / g["total_trades"] * 100, 1) if g["total_trades"] > 0 else 0.0
-            g["avg_profit"] = round(g["total_profit"] / g["total_trades"], 2) if g["total_trades"] > 0 else 0.0
-            g["total_profit"] = round(g["total_profit"], 2)
-            pn = g["prompt_number"]
-            g["display_name"] = f"Custom-{abs(pn)}" if pn < 0 else f"#{pn}"
-            prompt_stats.append(g)
+    # ── Today's summary ──
+    today_str = today_start.strftime("%Y-%m-%d")
+    today_trades = [t for t in trades if t["executed_at"][:10] == today_str]
+    closed_today = [t for t in today_trades if t["result"] != "OPEN"]
+    day_wins = sum(1 for t in closed_today if (t["profit"] or 0) > 0)
+    day_losses = sum(1 for t in closed_today if (t["profit"] or 0) <= 0)
+    day_pnl = sum(t["profit"] or 0 for t in closed_today)
 
-        prompt_stats.sort(key=lambda x: x["total_profit"], reverse=True)
+    best_prompt = ""
+    if closed_today:
+        prompt_pnl: dict[int, float] = {}
+        for t in closed_today:
+            pn = t["prompt_number"]
+            if pn:
+                prompt_pnl[pn] = prompt_pnl.get(pn, 0) + (t["profit"] or 0)
+        if prompt_pnl:
+            best_pn = max(prompt_pnl, key=prompt_pnl.get)
+            best_prompt = f"#{best_pn}" if best_pn > 0 else f"Custom-{abs(best_pn)}"
 
-        # ── Recent trades (last 50) ──
-        trades_result = await db.execute(
-            select(AutopilotTrade)
-            .where(AutopilotTrade.user_id == user_id)
-            .order_by(AutopilotTrade.executed_at.desc())
-            .limit(50)
-        )
-        recent_trades = trades_result.scalars().all()
+    today_summary = TodaySummary(
+        trades=len(closed_today),
+        wins=day_wins,
+        losses=day_losses,
+        win_rate=round(day_wins / len(closed_today) * 100, 1) if closed_today else 0.0,
+        pnl=round(day_pnl, 2),
+        best_prompt=best_prompt,
+    )
 
-        trades_list = [
-            {
-                "id": t.id,
-                "prompt_number": t.prompt_number,
-                "prompt_text": t.prompt_text,
-                "symbol": t.symbol,
-                "direction": t.direction,
-                "entry_price": t.entry_price,
-                "stop_loss": t.stop_loss,
-                "take_profit": t.take_profit,
-                "lot_size": t.lot_size,
-                "mt5_ticket": t.mt5_ticket,
-                "executed_at": t.executed_at.isoformat() if t.executed_at else "",
-                "result": t.result,
-                "profit": t.profit,
-                "closed_at": t.closed_at.isoformat() if t.closed_at else None,
-                "reasoning": t.reasoning,
-                "confidence": t.confidence,
-            }
-            for t in recent_trades
-        ]
+    # ── Daily history (last 30 days) ──
+    daily_map: dict[str, dict] = {}
+    for t in trades:
+        date_str = t["executed_at"][:10]
+        if date_str not in daily_map:
+            daily_map[date_str] = {"trades": 0, "wins": 0, "pnl": 0.0}
+        daily_map[date_str]["trades"] += 1
+        if t["result"] != "OPEN":
+            daily_map[date_str]["pnl"] += t["profit"] or 0
+            if (t["profit"] or 0) > 0:
+                daily_map[date_str]["wins"] += 1
+
+    daily_history = []
+    for i in range(29, -1, -1):
+        day = (today_start - timedelta(days=i)).strftime("%Y-%m-%d")
+        if day in daily_map:
+            d = daily_map[day]
+            w = d["wins"]
+            l = d["trades"] - w
+            daily_history.append(DailySummary(
+                date=day,
+                trades=d["trades"],
+                wins=w,
+                losses=l,
+                win_rate=round(w / d["trades"] * 100, 1) if d["trades"] > 0 else 0.0,
+                pnl=d["pnl"],
+            ))
+        else:
+            daily_history.append(DailySummary(date=day, trades=0, wins=0, losses=0, win_rate=0.0, pnl=0.0))
+
+    # ── Prompt stats ──
+    groups: dict[int, dict] = {}
+    for t in trades:
+        if t["result"] == "OPEN":
+            continue
+        pn = t["prompt_number"]
+        if pn is None:
+            continue
+        if pn not in groups:
+            groups[pn] = {"prompt_number": pn, "prompt_text": t["prompt_text"], "total_trades": 0, "wins": 0, "losses": 0, "total_profit": 0.0}
+        groups[pn]["total_trades"] += 1
+        groups[pn]["total_profit"] += t["profit"] or 0
+        if (t["profit"] or 0) > 0:
+            groups[pn]["wins"] += 1
+        else:
+            groups[pn]["losses"] += 1
+
+    prompt_stats = []
+    for g in groups.values():
+        g["win_rate"] = round(g["wins"] / g["total_trades"] * 100, 1) if g["total_trades"] > 0 else 0.0
+        g["avg_profit"] = round(g["total_profit"] / g["total_trades"], 2) if g["total_trades"] > 0 else 0.0
+        g["total_profit"] = round(g["total_profit"], 2)
+        pn = g["prompt_number"]
+        g["display_name"] = f"Custom-{abs(pn)}" if pn < 0 else f"#{pn}"
+        prompt_stats.append(g)
+    prompt_stats.sort(key=lambda x: x["total_profit"], reverse=True)
+
+    # ── Recent trades (last 50) ──
+    trades.sort(key=lambda x: x["executed_at"], reverse=True)
+    trades_list = trades[:50]
 
     return ReportsResponse(
         today=today_summary,
