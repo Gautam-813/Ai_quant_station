@@ -213,6 +213,7 @@ class JournalSummary(BaseModel):
     total_trades: int = 0
     autopilot_trades: int = 0
     manual_trades: int = 0
+    mt5_trades: int = 0
     wins: int = 0
     losses: int = 0
     pnl: float = 0.0
@@ -221,43 +222,51 @@ class JournalSummary(BaseModel):
 
 
 class JournalResponse(BaseModel):
-    date: str
+    from_date: str
+    to_date: str
     summary: JournalSummary
     trades: List[dict]
     page: int
     per_page: int
     has_next: bool
     has_prev: bool
-    prev_date: Optional[str] = None
-    next_date: Optional[str] = None
+    total_count: int
 
 
 @router.get("/journal")
 async def get_journal(
-    date: Optional[str] = None,
+    from_date: str,
+    to_date: Optional[str] = None,
     page: int = 1,
     per_page: int = 20,
     current_user: dict = Depends(get_current_user),
 ):
-    """Day-by-day trade journal with pagination, combining autopilot + manual trades."""
+    """Trade journal with date range, combining autopilot + manual + MT5 connector trades."""
     from app.models.ai_memory import AutopilotTrade, TradeRecord
 
     user_id = current_user["id"]
     per_page = min(per_page, 100)
 
-    if date:
-        try:
-            day = datetime.strptime(date, "%Y-%m-%d")
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
-    else:
-        day = datetime.now(timezone.utc)
+    # Parse dates with timezone awareness
+    try:
+        day_start = datetime.strptime(from_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid from_date format. Use YYYY-MM-DD")
 
-    day_start = day.replace(hour=0, minute=0, second=0, microsecond=0)
-    day_end = day_start + timedelta(days=1)
+    if to_date:
+        try:
+            day_end = datetime.strptime(to_date, "%Y-%m-%d").replace(tzinfo=timezone.utc) + timedelta(days=1)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid to_date format. Use YYYY-MM-DD")
+    else:
+        day_end = day_start + timedelta(days=1)
+
+    # ── Collect all trades ──
+    unified: list[dict] = []
+    seen_mt5_tickets: set[int] = set()
 
     async with AsyncSessionLocal() as db:
-        # Fetch autopilot trades for the day
+        # Autopilot trades
         auto_result = await db.execute(
             select(AutopilotTrade).where(
                 AutopilotTrade.user_id == user_id,
@@ -265,9 +274,32 @@ async def get_journal(
                 AutopilotTrade.executed_at < day_end,
             ).order_by(AutopilotTrade.executed_at.desc())
         )
-        auto_trades = auto_result.scalars().all()
+        for t in auto_result.scalars().all():
+            ticket = t.mt5_ticket
+            if ticket:
+                seen_mt5_tickets.add(ticket)
+            unified.append({
+                "id": t.id,
+                "source": "autopilot",
+                "symbol": t.symbol,
+                "direction": t.direction,
+                "entry_price": t.entry_price,
+                "exit_price": None,
+                "stop_loss": t.stop_loss,
+                "take_profit": t.take_profit,
+                "lot_size": t.lot_size,
+                "profit": t.profit,
+                "result": t.result,
+                "executed_at": t.executed_at.isoformat() if t.executed_at else "",
+                "closed_at": t.closed_at.isoformat() if t.closed_at else None,
+                "prompt_number": t.prompt_number,
+                "prompt_text": t.prompt_text,
+                "confidence": t.confidence,
+                "reasoning": t.reasoning,
+                "mt5_ticket": ticket,
+            })
 
-        # Fetch manual trades for the day
+        # Manual trades
         manual_result = await db.execute(
             select(TradeRecord).where(
                 TradeRecord.user_id == user_id,
@@ -275,71 +307,125 @@ async def get_journal(
                 TradeRecord.executed_at < day_end,
             ).order_by(TradeRecord.executed_at.desc())
         )
-        manual_trades = manual_result.scalars().all()
+        for t in manual_result.scalars().all():
+            ticket = t.mt5_ticket
+            if ticket:
+                seen_mt5_tickets.add(ticket)
+            unified.append({
+                "id": t.id,
+                "source": "manual",
+                "symbol": t.symbol,
+                "direction": t.direction,
+                "entry_price": t.entry_price,
+                "exit_price": t.exit_price,
+                "stop_loss": t.stop_loss,
+                "take_profit": t.take_profit,
+                "lot_size": t.volume,
+                "profit": t.profit_loss,
+                "result": "TP_HIT" if t.profit_loss and t.profit_loss > 0 else "SL_HIT" if t.profit_loss and t.profit_loss < 0 else t.status,
+                "executed_at": t.executed_at.isoformat() if t.executed_at else "",
+                "closed_at": t.closed_at.isoformat() if t.closed_at else None,
+                "prompt_number": None,
+                "prompt_text": "Manual trade",
+                "confidence": None,
+                "reasoning": None,
+                "mt5_ticket": ticket,
+            })
 
-    # Unify into common format
-    unified: list[dict] = []
+    # ── Fetch MT5 connector history for additional trades not in DB ──
+    try:
+        mt5_url = settings.MT5_CONNECTOR_URL
+        if mt5_url:
+            mt5_base = mt5_url.rstrip("/")
+            hours = int((day_end - day_start).total_seconds() / 3600) + 1
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(
+                    f"{mt5_base}/history",
+                    params={"hours": max(hours, 24)},
+                    timeout=15,
+                )
+                if resp.status_code == 200:
+                    mt5_data = resp.json()
+                    mt5_deals = mt5_data.get("deals", [])
+                    # Group OPEN/CLOSE pairs by position_id
+                    pos_map: dict[int, dict] = {}
+                    for deal in mt5_deals:
+                        pid = deal.get("position_id")
+                        if not pid:
+                            continue
+                        if pid not in pos_map:
+                            pos_map[pid] = {"open": None, "close": None}
+                        if deal.get("entry") == "OPEN":
+                            pos_map[pid]["open"] = deal
+                        else:
+                            pos_map[pid]["close"] = deal
 
-    for t in auto_trades:
-        unified.append({
-            "id": t.id,
-            "source": "autopilot",
-            "symbol": t.symbol,
-            "direction": t.direction,
-            "entry_price": t.entry_price,
-            "exit_price": None,
-            "stop_loss": t.stop_loss,
-            "take_profit": t.take_profit,
-            "lot_size": t.lot_size,
-            "profit": t.profit,
-            "result": t.result,
-            "executed_at": t.executed_at.isoformat() if t.executed_at else "",
-            "closed_at": t.closed_at.isoformat() if t.closed_at else None,
-            "prompt_number": t.prompt_number,
-            "prompt_text": t.prompt_text,
-            "confidence": t.confidence,
-            "reasoning": t.reasoning,
-        })
+                    for pid, pair in pos_map.items():
+                        if pid in seen_mt5_tickets:
+                            continue  # already have from DB
+                        open_deal = pair["open"]
+                        close_deal = pair["close"]
+                        if not open_deal:
+                            continue
 
-    for t in manual_trades:
-        unified.append({
-            "id": t.id,
-            "source": "manual",
-            "symbol": t.symbol,
-            "direction": t.direction,
-            "entry_price": t.entry_price,
-            "exit_price": t.exit_price,
-            "stop_loss": t.stop_loss,
-            "take_profit": t.take_profit,
-            "lot_size": t.volume,
-            "profit": t.profit_loss,
-            "result": "TP_HIT" if t.profit_loss and t.profit_loss > 0 else "SL_HIT" if t.profit_loss and t.profit_loss < 0 else t.status,
-            "executed_at": t.executed_at.isoformat() if t.executed_at else "",
-            "closed_at": t.closed_at.isoformat() if t.closed_at else None,
-            "prompt_number": None,
-            "prompt_text": "Manual trade",
-            "confidence": None,
-            "reasoning": None,
-        })
+                        deal_time_str = open_deal.get("time", "")
+                        try:
+                            deal_dt = datetime.strptime(deal_time_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                        except (ValueError, TypeError):
+                            continue
+
+                        if deal_dt < day_start or deal_dt >= day_end:
+                            continue
+
+                        direction = open_deal.get("direction", "")
+                        profit = close_deal.get("profit", 0) if close_deal else 0
+                        comment = open_deal.get("comment", "") or ""
+                        prompt_match = __import__("re").search(r"P(\d+)", comment)
+                        prompt_number = int(prompt_match.group(1)) if prompt_match else None
+
+                        unified.append({
+                            "id": -pid,
+                            "source": "mt5_connector",
+                            "symbol": open_deal.get("symbol", ""),
+                            "direction": direction,
+                            "entry_price": open_deal.get("price"),
+                            "exit_price": close_deal.get("price") if close_deal else None,
+                            "stop_loss": None,
+                            "take_profit": None,
+                            "lot_size": open_deal.get("volume", 0),
+                            "profit": float(profit) if profit else 0.0,
+                            "result": "TP_HIT" if (profit or 0) > 0 else "SL_HIT" if (profit or 0) < 0 else "OPEN",
+                            "executed_at": open_deal.get("time", ""),
+                            "closed_at": close_deal.get("time", "") if close_deal else None,
+                            "prompt_number": prompt_number,
+                            "prompt_text": f"MT5 #{prompt_number}" if prompt_number else "MT5 trade",
+                            "confidence": None,
+                            "reasoning": comment,
+                            "mt5_ticket": pid,
+                        })
+    except Exception:
+        pass  # MT5 connector is optional; silently skip if unavailable
 
     # Sort by execution time desc
-    unified.sort(key=lambda x: x["executed_at"], reverse=True)
+    unified.sort(key=lambda x: x.get("executed_at", ""), reverse=True)
 
     # Summary
     total = len(unified)
-    auto_count = len(auto_trades)
-    manual_count = len(manual_trades)
-    wins = sum(1 for t in unified if (t["profit"] or 0) > 0)
-    losses = sum(1 for t in unified if (t["profit"] or 0) <= 0)
-    pnl = sum(t["profit"] or 0 for t in unified)
+    auto_count = sum(1 for t in unified if t["source"] == "autopilot")
+    manual_count = sum(1 for t in unified if t["source"] == "manual")
+    mt5_count = sum(1 for t in unified if t["source"] == "mt5_connector")
+    wins = sum(1 for t in unified if (t.get("profit") or 0) > 0)
+    losses = sum(1 for t in unified if (t.get("profit") or 0) <= 0)
+    pnl = sum(t.get("profit") or 0 for t in unified)
 
-    best = max(unified, key=lambda t: t["profit"] or 0) if unified else None
-    worst = min(unified, key=lambda t: t["profit"] or 0) if unified else None
+    best = max(unified, key=lambda t: t.get("profit") or 0) if unified else None
+    worst = min(unified, key=lambda t: t.get("profit") or 0) if unified else None
 
     summary = JournalSummary(
         total_trades=total,
         autopilot_trades=auto_count,
         manual_trades=manual_count,
+        mt5_trades=mt5_count,
         wins=wins,
         losses=losses,
         pnl=round(pnl, 2),
@@ -363,20 +449,16 @@ async def get_journal(
     has_next = offset + per_page < len(unified)
     has_prev = page > 1
 
-    # Adjacent dates
-    prev_date = (day_start - timedelta(days=1)).strftime("%Y-%m-%d")
-    next_date = (day_start + timedelta(days=1)).strftime("%Y-%m-%d")
-
     return JournalResponse(
-        date=day_start.strftime("%Y-%m-%d"),
+        from_date=day_start.strftime("%Y-%m-%d"),
+        to_date=(day_end - timedelta(days=1)).strftime("%Y-%m-%d"),
         summary=summary,
         trades=page_trades,
         page=page,
         per_page=per_page,
         has_next=has_next,
         has_prev=has_prev,
-        prev_date=prev_date,
-        next_date=next_date,
+        total_count=len(unified),
     )
 
 

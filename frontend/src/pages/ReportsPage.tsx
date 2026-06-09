@@ -36,7 +36,7 @@ interface PromptStats {
 // ── Journal interfaces ────────────────────────────────────────────────────
 
 interface JournalTrade {
-  id: number; source: 'autopilot' | 'manual'; symbol: string; direction: string
+  id: number; source: 'autopilot' | 'manual' | 'mt5_connector'; symbol: string; direction: string
   entry_price: number | null; exit_price: number | null; stop_loss: number | null; take_profit: number | null
   lot_size: number; profit: number | null; result: string | null
   executed_at: string; closed_at: string | null
@@ -44,16 +44,16 @@ interface JournalTrade {
 }
 
 interface JournalSummary {
-  total_trades: number; autopilot_trades: number; manual_trades: number
+  total_trades: number; autopilot_trades: number; manual_trades: number; mt5_trades: number
   wins: number; losses: number; pnl: number
   best_trade: { symbol: string; direction: string; profit: number; source: string } | null
   worst_trade: { symbol: string; direction: string; profit: number; source: string } | null
 }
 
 interface JournalData {
-  date: string; summary: JournalSummary; trades: JournalTrade[]
+  from_date: string; to_date: string; summary: JournalSummary; trades: JournalTrade[]
   page: number; per_page: number; has_next: boolean; has_prev: boolean
-  prev_date: string; next_date: string
+  total_count: number
 }
 
 // ── Component ─────────────────────────────────────────────────────────────
@@ -70,16 +70,22 @@ export default function ReportsPage() {
   const [resultFilter, setResultFilter] = useState('all')
 
   // Journal state
-  const [journalDate, setJournalDate] = useState(() => {
+  const todayStr = () => {
     const d = new Date()
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-  })
+  }
+  const sevenDaysAgo = () => {
+    const d = new Date(); d.setDate(d.getDate() - 7)
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  }
+  const [journalFromDate, setJournalFromDate] = useState(sevenDaysAgo)
+  const [journalToDate, setJournalToDate] = useState(todayStr)
   const [journalPage, setJournalPage] = useState(1)
   const [journalData, setJournalData] = useState<JournalData | null>(null)
   const [journalLoading, setJournalLoading] = useState(false)
 
   useEffect(() => { fetchReports() }, [])
-  useEffect(() => { fetchJournal() }, [journalDate, journalPage])
+  useEffect(() => { fetchJournal() }, [journalFromDate, journalToDate, journalPage])
 
   const fetchReports = async () => {
     setLoading(true)
@@ -96,28 +102,14 @@ export default function ReportsPage() {
   const fetchJournal = useCallback(async () => {
     setJournalLoading(true)
     try {
-      const res = await axios.get(`/api/analytics/journal?date=${journalDate}&page=${journalPage}&per_page=20`)
+      const res = await axios.get(`/api/analytics/journal?from_date=${journalFromDate}&to_date=${journalToDate}&page=${journalPage}&per_page=20`)
       setJournalData(res.data)
     } catch {
       toast({ title: 'Error', description: 'Failed to fetch journal', variant: 'destructive' })
     } finally {
       setJournalLoading(false)
     }
-  }, [journalDate, journalPage, toast])
-
-  const goPrevDay = () => {
-    if (journalData?.prev_date) {
-      setJournalDate(journalData.prev_date)
-      setJournalPage(1)
-    }
-  }
-
-  const goNextDay = () => {
-    if (journalData?.next_date) {
-      setJournalDate(journalData.next_date)
-      setJournalPage(1)
-    }
-  }
+  }, [journalFromDate, journalToDate, journalPage, toast])
 
   const exportCsv = () => {
     const trades = tab === 'journal' ? journalData?.trades : data?.trades
@@ -141,7 +133,7 @@ export default function ReportsPage() {
     const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n')
     const blob = new Blob([csv], { type: 'text/csv' })
     const url = URL.createObjectURL(blob)
-    const a = document.createElement('a'); a.href = url; a.download = tab === 'journal' ? `journal_${journalDate}.csv` : 'reports_overview.csv'; a.click()
+    const a = document.createElement('a'); a.href = url; a.download = tab === 'journal' ? `journal_${journalFromDate}_${journalToDate}.csv` : 'reports_overview.csv'; a.click()
     URL.revokeObjectURL(url)
   }
 
@@ -425,25 +417,25 @@ export default function ReportsPage() {
       {/* ════════════════ JOURNAL TAB ════════════════ */}
       {tab === 'journal' && (
         <div className="space-y-6">
-          {/* Date navigation */}
+          {/* Date range picker */}
           <Card>
             <CardContent className="p-3 sm:p-4">
-              <div className="flex items-center justify-between gap-3">
-                <Button variant="outline" size="sm" onClick={goPrevDay} disabled={!journalData?.prev_date}>
-                  <ChevronLeft className="w-4 h-4 mr-1" /> Prev
-                </Button>
-                <div className="flex items-center gap-3">
-                  <Calendar className="w-4 h-4 text-muted-foreground" />
-                  <input
-                    type="date"
-                    value={journalDate}
-                    onChange={e => { setJournalDate(e.target.value); setJournalPage(1) }}
-                    className="bg-transparent border border-border rounded px-2 py-1 text-sm font-medium text-center"
-                  />
-                </div>
-                <Button variant="outline" size="sm" onClick={goNextDay} disabled={!journalData?.next_date}>
-                  Next <ChevronRight className="w-4 h-4 ml-1" />
-                </Button>
+              <div className="flex items-center justify-center gap-3 flex-wrap">
+                <Calendar className="w-4 h-4 text-muted-foreground shrink-0" />
+                <span className="text-xs text-muted-foreground">From:</span>
+                <input
+                  type="date"
+                  value={journalFromDate}
+                  onChange={e => { setJournalFromDate(e.target.value); setJournalPage(1) }}
+                  className="bg-transparent border border-border rounded px-2 py-1 text-sm"
+                />
+                <span className="text-xs text-muted-foreground">To:</span>
+                <input
+                  type="date"
+                  value={journalToDate}
+                  onChange={e => { setJournalToDate(e.target.value); setJournalPage(1) }}
+                  className="bg-transparent border border-border rounded px-2 py-1 text-sm"
+                />
               </div>
             </CardContent>
           </Card>
@@ -465,7 +457,7 @@ export default function ReportsPage() {
                   <CardContent className="px-3 pb-3 sm:px-4 sm:pb-4">
                     <div className="text-xl sm:text-2xl font-bold">{journalData.summary.total_trades}</div>
                     <div className="text-xs text-muted-foreground mt-0.5">
-                      {journalData.summary.autopilot_trades} auto / {journalData.summary.manual_trades} manual
+                      {journalData.summary.autopilot_trades} auto / {journalData.summary.manual_trades} manual{journalData.summary.mt5_trades > 0 ? ` / ${journalData.summary.mt5_trades} mt5` : ''}
                     </div>
                   </CardContent>
                 </Card>
@@ -546,15 +538,15 @@ export default function ReportsPage() {
               <Card>
                 <CardHeader className="pb-2 px-3 pt-3 sm:px-4 sm:pt-4">
                   <CardTitle className="text-sm font-medium">
-                    Trades — {journalDate}
+                    Trades — {journalData.from_date} to {journalData.to_date}
                     <span className="text-muted-foreground font-normal ml-2">
-                      (page {journalData.page})
+                      (page {journalData.page} of {Math.ceil(journalData.total_count / journalData.per_page)})
                     </span>
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="px-0 pb-3 sm:px-0 sm:pb-4">
                   {journalData.trades.length === 0 ? (
-                    <div className="text-sm text-muted-foreground px-4">No trades on this day.</div>
+                    <div className="text-sm text-muted-foreground px-4">No trades in this date range.</div>
                   ) : (
                     <div className="overflow-x-auto">
                       <table className="w-full text-xs sm:text-sm">
@@ -583,9 +575,11 @@ export default function ReportsPage() {
                               <td className="px-3 sm:px-4 py-2 text-center">
                                 <span className={cn(
                                   "inline-block text-[10px] font-medium px-1.5 py-0.5 rounded uppercase",
-                                  t.source === 'autopilot' ? 'bg-purple-500/10 text-purple-500' : 'bg-blue-500/10 text-blue-500'
+                                  t.source === 'autopilot' ? 'bg-purple-500/10 text-purple-500' :
+                                  t.source === 'mt5_connector' ? 'bg-orange-500/10 text-orange-500' :
+                                  'bg-blue-500/10 text-blue-500'
                                 )}>
-                                  {t.source === 'autopilot' ? 'A' : 'M'}
+                                  {t.source === 'autopilot' ? 'A' : t.source === 'mt5_connector' ? 'M5' : 'M'}
                                 </span>
                               </td>
                               <td className="px-3 sm:px-4 py-2 font-medium">{t.symbol}</td>
