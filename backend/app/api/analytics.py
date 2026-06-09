@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime, timezone, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, text
+from sqlalchemy import select, func, text, case
 
 from ..core.database import get_db, AsyncSessionLocal
 from ..core.security import get_current_user
@@ -98,10 +98,11 @@ async def get_reports(current_user: dict = Depends(get_current_user)):
         )
 
         # ── Daily history (last 30 days) ──
-        daily_result = await db.execute(
+        daily_rows = await db.execute(
             select(
                 func.date(AutopilotTrade.executed_at).label("date"),
                 func.count(AutopilotTrade.id).label("trades"),
+                func.sum(case((AutopilotTrade.profit > 0, 1), else_=0)).label("wins"),
                 func.sum(AutopilotTrade.profit).label("pnl"),
             ).where(
                 AutopilotTrade.user_id == user_id,
@@ -109,30 +110,21 @@ async def get_reports(current_user: dict = Depends(get_current_user)):
             ).group_by(text("date"))
             .order_by(text("date DESC"))
         )
-        rows = daily_result.all()
-        daily_map = {str(r[0]): {"trades": r[1], "pnl": float(r[2] or 0)} for r in rows}
+        daily_map = {}
+        for r in daily_rows:
+            daily_map[str(r[0])] = {
+                "trades": r[1],
+                "wins": r[2] or 0,
+                "pnl": float(r[3] or 0),
+            }
 
         daily_history = []
         for i in range(29, -1, -1):
             day = (today_start - timedelta(days=i)).strftime("%Y-%m-%d")
             if day in daily_map:
                 d = daily_map[day]
-                day_wins = await db.execute(
-                    select(func.count(AutopilotTrade.id)).where(
-                        AutopilotTrade.user_id == user_id,
-                        func.date(AutopilotTrade.executed_at) == day,
-                        AutopilotTrade.profit > 0,
-                    )
-                )
-                day_losses = await db.execute(
-                    select(func.count(AutopilotTrade.id)).where(
-                        AutopilotTrade.user_id == user_id,
-                        func.date(AutopilotTrade.executed_at) == day,
-                        AutopilotTrade.profit <= 0,
-                    )
-                )
-                w = day_wins.scalar() or 0
-                l = day_losses.scalar() or 0
+                w = d["wins"]
+                l = d["trades"] - w
                 daily_history.append(DailySummary(
                     date=day,
                     trades=d["trades"],
