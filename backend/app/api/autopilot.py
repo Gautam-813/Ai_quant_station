@@ -25,7 +25,7 @@ from ..core.security import get_current_user
 from ..core.database import AsyncSessionLocal
 from ..core.providers import PROVIDERS, get_api_key as _get_api_key, get_base_url, resolve_api_key
 from ..core.utils import detect_trade_setup
-from ..models.ai_memory import AutopilotTrade, AutopilotSettings, UserPrompt
+from ..models.ai_memory import AutopilotTrade, AutopilotSettings, UserPrompt, AutopilotLog
 from ..models.strategy_score import StrategyScore
 
 router = APIRouter(prefix="/autopilot", tags=["Autopilot"])
@@ -148,6 +148,24 @@ def add_log(user_id: int, message: str, level: str = "INFO"):
     state["logs"].append(log_entry)
     if len(state["logs"]) > 100:
         state["logs"] = state["logs"][-100:]
+    # Persist to DB (fire-and-forget)
+    cycle_number = state.get("stats", {}).get("total_runs")
+    asyncio.create_task(_persist_log(user_id, level, message, cycle_number))
+
+
+async def _persist_log(user_id: int, level: str, message: str, cycle_number: int | None = None):
+    try:
+        async with AsyncSessionLocal() as db:
+            entry = AutopilotLog(
+                user_id=user_id,
+                level=level,
+                message=message,
+                cycle_number=cycle_number,
+            )
+            db.add(entry)
+            await db.commit()
+    except Exception:
+        pass  # Log persistence should never crash the calling code
 
 
 async def async_request(method: str, url: str, **kwargs) -> dict:
@@ -844,6 +862,22 @@ class TradeResult(BaseModel):
     confidence: Optional[float]
 
 
+class LogEntry(BaseModel):
+    id: int
+    timestamp: str
+    level: str
+    message: str
+    cycle_number: Optional[int] = None
+
+
+class LogsResponse(BaseModel):
+    logs: List[LogEntry]
+    total: int
+    page: int
+    per_page: int
+    has_next: bool
+
+
 class PromptStatsItem(BaseModel):
     prompt_number: int
     prompt_text: str
@@ -1187,6 +1221,68 @@ async def get_prompt_stats(current_user: dict = Depends(get_current_user)):
 
     stats.sort(key=lambda x: x.total_profit, reverse=True)
     return stats
+
+
+@router.get("/logs")
+async def get_autopilot_logs(
+    level: Optional[str] = None,
+    cycle_number: Optional[int] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    page: int = 1,
+    per_page: int = 50,
+    current_user: dict = Depends(get_current_user),
+):
+    """Get autopilot logs from DB with filters and pagination."""
+    user_id = current_user["id"]
+    per_page = min(per_page, 200)
+
+    async with AsyncSessionLocal() as db:
+        query = select(AutopilotLog).where(AutopilotLog.user_id == user_id)
+
+        if level:
+            query = query.where(AutopilotLog.level == level.upper())
+        if cycle_number is not None:
+            query = query.where(AutopilotLog.cycle_number == cycle_number)
+        if from_date:
+            try:
+                fd = datetime.strptime(from_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                query = query.where(AutopilotLog.timestamp >= fd)
+            except ValueError:
+                pass
+        if to_date:
+            try:
+                td = datetime.strptime(to_date, "%Y-%m-%d").replace(tzinfo=timezone.utc) + timedelta(days=1)
+                query = query.where(AutopilotLog.timestamp < td)
+            except ValueError:
+                pass
+
+        total_result = await db.execute(select(func.count()).select_from(query.subquery()))
+        total = total_result.scalar() or 0
+
+        query = query.order_by(AutopilotLog.timestamp.desc())
+        query = query.offset((page - 1) * per_page).limit(per_page)
+        result = await db.execute(query)
+        rows = result.scalars().all()
+
+        logs = [
+            LogEntry(
+                id=r.id,
+                timestamp=r.timestamp.strftime("%Y-%m-%d %H:%M:%S") if r.timestamp else "",
+                level=r.level,
+                message=r.message,
+                cycle_number=r.cycle_number,
+            )
+            for r in rows
+        ]
+
+    return LogsResponse(
+        logs=logs,
+        total=total,
+        page=page,
+        per_page=per_page,
+        has_next=(page * per_page) < total,
+    )
 
 
 @router.get("/results", response_model=List[TradeResult])

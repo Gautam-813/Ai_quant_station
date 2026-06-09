@@ -5,12 +5,21 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useAutopilotStore } from '@/store/autopilotStore'
 import { useToast } from '@/hooks/use-toast'
+import { ChevronLeft, ChevronRight } from 'lucide-react'
 import axios from 'axios'
 
 interface LogEntry {
   timestamp: string
   level: string
   message: string
+}
+
+interface LogHistoryEntry {
+  id: number
+  timestamp: string
+  level: string
+  message: string
+  cycle_number: number | null
 }
 
 interface TradeResult {
@@ -79,6 +88,13 @@ export default function AutopilotPage() {
   const [selectedPromptFilter, setSelectedPromptFilter] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
 
+  // Log History state
+  const [historyLogs, setHistoryLogs] = useState<LogHistoryEntry[]>([])
+  const [historyTotal, setHistoryTotal] = useState(0)
+  const [historyPage, setHistoryPage] = useState(1)
+  const [historyLevelFilter, setHistoryLevelFilter] = useState('all')
+  const [historyLoading, setHistoryLoading] = useState(false)
+
   // Prompts State
   const [defaultPrompts, setDefaultPrompts] = useState<{id: string, text: string}[]>([])
   const [personalPrompts, setPersonalPrompts] = useState<{id: string, text: string}[]>([])
@@ -140,6 +156,26 @@ export default function AutopilotPage() {
     const prov = providers.find(p => p.id === provider)
     setProviderModels(prov?.models || [])
   }, [provider, providers])
+
+  // Fetch log history
+  useEffect(() => {
+    fetchHistoryLogs()
+  }, [historyPage, historyLevelFilter])
+
+  const fetchHistoryLogs = async () => {
+    setHistoryLoading(true)
+    try {
+      const params = new URLSearchParams({ page: String(historyPage), per_page: '50' })
+      if (historyLevelFilter !== 'all') params.set('level', historyLevelFilter)
+      const res = await axios.get(`/api/autopilot/logs?${params}`)
+      setHistoryLogs(res.data.logs || [])
+      setHistoryTotal(res.data.total || 0)
+    } catch {
+      // silently fail
+    } finally {
+      setHistoryLoading(false)
+    }
+  }
 
   const fetchProviders = async () => {
     try {
@@ -671,6 +707,59 @@ export default function AutopilotPage() {
                 <div className="text-muted-foreground text-center py-8">No logs yet</div>
               )}
             </div>
+          </CardContent>
+        </Card>
+
+        {/* Log History */}
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle>Log History</CardTitle>
+            <Select value={historyLevelFilter} onValueChange={v => { setHistoryLevelFilter(v); setHistoryPage(1) }}>
+              <SelectTrigger className="w-28 h-8 text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Levels</SelectItem>
+                <SelectItem value="INFO">INFO</SelectItem>
+                <SelectItem value="SUCCESS">SUCCESS</SelectItem>
+                <SelectItem value="WARNING">WARNING</SelectItem>
+                <SelectItem value="ERROR">ERROR</SelectItem>
+              </SelectContent>
+            </Select>
+          </CardHeader>
+          <CardContent>
+            {historyLoading ? (
+              <div className="text-muted-foreground text-center py-8">Loading...</div>
+            ) : historyLogs.length === 0 ? (
+              <div className="text-muted-foreground text-center py-8">No history logs found.</div>
+            ) : (
+              <>
+                <div className="h-[400px] overflow-y-auto font-mono text-xs space-y-1">
+                  {historyLogs.map((log) => (
+                    <div key={log.id} className="flex gap-2 py-1 border-b border-border/20">
+                      <span className="text-muted-foreground shrink-0 w-[32px]">[{log.timestamp.slice(11, 19)}]</span>
+                      <span className={getLogColor(log.level) + ' shrink-0 w-[60px]'}>{log.level}</span>
+                      <span className="text-muted-foreground shrink-0 w-[40px] text-right">{log.cycle_number ? `#${log.cycle_number}` : ''}</span>
+                      <span className="text-gray-300 break-words">{log.message}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex items-center justify-between mt-3">
+                  <span className="text-xs text-muted-foreground">Total: {historyTotal} entries</span>
+                  <div className="flex items-center gap-2">
+                    <Button variant="outline" size="sm" disabled={historyPage <= 1}
+                      onClick={() => setHistoryPage(p => p - 1)}>
+                      <ChevronLeft className="w-3 h-3" /> Prev
+                    </Button>
+                    <span className="text-xs text-muted-foreground">Page {historyPage}</span>
+                    <Button variant="outline" size="sm" disabled={historyPage * 50 >= historyTotal}
+                      onClick={() => setHistoryPage(p => p + 1)}>
+                      Next <ChevronRight className="w-3 h-3" />
+                    </Button>
+                  </div>
+                </div>
+              </>
+            )}
           </CardContent>
         </Card>
       </div>

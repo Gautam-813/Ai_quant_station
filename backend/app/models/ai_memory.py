@@ -276,3 +276,22 @@ class PositionAudit(Base):
     __table_args__ = (
         Index("ix_position_audits_user_created", "user_id", "created_at"),
     )
+
+
+class AutopilotLog(Base):
+    """Persistent autopilot log entries for analysis and debugging."""
+    __tablename__ = "autopilot_logs"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    timestamp = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+    level = Column(String(20), nullable=False, index=True)
+    message = Column(Text, nullable=False)
+    cycle_number = Column(Integer, nullable=True, index=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        Index("ix_autopilot_logs_user_timestamp", "user_id", "timestamp"),
+        Index("ix_autopilot_logs_user_level", "user_id", "level"),
+        Index("ix_autopilot_logs_user_cycle", "user_id", "cycle_number"),
+    )
