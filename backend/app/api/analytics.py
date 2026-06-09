@@ -63,6 +63,14 @@ class ReportsResponse(BaseModel):
 async def get_reports(current_user: dict = Depends(get_current_user)):
     """Consolidated reports endpoint: today's summary, daily history, prompt stats, recent trades."""
     user_id = current_user["id"]
+    
+    # Sync trade results before calculating reports
+    try:
+        from .autopilot import sync_trade_results
+        await sync_trade_results(user_id)
+    except Exception:
+        pass
+
     today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     thirty_days_ago = today_start - timedelta(days=30)
 
@@ -286,7 +294,13 @@ async def get_journal(
                     mt5_available = True
                     mt5_deals = resp.json().get("deals", [])
 
-                    auto_deals = [d for d in mt5_deals if (d.get("comment") or "").strip().startswith("[AUTOPILOT]")]
+                    # Find all position IDs that are autopilot trades based on the opening deal comment
+                    autopilot_pids = {
+                        d.get("position_id")
+                        for d in mt5_deals
+                        if d.get("position_id") and (d.get("comment") or "").strip().startswith("[AUTOPILOT]")
+                    }
+                    auto_deals = [d for d in mt5_deals if d.get("position_id") in autopilot_pids]
 
                     pos_map: dict = {}
                     for deal in auto_deals:
@@ -320,6 +334,19 @@ async def get_journal(
                         prompt_match = __import__("re").search(r"P(\d+)", comment)
                         prompt_number = int(prompt_match.group(1)) if prompt_match else None
 
+                        close_comment = (close_deal.get("comment", "") or "").lower() if close_deal else ""
+                        if close_deal:
+                            if "sl" in close_comment:
+                                res_type = "SL_HIT"
+                            elif "tp" in close_comment:
+                                res_type = "TP_HIT"
+                            elif profit > 0:
+                                res_type = "PROFIT"
+                            else:
+                                res_type = "LOSS"
+                        else:
+                            res_type = "OPEN"
+
                         trades.append({
                             "id": -pid,
                             "source": "mt5_connector",
@@ -331,9 +358,9 @@ async def get_journal(
                             "take_profit": None,
                             "lot_size": open_deal.get("volume", 0),
                             "profit": float(profit) if profit else 0.0,
-                            "result": "TP_HIT" if profit > 0 else "SL_HIT" if profit < 0 else "OPEN",
-                            "executed_at": open_deal.get("time", ""),
-                            "closed_at": close_deal.get("time", "") if close_deal else None,
+                            "result": res_type,
+                            "executed_at": open_deal.get("time", "").replace(" ", "T"),
+                            "closed_at": close_deal.get("time", "").replace(" ", "T") if close_deal else None,
                             "prompt_number": prompt_number,
                             "prompt_text": f"Prompt #{prompt_number}" if prompt_number else "Autopilot",
                             "confidence": None,
@@ -346,8 +373,9 @@ async def get_journal(
     trades.sort(key=lambda x: x.get("executed_at", ""), reverse=True)
     total = len(trades)
 
-    wins = sum(1 for t in trades if (t.get("profit") or 0) > 0)
-    losses = sum(1 for t in trades if (t.get("profit") or 0) <= 0)
+    closed_trades = [t for t in trades if t.get("result") != "OPEN"]
+    wins = sum(1 for t in closed_trades if (t.get("profit") or 0) > 0)
+    losses = sum(1 for t in closed_trades if (t.get("profit") or 0) <= 0)
     pnl = sum(t.get("profit") or 0 for t in trades)
 
     best = max(trades, key=lambda t: t.get("profit") or 0) if trades else None

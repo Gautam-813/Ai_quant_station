@@ -656,8 +656,20 @@ async def sync_trade_results(user_id: int, connector_url: str = None):
             if not open_trades:
                 return
 
+            # Dynamically determine the history window to check based on the oldest open trade
             try:
-                history_data = await async_request("GET", f"{connector_url}/history", params={"hours": 24})
+                oldest_trade = min(open_trades, key=lambda t: t.executed_at)
+                executed_at = oldest_trade.executed_at
+                if executed_at.tzinfo is None:
+                    executed_at = executed_at.replace(tzinfo=timezone.utc)
+                now_utc = datetime.now(timezone.utc)
+                hours_diff = int((now_utc - executed_at).total_seconds() / 3600) + 12  # add 12h buffer
+                sync_hours = max(hours_diff, 24)
+            except Exception:
+                sync_hours = 24
+
+            try:
+                history_data = await async_request("GET", f"{connector_url}/history", params={"hours": sync_hours})
             except Exception as e:
                 add_log(user_id, f"History fetch failed: {str(e)}", "ERROR")
                 return

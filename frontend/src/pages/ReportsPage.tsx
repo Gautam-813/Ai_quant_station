@@ -484,8 +484,8 @@ export default function ReportsPage() {
                   </CardHeader>
                   <CardContent className="px-3 pb-3 sm:px-4 sm:pb-4">
                     <div className="text-xl sm:text-2xl font-bold">
-                      {journalData.summary.total_trades > 0
-                        ? `${((journalData.summary.wins / journalData.summary.total_trades) * 100).toFixed(1)}%`
+                      {(journalData.summary.wins + journalData.summary.losses) > 0
+                        ? `${((journalData.summary.wins / (journalData.summary.wins + journalData.summary.losses)) * 100).toFixed(1)}%`
                         : '-'}
                     </div>
                     <div className="text-xs text-muted-foreground mt-0.5">
