@@ -453,18 +453,28 @@ async def run_autopilot_cycle(user_id: int):
 
     # Detect required timeframe from prompt text and fetch from MT5 directly
     def _detect_timeframe(text: str) -> tuple:
-        """Return (mt5_timeframe, candle_count) based on prompt."""
+        """Return (mt5_timeframe, candle_count) based on prompt.
+        Check more specific (M15, M5) before broader (H1, H4, D1) to avoid
+        catching reference levels (e.g. 'H1 resistance') instead of the
+        actual analysis timeframe (e.g. 'M15').
+        """
         lower = text.lower()
+        # Shorter timeframes first (more specific)
+        if re.search(r'\b(?:m15|15m|15[-\s]?min(?:ute)?s?\b)', lower):
+            return ("15m", 500)
+        if re.search(r'\b(?:m5|5m|5[-\s]?min(?:ute)?s?\b)', lower):
+            return ("5m", 500)
+        if re.search(r'\b(?:m1|1m|1[-\s]?min(?:ute)?s?\b)', lower):
+            return ("1m", 500)
+        if re.search(r'\b(?:m30|30m|30[-\s]?min(?:ute)?s?\b)', lower):
+            return ("30m", 500)
+        # Broader timeframes
         if re.search(r'\b1[-\s]?(?:d|day|w|week)\b|daily|weekly|d1|w1|previous\s*day|yesterday', lower):
             return ("1d", 200)
         if re.search(r'\b4[-\s]?(?:h|hour)\b|four[-\s]?hour|h4\b|4hrs?\b', lower):
             return ("4h", 200)
         if re.search(r'\b1[-\s]?(?:h|hour)\b|one[-\s]?hour|hourly|h1\b|1hrs?\b', lower):
             return ("1h", 300)
-        if re.search(r'\b(?:m5|5m|5[-\s]?min)', lower):
-            return ("5m", 500)
-        if re.search(r'\b(?:m15|15m|15[-\s]?min)', lower):
-            return ("15m", 500)
         return ("4h", 200)  # default: 4H for swing trading
 
     tf, count = _detect_timeframe(prompt_text)
