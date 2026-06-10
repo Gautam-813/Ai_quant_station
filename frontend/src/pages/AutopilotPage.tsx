@@ -66,7 +66,7 @@ export default function AutopilotPage() {
   const [status, setStatus] = useState<AutopilotStatus | null>(null)
 
   const [promptStats, setPromptStats] = useState<PromptStatsItem[]>([])
-  const [selectedPromptFilter, setSelectedPromptFilter] = useState<{ number: number; text: string } | null>(null)
+  const [selectedPromptFilter, setSelectedPromptFilter] = useState<number | null>(null)
   const [promptTrades, setPromptTrades] = useState<any[]>([])
   const [promptTradesLoading, setPromptTradesLoading] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -81,9 +81,11 @@ export default function AutopilotPage() {
   useEffect(() => {
     if (selectedPromptFilter == null) { setPromptTrades([]); return }
     setPromptTradesLoading(true)
-    axios.get(`/api/autopilot/results?limit=100&prompt_number=${selectedPromptFilter.number}&prompt_text=${encodeURIComponent(selectedPromptFilter.text)}`)
+    axios.get('/api/autopilot/results', {
+      params: { limit: 100, prompt_number: selectedPromptFilter }
+    })
       .then(res => setPromptTrades(res.data || []))
-      .catch(() => {})
+      .catch(() => console.warn('Failed to fetch prompt trades'))
       .finally(() => setPromptTradesLoading(false))
   }, [selectedPromptFilter])
 
@@ -745,11 +747,6 @@ export default function AutopilotPage() {
               Clear Filter
             </Button>
           )}
-          {selectedPromptFilter != null && promptStats.find(s => s.prompt_number === selectedPromptFilter.number) && (
-            <span className="text-xs text-muted-foreground ml-2 max-w-[300px] truncate" title={selectedPromptFilter.text}>
-              {selectedPromptFilter.text}
-            </span>
-          )}
         </CardHeader>
         <CardContent>
           {promptStats.length === 0 ? (
@@ -773,8 +770,8 @@ export default function AutopilotPage() {
                   {promptStats.map((s) => (
                     <tr
                       key={s.prompt_number}
-                      className={`border-b border-border/30 hover:bg-muted/50 cursor-pointer ${selectedPromptFilter?.number === s.prompt_number && selectedPromptFilter?.text === s.prompt_text ? 'bg-blue-500/10' : ''}`}
-                      onClick={() => setSelectedPromptFilter(selectedPromptFilter?.number === s.prompt_number && selectedPromptFilter?.text === s.prompt_text ? null : { number: s.prompt_number, text: s.prompt_text })}
+                      className={`border-b border-border/30 hover:bg-muted/50 cursor-pointer ${selectedPromptFilter === s.prompt_number ? 'bg-blue-500/10' : ''}`}
+                      onClick={() => setSelectedPromptFilter(selectedPromptFilter === s.prompt_number ? null : s.prompt_number)}
                     >
                       <td className="py-3 px-2 font-bold text-blue-400">{s.display_name || `#${s.prompt_number}`}</td>
                       <td className="py-3 px-2 text-xs max-w-[200px] truncate">{s.prompt_text}</td>
@@ -805,7 +802,7 @@ export default function AutopilotPage() {
       {selectedPromptFilter != null && (
         <Card className="mt-6">
           <CardHeader>
-            <CardTitle>Trades for Prompt #{selectedPromptFilter.number}</CardTitle>
+            <CardTitle>Trades for Prompt #{selectedPromptFilter}</CardTitle>
           </CardHeader>
           <CardContent>
             {promptTradesLoading ? (
