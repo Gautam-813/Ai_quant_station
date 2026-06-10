@@ -462,13 +462,14 @@ async def run_autopilot_cycle(user_id: int):
             return 1000
         return 500
 
-    data_count = _detect_required_candles(prompt_text)
+    # Always request enough 1m data for sandbox resampling (need >=2000 for H4/D1)
+    data_count = max(_detect_required_candles(prompt_text), 2000)
     market_data = await get_market_data(user_id, symbol, count=data_count, connector_url=connector_url)
     if not market_data or len(market_data) == 0:
         add_log(user_id, "No market data available", "ERROR")
         state["stats"]["error_count"] += 1
         return
-    add_log(user_id, f"Loaded {len(market_data)} candles for {symbol} (requested {data_count})")
+    add_log(user_id, f"Loaded {len(market_data)} candles for {symbol}")
 
     # ── NEW: SANDBOX APPROACH ──────────────────────────────────────────
     # Instead of dumping raw candle text into the AI prompt, we:
@@ -610,6 +611,7 @@ Respond ONLY with Python code inside ```python ... ``` block."""
             # Sandbox error — self-correct
             if attempt < 2:
                 error_msg = sandbox_result.get("error", "Unknown error")
+                sandbox_output = sandbox_result.get("output", "")
                 add_log(user_id, f"Code execution error, self-correcting...", "WARNING")
                 try:
                     response = await client.chat.completions.create(
@@ -617,7 +619,7 @@ Respond ONLY with Python code inside ```python ... ``` block."""
                         messages=[
                             {"role": "user", "content": code_prompt},
                             {"role": "assistant", "content": generated_code},
-                            {"role": "user", "content": f"The code crashed. Fix the bug. Error:\n{error_msg[:500]}"}
+                            {"role": "user", "content": f"The code crashed. Fix the bug. Important: ensure you have enough data (df may have fewer rows than expected). Check for NaN values, division by zero, and index bounds. Error:\n{error_msg[:800]}\n\nPartial output:\n{sandbox_output[:300]}"}
                         ],
                         temperature=0.2,
                         max_tokens=2500,
