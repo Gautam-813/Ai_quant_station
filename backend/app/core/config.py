@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     CEREBRAS_API_KEY: str = ""
     MISTRAL_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""
+    TOKENLB_API_KEY: str = ""
 
     # CORS
     CORS_ORIGINS: str = "http://localhost:5173,http://localhost:3000"

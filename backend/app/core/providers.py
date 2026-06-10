@@ -97,6 +97,20 @@ PROVIDERS: Dict[str, Dict[str, Any]] = {
             "claude-opus-4-20250514",
         ],
     },
+    "tokenlb": {
+        "name": "TokenLB Gateway",
+        "env_key": "TOKENLB_API_KEY",
+        "base_url": "https://tokenlb.net/v1",
+        "needs_nvapi_prefix": False,
+        "models": [
+            "gpt-5.4-pro",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "claude-sonnet-4",
+            "claude-3-5-sonnet",
+            "gemini-2.5-pro",
+        ],
+    },
 }
 
 
