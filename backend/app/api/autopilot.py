@@ -451,6 +451,47 @@ async def run_autopilot_cycle(user_id: int):
         display_id = f"#{prompt_num}"
     add_log(user_id, f"Using Strategy {display_id}: {prompt_text[:50]}...")
 
+    # ── AI call helper with 429 retry + provider fallback ────────────────────
+    async def _call_ai_with_retry(messages: list, provider: str, model: str, max_retries: int = 3) -> str | None:
+        """Call AI with exponential backoff on 429, fallback to next provider."""
+        from ..core.providers import get_provider_names, get_base_url, resolve_api_key
+        
+        providers = get_provider_names()
+        provider_idx = providers.index(provider) if provider in providers else 0
+        
+        for attempt in range(max_retries):
+            for p_idx in range(provider_idx, len(providers)):
+                p = providers[p_idx]
+                api_key = await resolve_api_key(p, settings, user_id, AsyncSessionLocal)
+                if not api_key:
+                    continue
+                if p == "nvidia" and not api_key.startswith("nvapi-"):
+                    api_key = f"nvapi-{api_key}"
+                
+                try:
+                    client = AsyncOpenAI(base_url=get_base_url(p), api_key=api_key)
+                    response = await client.chat.completions.create(
+                        model=model if p == provider else providers[0],  # use default model for fallback
+                        messages=messages,
+                        temperature=0.2,
+                        max_tokens=2500,
+                        timeout=60
+                    )
+                    content = response.choices[0].message.content or ""
+                    match = re.search(r'```(?:python)?\n?(.*?)```', content, re.DOTALL)
+                    return match.group(1).strip() if match else content.strip()
+                except Exception as e:
+                    err_str = str(e).lower()
+                    if "429" in err_str or "too_many_requests" in err_str or "queue_exceeded" in err_str:
+                        wait = min(2 ** attempt * 5, 30)  # 5s, 10s, 20s, max 30s
+                        add_log(user_id, f"Provider {p} rate limited (429), waiting {wait}s...", "WARNING")
+                        await asyncio.sleep(wait)
+                        break  # try next provider
+                    elif p_idx == len(providers) - 1 and attempt == max_retries - 1:
+                        raise
+                    continue
+        return None
+
     # Detect required timeframe from prompt text and fetch from MT5 directly
     def _detect_timeframe(text: str) -> tuple:
         """Return (mt5_timeframe, candle_count) based on prompt.
@@ -558,36 +599,20 @@ If no setup, print: NO_SETUP"""
 
     add_log(user_id, f"AI prompt: analyze {len(market_data)} {tf} candles for strategy")
 
-    api_key = await resolve_api_key(provider, settings, user_id, AsyncSessionLocal)
-    if not api_key:
-        add_log(user_id, "No API key configured", "ERROR")
+    full_raw_response = ""
+
+    # Step 1: AI generates analysis code (with 429 retry + provider fallback)
+    generated_code = await _call_ai_with_retry(
+        messages=[{"role": "user", "content": code_prompt}],
+        provider=provider,
+        model=model,
+        max_retries=3
+    )
+    if not generated_code:
+        add_log(user_id, "AI code generation failed after retries", "ERROR")
         state["stats"]["error_count"] += 1
         return
-
-    if provider == "nvidia" and not api_key.startswith("nvapi-"):
-        api_key = f"nvapi-{api_key}"
-
-    # Step 1: AI generates analysis code
-    generated_code = ""
-    full_raw_response = None
-    try:
-        client = AsyncOpenAI(base_url=get_base_url(provider), api_key=api_key)
-        response = await client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": code_prompt}],
-            temperature=0.2,
-            max_tokens=2500,
-            timeout=60
-        )
-        content = response.choices[0].message.content or ""
-        full_raw_response = _capture_raw_response(response)
-        match = re.search(r'```(?:python)?\n?(.*?)```', content, re.DOTALL)
-        generated_code = match.group(1).strip() if match else content.strip()
-        add_log(user_id, f"AI generated code ({len(generated_code)} chars)")
-    except Exception as e:
-        add_log(user_id, f"AI code generation failed: {str(e)}", "ERROR")
-        state["stats"]["error_count"] += 1
-        return
+    add_log(user_id, f"AI generated code ({len(generated_code)} chars)")
 
     # Step 2 & 3: Execute in sandbox with self-correction
     from ..api.execute import run_python_code
@@ -638,27 +663,24 @@ If no setup, print: NO_SETUP"""
                 state["stats"]["skipped_count"] += 1
                 return
 
-            # Unclear output — retry with feedback
+            # Unclear output — retry with feedback (with 429 retry + provider fallback)
             if attempt < 2:
                 add_log(user_id, f"Sandbox output unclear, retrying...", "WARNING")
-                try:
-                    response = await client.chat.completions.create(
-                        model=model,
-                        messages=[
-                            {"role": "user", "content": code_prompt},
-                            {"role": "assistant", "content": generated_code},
-                            {"role": "user", "content": f"The code ran but didn't output a valid TRADE_SETUP or NO_SETUP. Fix it to output exactly one of these formats. Output was:\n{output[:400]}"}
-                        ],
-                        temperature=0.2,
-                        max_tokens=2500,
-                        timeout=60
-                    )
-                    content = response.choices[0].message.content or ""
-                    match = re.search(r'```(?:python)?\n?(.*?)```', content, re.DOTALL)
-                    generated_code = match.group(1).strip() if match else content.strip()
+                corrected = await _call_ai_with_retry(
+                    messages=[
+                        {"role": "user", "content": code_prompt},
+                        {"role": "assistant", "content": generated_code},
+                        {"role": "user", "content": f"The code ran but didn't output a valid TRADE_SETUP or NO_SETUP. Fix it to output exactly one of these formats. Output was:\n{output[:400]}"}
+                    ],
+                    provider=provider,
+                    model=model,
+                    max_retries=2
+                )
+                if corrected:
+                    generated_code = corrected
                     ai_response = generated_code
-                except Exception as e:
-                    add_log(user_id, f"AI correction failed: {str(e)}", "ERROR")
+                else:
+                    add_log(user_id, f"AI correction failed after retries", "ERROR")
                     break
         else:
             # Sandbox error — self-correct with specific hints
@@ -678,24 +700,21 @@ If no setup, print: NO_SETUP"""
                     hint = " (HINT: Column name error. Check df.columns for available columns. Use exact names: open, high, low, close, volume, timestamp.)"
                 else:
                     hint = ""
-                try:
-                    response = await client.chat.completions.create(
-                        model=model,
-                        messages=[
-                            {"role": "user", "content": code_prompt},
-                            {"role": "assistant", "content": generated_code},
-                            {"role": "user", "content": f"The Python code failed with this error:{hint}\n\nError:\n{error_msg[:800]}\n\nPartial output:\n{sandbox_output[:300]}"}
-                        ],
-                        temperature=0.2,
-                        max_tokens=2500,
-                        timeout=60
-                    )
-                    content = response.choices[0].message.content or ""
-                    match = re.search(r'```(?:python)?\n?(.*?)```', content, re.DOTALL)
-                    generated_code = match.group(1).strip() if match else content.strip()
+                corrected = await _call_ai_with_retry(
+                    messages=[
+                        {"role": "user", "content": code_prompt},
+                        {"role": "assistant", "content": generated_code},
+                        {"role": "user", "content": f"The Python code failed with this error:{hint}\n\nError:\n{error_msg[:800]}\n\nPartial output:\n{sandbox_output[:300]}"}
+                    ],
+                    provider=provider,
+                    model=model,
+                    max_retries=2
+                )
+                if corrected:
+                    generated_code = corrected
                     ai_response = generated_code
-                except Exception as e:
-                    add_log(user_id, f"AI correction failed: {str(e)}", "ERROR")
+                else:
+                    add_log(user_id, f"AI correction failed after retries", "ERROR")
                     break
             else:
                 break
