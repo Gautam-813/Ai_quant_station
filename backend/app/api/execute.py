@@ -205,7 +205,7 @@ def _execute_sandbox_sync(
     _SAFE_IMPORT_MODULES = {
         'pandas', 'numpy', 'math', 'json', 'random', 'itertools', 'collections',
         'decimal', 'warnings', 'ta', 'scipy', 'statsmodels', 'sklearn', 'seaborn',
-        'tabulate', 'yfinance', 'matplotlib',
+        'tabulate', 'yfinance', 'matplotlib', 'datetime',
     }
 
     def _safe_import(name, *args, **kwargs):

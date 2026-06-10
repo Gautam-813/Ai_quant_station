@@ -24,7 +24,6 @@ from ..core.config import settings
 from ..core.security import get_current_user
 from ..core.database import AsyncSessionLocal
 from ..core.providers import PROVIDERS, get_api_key as _get_api_key, get_base_url, resolve_api_key
-from ..core.utils import detect_trade_setup
 from ..models.ai_memory import AutopilotTrade, AutopilotSettings, UserPrompt, AutopilotLog
 from ..models.strategy_score import StrategyScore
 
@@ -471,103 +470,39 @@ async def run_autopilot_cycle(user_id: int):
         return
     add_log(user_id, f"Loaded {len(market_data)} candles for {symbol} (requested {data_count})")
 
-    latest = market_data[-1]
-    samples = []
-    for c in market_data[-60:]:
-        samples.append(f"O:{c.get('open', 0):.2f} H:{c.get('high', 0):.2f} L:{c.get('low', 0):.2f} C:{c.get('close', 0):.2f}")
-
-    # Multi-TF: resample 1m data to higher timeframes for AI context
-    multi_tf_section = ""
-    try:
-        df_1m = pd.DataFrame(market_data)
-        df_1m['datetime'] = pd.to_datetime(df_1m['time'], unit='s') if 'time' in df_1m.columns else pd.to_datetime(df_1m['timestamp'], unit='s')
-        df_1m = df_1m.set_index('datetime').sort_index()
-        for c in ['open', 'high', 'low', 'close']:
-            if c in df_1m.columns:
-                df_1m[c] = pd.to_numeric(df_1m[c], errors='coerce')
-
-        tf_lines = []
-        for alias, suffix in [('1H', 'H1'), ('4H', 'H4'), ('1D', 'D1')]:
-            df_tf = df_1m.resample(alias).agg({
-                'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last'
-            }).dropna()
-            if len(df_tf) < 5:
-                continue
-            tf_latest = df_tf.iloc[-1]
-            close = df_tf['close'].astype(float)
-            rsi = ta.momentum.rsi(close, window=14) if len(df_tf) >= 15 else pd.Series(50.0, index=df_tf.index)
-            ema9 = ta.trend.ema_indicator(close, window=9) if len(df_tf) >= 10 else close
-            ema50 = ta.trend.sma_indicator(close, window=50) if len(df_tf) >= 51 else close
-            trend = "UP" if ema9.iloc[-1] > ema50.iloc[-1] else "DOWN" if ema9.iloc[-1] < ema50.iloc[-1] else "SIDEWAYS"
-            tf_lines.append(
-                f"{alias}: O={tf_latest['open']:.2f} H={tf_latest['high']:.2f} L={tf_latest['low']:.2f} C={tf_latest['close']:.2f} | "
-                f"RSI(14)={rsi.iloc[-1]:.1f} EMA9={ema9.iloc[-1]:.2f} EMA50={ema50.iloc[-1]:.2f} Trend={trend}"
-            )
-        if tf_lines:
-            multi_tf_section = "\nHIGHER TIMEFRAMES:\n" + "\n".join(tf_lines) + "\n"
-            add_log(user_id, f"Multi-TF context built: {', '.join(l.split(':')[0] for l in tf_lines)}")
-
-        # Previous day high/low from 1m data (group by calendar date)
-        df_1m['date'] = df_1m.index.date
-        dates = sorted(df_1m['date'].unique(), reverse=True)
-        if len(dates) >= 2:
-            prev_date = dates[1]
-            today = dates[0]
-            prev_mask = df_1m['date'] == prev_date
-            prev_day = df_1m[prev_mask]
-            today_data = df_1m[df_1m['date'] == today]
-            prev_high = prev_day['high'].max()
-            prev_low = prev_day['low'].min()
-            prev_close = prev_day['close'].iloc[-1]
-            today_open = today_data['open'].iloc[0]
-            today_high = today_data['high'].max()
-            today_low = today_data['low'].min()
-            today_close_price = today_data['close'].iloc[-1]
-            session_type = "BULLISH" if today_close_price > prev_close else "BEARISH" if today_close_price < prev_close else "RANGING"
-            prev_line = (
-                f"PREVIOUS DAY: Date={prev_date} High={prev_high:.2f} Low={prev_low:.2f} Close={prev_close:.2f} | "
-                f"TODAY: Open={today_open:.2f} High={today_high:.2f} Low={today_low:.2f} | "
-                f"Session={session_type}"
-            )
-            multi_tf_section += prev_line + "\n"
-    except Exception as e:
-        add_log(user_id, f"Multi-TF computation failed: {str(e)}", "WARNING")
+    # ── NEW: SANDBOX APPROACH ──────────────────────────────────────────
+    # Instead of dumping raw candle text into the AI prompt, we:
+    # 1. Ask AI to write analysis code (short prompt, ~150 tokens)
+    # 2. Execute the code in sandbox with 1m OHLC data
+    # 3. Parse TRADE_SETUP JSON or NO_SETUP from sandbox output
+    # 4. Self-correct if code fails (up to 2 retries)
 
     error_feedback = state.get("last_error_feedback")
     error_section = ""
     if error_feedback:
-        error_section = f"""
-PREVIOUS TRADE ERROR FEEDBACK (learn from this):
-{error_feedback}
-- Adjust your stop loss / take profit levels to be further from entry price.
-- Ensure sufficient distance for broker minimum stop requirements.
-- Do NOT repeat the same mistake.
-"""
+        error_section = f"\nPREVIOUS TRADE ERROR FEEDBACK (learn from this):\n{error_feedback}\n- Adjust stop loss / take profit to be further from entry.\n- Do NOT repeat the same mistake.\n"
 
-    system_prompt = f"""You are a Lead Quant in 2026. Analyze market data and find trade opportunities.
+    code_prompt = f"""You are a quant trader. Write Python code to analyze 1-minute OHLC data.
 
-CURRENT MARKET DATA for {symbol}:
-- Latest: O:{latest.get('open', 0):.2f} H:{latest.get('high', 0):.2f} L:{latest.get('low', 0):.2f} C:{latest.get('close', 0):.2f}
+The DataFrame `df` is already loaded with columns: open, high, low, close, volume, timestamp (Unix seconds).
+Available (already importable): pandas (pd), numpy (np), ta, math, json, datetime.
+Use pd.to_datetime() for datetime conversion.
 
-SAMPLES (Last {len(samples)} candles): {', '.join(samples)}
-{multi_tf_section}{error_section}
-ORDER TYPES:
-- "market" — execute immediately at current price (for entry_price use null or current price)
-- "limit" — pending order at a BETTER price (BUY_LIMIT below market, SELL_LIMIT above market). Set entry_price to desired level.
-- "stop" — pending order at a WORSE/breakout price (BUY_STOP above market, SELL_STOP below market). Set entry_price to trigger level.
+Strategy to analyze:
+{prompt_text}
+{error_section}
+INSTRUCTIONS:
+1. Resample 1m data to appropriate timeframe (1H, 4H, or daily).
+2. Compute indicators using `ta` library — exact values, no estimation.
+3. If a high-confidence trade setup exists (confidence >= 60%), output JSON:
+   ```json
+   {{"action": "TRADE_SETUP", "symbol": "{symbol}", "direction": "BUY", "order_type": "market", "entry_price": 0.0, "stop_loss": 0.0, "take_profit": 0.0, "lot_size": {lot_size}, "reasoning": "Brief explanation", "confidence": 75}}
+   ```
+4. If NO setup, just print: NO_SETUP
+5. Use print() for ALL output. Always consider risk-reward >= 1:2.
+6. CRITICAL: Write TOP-LEVEL executable code. Do NOT wrap in functions/classes. If you use a function, call it at the end. The code runs immediately.
 
-RULES:
-1. Analyze the data and if a high-confidence trade setup exists (>=60% confidence), output a JSON block:
-
-```json
-{{"action": "TRADE_SETUP", "symbol": "{symbol}", "direction": "BUY", "order_type": "market", "entry_price": 2345.50, "stop_loss": 2338.00, "take_profit": 2360.00, "lot_size": {lot_size}, "risk_reward": 1.93, "reasoning": "Brief explanation", "confidence": 75}}
-```
-
-2. If NO clear setup, respond with "NO_SETUP" only
-3. Choose the right order_type for market conditions (limit for pullbacks, stop for breakouts, market for strong momentum)
-4. Always consider risk-reward ratio (1:2 or better)
-5. Consider technical indicators (RSI, MACD, moving averages) if helpful
-"""
+Respond ONLY with Python code inside ```python ... ``` block."""
 
     api_key = await resolve_api_key(provider, settings, user_id, AsyncSessionLocal)
     if not api_key:
@@ -578,50 +513,125 @@ RULES:
     if provider == "nvidia" and not api_key.startswith("nvapi-"):
         api_key = f"nvapi-{api_key}"
 
+    # Step 1: AI generates analysis code
+    generated_code = ""
+    full_raw_response = None
     try:
         client = AsyncOpenAI(base_url=get_base_url(provider), api_key=api_key)
         response = await client.chat.completions.create(
             model=model,
-            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt_text}],
+            messages=[{"role": "user", "content": code_prompt}],
             temperature=0.2,
+            max_tokens=2500,
             timeout=60
         )
-        ai_response = response.choices[0].message.content or ""
+        content = response.choices[0].message.content or ""
         full_raw_response = _capture_raw_response(response)
-        add_log(user_id, f"AI Response (length: {len(ai_response)} chars)")
+        match = re.search(r'```(?:python)?\n?(.*?)```', content, re.DOTALL)
+        generated_code = match.group(1).strip() if match else content.strip()
+        add_log(user_id, f"AI generated code ({len(generated_code)} chars)")
     except Exception as e:
-        add_log(user_id, f"AI call failed: {str(e)}", "ERROR")
+        add_log(user_id, f"AI code generation failed: {str(e)}", "ERROR")
         state["stats"]["error_count"] += 1
         return
 
-    max_retries = 2
+    # Step 2 & 3: Execute in sandbox with self-correction
+    from ..api.execute import run_python_code
+
     setup = None
-    for attempt in range(max_retries):
-        setup = detect_trade_setup(ai_response)
-        if setup:
-            break
-        if "NO_SETUP" in ai_response:
-            add_log(user_id, "AI Response: NO_SETUP - No trade opportunity found", "WARNING")
-            state["stats"]["skipped_count"] += 1
-            return
-        add_log(user_id, f"Attempt {attempt+1}: No valid trade setup. Retrying...", "WARNING")
+    ai_response = generated_code  # Store generated code as AI response for DB
+    for attempt in range(3):
         try:
-            response = await client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt_text},
-                    {"role": "assistant", "content": ai_response},
-                    {"role": "user", "content": "Your previous response was missing the TRADE_SETUP JSON block. Please provide your analysis again and include a valid JSON block in the exact format required."}
-                ],
-                temperature=0.2,
-                timeout=60
+            sandbox_result = await run_python_code(
+                code=generated_code,
+                market_data=market_data,
+                symbol=symbol,
+                user_id=user_id,
             )
-            ai_response = response.choices[0].message.content or ""
-            full_raw_response = _capture_raw_response(response)
         except Exception as e:
-            add_log(user_id, f"AI correction failed: {str(e)}", "ERROR")
+            add_log(user_id, f"Sandbox execution error: {str(e)}", "ERROR")
             break
+
+        if sandbox_result.get("success"):
+            output = sandbox_result.get("output", "")
+
+            # Try parse TRADE_SETUP from output (```json block or raw JSON)
+            jm = re.search(r'```json\n?(.*?)```', output, re.DOTALL)
+            if jm:
+                try:
+                    setup = json.loads(jm.group(1))
+                    add_log(user_id, f"TRADE_SETUP found via sandbox (conf={setup.get('confidence')}%)")
+                    break
+                except json.JSONDecodeError:
+                    pass
+
+            if not setup:
+                for line in output.strip().split("\n"):
+                    line = line.strip()
+                    try:
+                        obj = json.loads(line)
+                        if isinstance(obj, dict) and obj.get("action") == "TRADE_SETUP":
+                            setup = obj
+                            break
+                    except json.JSONDecodeError:
+                        pass
+
+            if setup:
+                break
+
+            if "NO_SETUP" in output:
+                add_log(user_id, "Sandbox: NO_SETUP - No trade opportunity", "WARNING")
+                state["stats"]["skipped_count"] += 1
+                return
+
+            # Unclear output — retry with feedback
+            if attempt < 2:
+                add_log(user_id, f"Sandbox output unclear, retrying...", "WARNING")
+                try:
+                    response = await client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {"role": "user", "content": code_prompt},
+                            {"role": "assistant", "content": generated_code},
+                            {"role": "user", "content": f"The code ran but didn't output a valid TRADE_SETUP or NO_SETUP. Fix it to output either format. Output was:\n{output[:300]}"}
+                        ],
+                        temperature=0.2,
+                        max_tokens=2500,
+                        timeout=60
+                    )
+                    content = response.choices[0].message.content or ""
+                    match = re.search(r'```(?:python)?\n?(.*?)```', content, re.DOTALL)
+                    generated_code = match.group(1).strip() if match else content.strip()
+                    ai_response = generated_code
+                except Exception as e:
+                    add_log(user_id, f"AI correction failed: {str(e)}", "ERROR")
+                    break
+        else:
+            # Sandbox error — self-correct
+            if attempt < 2:
+                error_msg = sandbox_result.get("error", "Unknown error")
+                add_log(user_id, f"Code execution error, self-correcting...", "WARNING")
+                try:
+                    response = await client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {"role": "user", "content": code_prompt},
+                            {"role": "assistant", "content": generated_code},
+                            {"role": "user", "content": f"The code crashed. Fix the bug. Error:\n{error_msg[:500]}"}
+                        ],
+                        temperature=0.2,
+                        max_tokens=2500,
+                        timeout=60
+                    )
+                    content = response.choices[0].message.content or ""
+                    match = re.search(r'```(?:python)?\n?(.*?)```', content, re.DOTALL)
+                    generated_code = match.group(1).strip() if match else content.strip()
+                    ai_response = generated_code
+                except Exception as e:
+                    add_log(user_id, f"AI correction failed: {str(e)}", "ERROR")
+                    break
+            else:
+                break
 
     if not setup:
         add_log(user_id, "Failed to get valid setup after retries", "ERROR")
@@ -643,7 +653,7 @@ RULES:
     state["last_trade_time"] = datetime.now(timezone.utc)
 
     if result.get("success"):
-        state["last_error_feedback"] = None  # Clear any previous error feedback
+        state["last_error_feedback"] = None
         ticket = result.get("ticket")
         exec_price = result.get("price")
         add_log(user_id, f"Trade executed - Ticket #{ticket} Price: {exec_price}", "SUCCESS")
