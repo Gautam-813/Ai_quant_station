@@ -497,25 +497,58 @@ async def run_autopilot_cycle(user_id: int):
     if error_feedback:
         error_section = f"\nPREVIOUS TRADE ERROR FEEDBACK (learn from this):\n{error_feedback}\n- Adjust stop loss / take profit to be further from entry.\n- Do NOT repeat the same mistake.\n"
 
+    candle_count = len(market_data)
+    data_warning = ""
+    if candle_count < 100:
+        data_warning = f"\nWARNING: Limited historical data ({candle_count} candles). Indicators with large windows (like SMA 200) will fail. RSI(14), ATR(14), and Bollinger Bands(20) are safe above 30 candles.\n"
+    elif candle_count < 500:
+        data_warning = f"\nNOTE: {candle_count} candles available. SMA 200 may produce NaNs. Use .dropna() before accessing results.\n"
+
     code_prompt = f"""You are a quant trader. Write Python code to analyze market data.
 
-The DataFrame `df` is already loaded with {tf.upper()} OHLC data.
-Columns: open, high, low, close, volume, timestamp (Unix seconds).
-Available: pandas (pd), numpy (np), ta, math, json, datetime.
-Use pd.to_datetime() for timestamp conversion.
+IMPORTANT RULES:
+1. Write DIRECT executable statements -- NOT a function definition. The code runs via exec(), NOT by calling a function.
+   WRONG (will produce NO output):
+      def calculate_signals(df): ...
+   RIGHT:
+      rsi = ta.momentum.rsi(df['close'], window=14)
+      print(f"RSI: {{rsi.iloc[-1]:.2f}}")
 
+2. Available libraries in sandbox:
+   - pandas as pd, numpy as np, math, json, datetime
+   - ta (technical-analysis-library-python)
+   - ta.momentum.rsi(close, window=14)
+   - ta.trend.sma_indicator(close, window=200)
+   - ta.trend.ema_indicator(close, window=50)
+   - ta.volatility.average_true_range(high, low, close, window=14)
+   - ta.volatility.bollinger_hband(close, window=20, window_dev=2)
+   - ta.volatility.bollinger_lband(close, window=20, window_dev=2)
+   - ta.momentum.stoch(high, low, close, window=14)
+
+3. The DataFrame `df` is already loaded with {tf.upper()} OHLC data.
+   Columns: open, high, low, close, volume, timestamp (Unix seconds).
+   Use pd.to_datetime(df['timestamp'], unit='s') for time conversion.
+   Use df.tail(N) for last N rows. NEVER use hardcoded indices like df.iloc[13].
+
+4. ALWAYS output one of these at the end:
+   - A JSON block with TRADE_SETUP (see format below)
+   - "NO_SETUP" if no trade opportunity
+
+5. Risk-Reward must be >= 1:2 for any trade setup.
+
+6. After resample() or dropna(), always check len(df) before accessing elements.
+   Do NOT assume the resampled DataFrame has the same row count.
+
+{data_warning}
 Strategy:
 {prompt_text}
 {error_section}
-INSTRUCTIONS:
-1. Compute indicators on {tf.upper()} data using `ta` library.
-2. If a high-confidence trade setup exists (confidence >= 60%), output JSON:
-   ```json
-   {{"action": "TRADE_SETUP", "symbol": "{symbol}", "direction": "BUY", "order_type": "market", "entry_price": 0.0, "stop_loss": 0.0, "take_profit": 0.0, "lot_size": {lot_size}, "reasoning": "Brief explanation", "confidence": 75}}
-   ```
-3. If NO setup, just print: NO_SETUP
-4. Use print() for ALL output. Always consider risk-reward >= 1:2.
-5. Write TOP-LEVEL executable code (no function wrappers). Call any helper function at the end."""
+OUTPUT FORMAT (if setup found):
+```json
+{{"action": "TRADE_SETUP", "symbol": "{symbol}", "direction": "BUY", "order_type": "market", "entry_price": 0.0, "stop_loss": 0.0, "take_profit": 0.0, "lot_size": {lot_size}, "reasoning": "Brief explanation", "confidence": 75}}
+```
+
+If no setup, print: NO_SETUP"""
 
     add_log(user_id, f"AI prompt: analyze {len(market_data)} {tf} candles for strategy")
 
@@ -608,7 +641,7 @@ INSTRUCTIONS:
                         messages=[
                             {"role": "user", "content": code_prompt},
                             {"role": "assistant", "content": generated_code},
-                            {"role": "user", "content": f"The code ran but didn't output a valid TRADE_SETUP or NO_SETUP. Fix it to output either format. Output was:\n{output[:300]}"}
+                            {"role": "user", "content": f"The code ran but didn't output a valid TRADE_SETUP or NO_SETUP. Fix it to output exactly one of these formats. Output was:\n{output[:400]}"}
                         ],
                         temperature=0.2,
                         max_tokens=2500,
@@ -622,18 +655,30 @@ INSTRUCTIONS:
                     add_log(user_id, f"AI correction failed: {str(e)}", "ERROR")
                     break
         else:
-            # Sandbox error — self-correct
+            # Sandbox error — self-correct with specific hints
             if attempt < 2:
                 error_msg = sandbox_result.get("error", "Unknown error")
                 sandbox_output = sandbox_result.get("output", "")
                 add_log(user_id, f"Code execution error, self-correcting...", "WARNING")
+                # Determine hint based on error type
+                error_lower = error_msg.lower()
+                if "index" in error_lower or "out of bounds" in error_lower:
+                    hint = " (HINT: You likely sliced the DataFrame too small before calculating an indicator. Ensure at least 50-200 rows before passing to ta functions. Use df.tail(N) to get the last N rows.)"
+                elif "nan" in error_lower or "nonetype" in error_lower or "none" in error_lower:
+                    hint = " (HINT: Check for NaNs produced by indicators and use .dropna() or handle them before further calculations.)"
+                elif "division" in error_lower or "divide" in error_lower:
+                    hint = " (HINT: Division by zero. Check for zero values before dividing. Add a small epsilon: value / (denominator + 1e-10).)"
+                elif "key" in error_lower or "column" in error_lower:
+                    hint = " (HINT: Column name error. Check df.columns for available columns. Use exact names: open, high, low, close, volume, timestamp.)"
+                else:
+                    hint = ""
                 try:
                     response = await client.chat.completions.create(
                         model=model,
                         messages=[
                             {"role": "user", "content": code_prompt},
                             {"role": "assistant", "content": generated_code},
-                            {"role": "user", "content": f"The code crashed. Fix the bug. Important: ensure you have enough data (df may have fewer rows than expected). Check for NaN values, division by zero, and index bounds. Error:\n{error_msg[:800]}\n\nPartial output:\n{sandbox_output[:300]}"}
+                            {"role": "user", "content": f"The Python code failed with this error:{hint}\n\nError:\n{error_msg[:800]}\n\nPartial output:\n{sandbox_output[:300]}"}
                         ],
                         temperature=0.2,
                         max_tokens=2500,
