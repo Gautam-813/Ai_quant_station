@@ -66,7 +66,9 @@ export default function AutopilotPage() {
   const [status, setStatus] = useState<AutopilotStatus | null>(null)
 
   const [promptStats, setPromptStats] = useState<PromptStatsItem[]>([])
-  const [selectedPromptFilter, setSelectedPromptFilter] = useState<number | null>(null)
+  const [selectedPromptFilter, setSelectedPromptFilter] = useState<{ number: number; text: string } | null>(null)
+  const [promptTrades, setPromptTrades] = useState<any[]>([])
+  const [promptTradesLoading, setPromptTradesLoading] = useState(false)
   const [loading, setLoading] = useState(true)
 
   // Log History state
@@ -75,6 +77,15 @@ export default function AutopilotPage() {
   const [historyPage, setHistoryPage] = useState(1)
   const [historyLevelFilter, setHistoryLevelFilter] = useState('all')
   const [historyLoading, setHistoryLoading] = useState(false)
+
+  useEffect(() => {
+    if (selectedPromptFilter == null) { setPromptTrades([]); return }
+    setPromptTradesLoading(true)
+    axios.get(`/api/autopilot/results?limit=100&prompt_number=${selectedPromptFilter.number}&prompt_text=${encodeURIComponent(selectedPromptFilter.text)}`)
+      .then(res => setPromptTrades(res.data || []))
+      .catch(() => {})
+      .finally(() => setPromptTradesLoading(false))
+  }, [selectedPromptFilter])
 
   // Prompts State
   const [defaultPrompts, setDefaultPrompts] = useState<{id: string, text: string}[]>([])
@@ -734,6 +745,11 @@ export default function AutopilotPage() {
               Clear Filter
             </Button>
           )}
+          {selectedPromptFilter != null && promptStats.find(s => s.prompt_number === selectedPromptFilter.number) && (
+            <span className="text-xs text-muted-foreground ml-2 max-w-[300px] truncate" title={selectedPromptFilter.text}>
+              {selectedPromptFilter.text}
+            </span>
+          )}
         </CardHeader>
         <CardContent>
           {promptStats.length === 0 ? (
@@ -757,8 +773,8 @@ export default function AutopilotPage() {
                   {promptStats.map((s) => (
                     <tr
                       key={s.prompt_number}
-                      className={`border-b border-border/30 hover:bg-muted/50 cursor-pointer ${selectedPromptFilter === s.prompt_number ? 'bg-blue-500/10' : ''}`}
-                      onClick={() => setSelectedPromptFilter(selectedPromptFilter === s.prompt_number ? null : s.prompt_number)}
+                      className={`border-b border-border/30 hover:bg-muted/50 cursor-pointer ${selectedPromptFilter?.number === s.prompt_number && selectedPromptFilter?.text === s.prompt_text ? 'bg-blue-500/10' : ''}`}
+                      onClick={() => setSelectedPromptFilter(selectedPromptFilter?.number === s.prompt_number && selectedPromptFilter?.text === s.prompt_text ? null : { number: s.prompt_number, text: s.prompt_text })}
                     >
                       <td className="py-3 px-2 font-bold text-blue-400">{s.display_name || `#${s.prompt_number}`}</td>
                       <td className="py-3 px-2 text-xs max-w-[200px] truncate">{s.prompt_text}</td>
@@ -784,6 +800,65 @@ export default function AutopilotPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* Selected Prompt Trades */}
+      {selectedPromptFilter != null && (
+        <Card className="mt-6">
+          <CardHeader>
+            <CardTitle>Trades for Prompt #{selectedPromptFilter.number}</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {promptTradesLoading ? (
+              <p className="text-muted-foreground text-center py-8">Loading trades...</p>
+            ) : promptTrades.length === 0 ? (
+              <p className="text-muted-foreground text-center py-8">No trades for this prompt</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead>
+                    <tr className="border-b border-border">
+                      <th className="text-left py-3 px-2">Time</th>
+                      <th className="text-left py-3 px-2">Symbol</th>
+                      <th className="text-left py-3 px-2">Dir</th>
+                      <th className="text-right py-3 px-2">Entry</th>
+                      <th className="text-right py-3 px-2">SL</th>
+                      <th className="text-right py-3 px-2">TP</th>
+                      <th className="text-right py-3 px-2">Lot</th>
+                      <th className="text-right py-3 px-2">Ticket</th>
+                      <th className="text-left py-3 px-2">Result</th>
+                      <th className="text-right py-3 px-2">P&L</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {promptTrades.map((trade: any) => (
+                      <tr key={trade.id} className="border-b border-border/30 hover:bg-muted/50">
+                        <td className="py-3 px-2 text-xs">{trade.executed_at?.slice(11, 19) || '-'}</td>
+                        <td className="py-3 px-2 font-medium">{trade.symbol}</td>
+                        <td className={`py-3 px-2 ${trade.direction === 'BUY' ? 'text-green-500' : 'text-red-500'}`}>
+                          {trade.direction}
+                        </td>
+                        <td className="py-3 px-2 text-right">{trade.entry_price?.toFixed(trade.symbol?.includes('XAU') ? 2 : 5) ?? '-'}</td>
+                        <td className="py-3 px-2 text-right text-red-400">{trade.stop_loss?.toFixed(trade.symbol?.includes('XAU') ? 2 : 5) ?? '-'}</td>
+                        <td className="py-3 px-2 text-right text-green-400">{trade.take_profit?.toFixed(trade.symbol?.includes('XAU') ? 2 : 5) ?? '-'}</td>
+                        <td className="py-3 px-2 text-right">{trade.lot_size}</td>
+                        <td className="py-3 px-2">{trade.mt5_ticket || '-'}</td>
+                        <td className="py-3 px-2">
+                          <span className={trade.result === 'TP_HIT' ? 'text-green-400' : trade.result === 'SL_HIT' ? 'text-red-400' : trade.result === 'MANUAL_CLOSE' ? 'text-yellow-400' : 'text-gray-400'}>
+                            {trade.result === 'TP_HIT' ? 'TP' : trade.result === 'SL_HIT' ? 'SL' : trade.result === 'MANUAL_CLOSE' ? 'Manual' : trade.result || 'Open'}
+                          </span>
+                        </td>
+                        <td className={`py-3 px-2 text-right font-medium ${(trade.profit ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                          {trade.profit != null ? `$${trade.profit.toFixed(2)}` : '-'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
     </div>
   )

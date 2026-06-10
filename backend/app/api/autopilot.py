@@ -1212,15 +1212,15 @@ async def get_prompt_stats(current_user: dict = Depends(get_current_user)):
         )
         trades = result.scalars().all()
 
-    groups: dict[int, dict] = {}
+    groups: dict[str, dict] = {}
     for t in trades:
-        pn = t.prompt_number
-        if pn not in groups:
-            groups[pn] = {"prompt_number": pn, "prompt_text": t.prompt_text, "total_trades": 0, "wins": 0, "total_profit": 0.0}
-        groups[pn]["total_trades"] += 1
-        groups[pn]["total_profit"] += t.profit or 0
+        key = f"{t.prompt_number}||{t.prompt_text}"
+        if key not in groups:
+            groups[key] = {"prompt_number": t.prompt_number, "prompt_text": t.prompt_text, "total_trades": 0, "wins": 0, "total_profit": 0.0}
+        groups[key]["total_trades"] += 1
+        groups[key]["total_profit"] += t.profit or 0
         if (t.profit or 0) > 0:
-            groups[pn]["wins"] += 1
+            groups[key]["wins"] += 1
 
     stats = []
     for g in groups.values():
@@ -1302,6 +1302,8 @@ async def get_autopilot_logs(
 async def get_trade_results(
     skip: int = 0,
     limit: int = 50,
+    prompt_number: Optional[int] = None,
+    prompt_text: Optional[str] = None,
     current_user: dict = Depends(get_current_user)
 ):
     """Get trade results history."""
@@ -1309,13 +1311,16 @@ async def get_trade_results(
     user_id = current_user["id"]
 
     async with AsyncSessionLocal() as db:
-        result = await db.execute(
+        query = (
             select(AutopilotTrade)
             .where(AutopilotTrade.user_id == user_id)
             .order_by(AutopilotTrade.executed_at.desc())
-            .offset(skip)
-            .limit(limit)
         )
+        if prompt_number is not None:
+            query = query.where(AutopilotTrade.prompt_number == prompt_number)
+        if prompt_text is not None:
+            query = query.where(AutopilotTrade.prompt_text == prompt_text)
+        result = await db.execute(query.offset(skip).limit(limit))
         trades = result.scalars().all()
 
         return [
