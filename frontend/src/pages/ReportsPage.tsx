@@ -113,7 +113,6 @@ export default function ReportsPage() {
   }, [journalFromDate, journalToDate, journalPage, toast])
 
   const exportCsv = async () => {
-    const toastId = crypto.randomUUID()
     try {
       if (tab === 'journal') {
         toast({ title: 'Exporting...', description: 'Fetching all journal trades' })
@@ -135,7 +134,7 @@ export default function ReportsPage() {
           t.profit?.toFixed(2) ?? '',
           t.prompt_number ? `#${t.prompt_number}` : t.prompt_text || '-',
         ])
-        const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n')
+        const csv = [headers.join(','), ...rows.map((r: string[]) => r.join(','))].join('\n')
         const blob = new Blob([csv], { type: 'text/csv' })
         const url = URL.createObjectURL(blob)
         const a = document.createElement('a'); a.href = url; a.download = `journal_${journalFromDate}_${journalToDate}.csv`; a.click()
@@ -158,7 +157,7 @@ export default function ReportsPage() {
           t.profit?.toFixed(2) ?? '',
           t.confidence ?? '',
         ])
-        const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n')
+        const csv = [headers.join(','), ...rows.map((r: string[]) => r.join(','))].join('\n')
         const blob = new Blob([csv], { type: 'text/csv' })
         const url = URL.createObjectURL(blob)
         const a = document.createElement('a'); a.href = url; a.download = 'reports_overview_export.csv'; a.click()
