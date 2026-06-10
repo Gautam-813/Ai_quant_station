@@ -483,17 +483,19 @@ async def run_autopilot_cycle(user_id: int):
     if error_feedback:
         error_section = f"\nPREVIOUS TRADE ERROR FEEDBACK (learn from this):\n{error_feedback}\n- Adjust stop loss / take profit to be further from entry.\n- Do NOT repeat the same mistake.\n"
 
-    code_prompt = f"""You are a quant trader. Write Python code to analyze 1-minute OHLC data.
+    code_prompt = f"""You are a quant trader. Write Python code to analyze market data.
 
-The DataFrame `df` is already loaded with columns: open, high, low, close, volume, timestamp (Unix seconds).
-Available (already importable): pandas (pd), numpy (np), ta, math, json, datetime.
-Use pd.to_datetime() for datetime conversion.
+The DataFrame `df` is already loaded with ~2000+ rows of 1-minute OHLC data.
+Columns: open, high, low, close, volume, timestamp (Unix seconds).
+Available (pre-imported): pandas (pd), numpy (np), ta, math, json, datetime, yfinance (yf).
+For daily/weekly context, use: daily = yf.download("GC=F", period="6mo", interval="1d")
+Use pd.to_datetime() for timestamp conversion.
 
-Strategy to analyze:
+Strategy:
 {prompt_text}
 {error_section}
 INSTRUCTIONS:
-1. Resample 1m data to appropriate timeframe (1H, 4H, or daily).
+1. Resample 1m df to appropriate timeframe (1H, 4H) OR fetch daily with yfinance for longer context.
 2. Compute indicators using `ta` library — exact values, no estimation.
 3. If a high-confidence trade setup exists (confidence >= 60%), output JSON:
    ```json
@@ -501,7 +503,7 @@ INSTRUCTIONS:
    ```
 4. If NO setup, just print: NO_SETUP
 5. Use print() for ALL output. Always consider risk-reward >= 1:2.
-6. CRITICAL: Write TOP-LEVEL executable code. Do NOT wrap in functions/classes. If you use a function, call it at the end. The code runs immediately.
+6. CRITICAL: Write TOP-LEVEL executable code. Do NOT wrap in functions. If you use a function, call it at the end.
 
 Respond ONLY with Python code inside ```python ... ``` block."""
 
