@@ -722,6 +722,7 @@ async def sync_trade_results(user_id: int, connector_url: str = None):
                         break
                 if close_deal:
                     profit = close_deal.get("profit", 0)
+                    exit_price = close_deal.get("price")
                     closed_at_str = close_deal.get("time")
                     comment = close_deal.get("comment", "").lower()
                     res_type = "MANUAL_CLOSE"
@@ -735,6 +736,7 @@ async def sync_trade_results(user_id: int, connector_url: str = None):
                         res_type = "LOSS"
 
                     trade.profit = profit
+                    trade.exit_price = exit_price
                     trade.result = res_type
                     state["stats"]["daily_pnl"] = state["stats"].get("daily_pnl", 0) + profit
                     if closed_at_str:
@@ -863,6 +865,7 @@ class TradeResult(BaseModel):
     symbol: str
     direction: str
     entry_price: Optional[float]
+    exit_price: Optional[float] = None
     stop_loss: Optional[float]
     take_profit: Optional[float]
     lot_size: float
@@ -1331,6 +1334,7 @@ async def get_trade_results(
                 symbol=t.symbol,
                 direction=t.direction,
                 entry_price=t.entry_price,
+                exit_price=t.exit_price,
                 stop_loss=t.stop_loss,
                 take_profit=t.take_profit,
                 lot_size=t.lot_size,

@@ -181,6 +181,7 @@ class AutopilotTrade(Base):
 
     result = Column(String, nullable=True)
     profit = Column(Float, nullable=True)
+    exit_price = Column(Float, nullable=True)
     closed_at = Column(DateTime(timezone=True), nullable=True)
     duration_minutes = Column(Integer, nullable=True)
 

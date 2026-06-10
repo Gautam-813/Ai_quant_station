@@ -821,6 +821,7 @@ export default function AutopilotPage() {
                       <th className="text-left py-3 px-2">Symbol</th>
                       <th className="text-left py-3 px-2">Dir</th>
                       <th className="text-right py-3 px-2">Entry</th>
+                      <th className="text-right py-3 px-2">Exit</th>
                       <th className="text-right py-3 px-2">SL</th>
                       <th className="text-right py-3 px-2">TP</th>
                       <th className="text-right py-3 px-2">Lot</th>
@@ -838,6 +839,7 @@ export default function AutopilotPage() {
                           {trade.direction}
                         </td>
                         <td className="py-3 px-2 text-right">{trade.entry_price?.toFixed(trade.symbol?.includes('XAU') ? 2 : 5) ?? '-'}</td>
+                        <td className="py-3 px-2 text-right">{trade.exit_price?.toFixed(trade.symbol?.includes('XAU') ? 2 : 5) ?? '-'}</td>
                         <td className="py-3 px-2 text-right text-red-400">{trade.stop_loss?.toFixed(trade.symbol?.includes('XAU') ? 2 : 5) ?? '-'}</td>
                         <td className="py-3 px-2 text-right text-green-400">{trade.take_profit?.toFixed(trade.symbol?.includes('XAU') ? 2 : 5) ?? '-'}</td>
                         <td className="py-3 px-2 text-right">{trade.lot_size}</td>
