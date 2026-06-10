@@ -459,7 +459,9 @@ async def run_autopilot_cycle(user_id: int):
         actual analysis timeframe (e.g. 'M15').
         """
         lower = text.lower()
-        # Shorter timeframes first (more specific)
+        # Check shorter (more granular) timeframes FIRST.
+        # For multi-TF prompts ("H4 trend, H1 entry"), this detects the LOWEST TF
+        # so the AI gets granular data and can resample UP to higher TFs if needed.
         if re.search(r'\b(?:m15|15m|15[-\s]?min(?:ute)?s?\b)', lower):
             return ("15m", 500)
         if re.search(r'\b(?:m5|5m|5[-\s]?min(?:ute)?s?\b)', lower):
@@ -468,13 +470,12 @@ async def run_autopilot_cycle(user_id: int):
             return ("1m", 500)
         if re.search(r'\b(?:m30|30m|30[-\s]?min(?:ute)?s?\b)', lower):
             return ("30m", 500)
-        # Broader timeframes
-        if re.search(r'\b1[-\s]?(?:d|day|w|week)\b|daily|weekly|d1|w1|previous\s*day|yesterday', lower):
-            return ("1d", 200)
-        if re.search(r'\b4[-\s]?(?:h|hour)\b|four[-\s]?hour|h4\b|4hrs?\b', lower):
-            return ("4h", 200)
         if re.search(r'\b1[-\s]?(?:h|hour)\b|one[-\s]?hour|hourly|h1\b|1hrs?\b', lower):
             return ("1h", 300)
+        if re.search(r'\b4[-\s]?(?:h|hour)\b|four[-\s]?hour|h4\b|4hrs?\b', lower):
+            return ("4h", 200)
+        if re.search(r'\b1[-\s]?(?:d|day|w|week)\b|daily|weekly|d1|w1|previous\s*day|yesterday', lower):
+            return ("1d", 200)
         return ("4h", 200)  # default: 4H for swing trading
 
     tf, count = _detect_timeframe(prompt_text)
