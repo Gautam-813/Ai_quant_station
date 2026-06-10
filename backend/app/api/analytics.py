@@ -10,10 +10,11 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, text, case
 
-from ..core.database import get_db
+from ..core.database import get_db, AsyncSessionLocal
 from ..core.security import get_current_user
 from ..core.config import settings
 from ..models.strategy_score import StrategyScore
+from ..models.ai_memory import AutopilotTrade
 
 router = APIRouter(prefix="/analytics", tags=["User Analytics"])
 
@@ -510,8 +511,64 @@ async def export_journal(
     current_user: dict = Depends(get_current_user),
 ):
     """Export journal trades as JSON (no pagination — all trades in date range)."""
-    trades, _ = await _fetch_mt5_trades(from_date, to_date)
+    user_id = current_user["id"]
+    trades, mt5_available = await _fetch_mt5_trades(from_date, to_date)
+    if not mt5_available or not trades:
+        trades = await _fetch_local_trades(user_id, from_date, to_date)
     return {"trades": trades, "total_count": len(trades)}
+
+
+def _db_trade_to_dict(t: AutopilotTrade) -> dict:
+    """Convert an AutopilotTrade DB row to the journal trade dict format."""
+    exit_price = t.exit_price or 0
+    profit = t.profit or 0
+    return {
+        "id": t.id,
+        "source": "autopilot",
+        "symbol": t.symbol,
+        "direction": t.direction,
+        "entry_price": t.entry_price,
+        "exit_price": t.exit_price,
+        "stop_loss": t.stop_loss,
+        "take_profit": t.take_profit,
+        "lot_size": t.lot_size,
+        "profit": profit,
+        "result": t.result or "OPEN",
+        "executed_at": t.executed_at.isoformat() if t.executed_at else "",
+        "closed_at": t.closed_at.isoformat() if t.closed_at else None,
+        "prompt_number": t.prompt_number,
+        "prompt_text": t.prompt_text,
+        "confidence": t.confidence,
+        "reasoning": t.reasoning,
+        "mt5_ticket": t.mt5_ticket,
+    }
+
+
+async def _fetch_local_trades(user_id: int, from_date: str, to_date: Optional[str] = None) -> list[dict]:
+    """Fallback: fetch trades from local autopilot_trades table."""
+    try:
+        day_start = datetime.strptime(from_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid from_date format. Use YYYY-MM-DD")
+    if to_date:
+        try:
+            day_end = datetime.strptime(to_date, "%Y-%m-%d").replace(tzinfo=timezone.utc) + timedelta(days=1)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid to_date format. Use YYYY-MM-DD")
+    else:
+        day_end = day_start + timedelta(days=1)
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(AutopilotTrade).where(
+                AutopilotTrade.user_id == user_id,
+                AutopilotTrade.executed_at >= day_start,
+                AutopilotTrade.executed_at < day_end,
+            ).order_by(AutopilotTrade.executed_at.desc())
+        )
+        trades = result.scalars().all()
+
+    return [_db_trade_to_dict(t) for t in trades]
 
 
 @router.get("/journal")
@@ -522,11 +579,27 @@ async def get_journal(
     per_page: int = 20,
     current_user: dict = Depends(get_current_user),
 ):
-    """Trade journal — displays [AUTOPILOT] trades from MT5 connector history.
-    No database queries — all data comes from the MT5 connector."""
+    """Trade journal — displays autopilot trades from MT5 connector (with DB fallback)."""
     per_page = min(per_page, 100)
+    user_id = current_user["id"]
+
+    try:
+        day_start = datetime.strptime(from_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid from_date format. Use YYYY-MM-DD")
+    if to_date:
+        try:
+            day_end = datetime.strptime(to_date, "%Y-%m-%d").replace(tzinfo=timezone.utc) + timedelta(days=1)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid to_date format. Use YYYY-MM-DD")
+    else:
+        day_end = day_start + timedelta(days=1)
 
     trades, mt5_available = await _fetch_mt5_trades(from_date, to_date)
+
+    if not mt5_available or not trades:
+        trades = await _fetch_local_trades(user_id, from_date, to_date)
+
     total = len(trades)
 
     closed_trades = [t for t in trades if t.get("result") != "OPEN"]
