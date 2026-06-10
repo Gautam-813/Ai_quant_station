@@ -404,9 +404,10 @@ def _send_email(filepath: str, summary: dict) -> bool:
     smtp_port = settings.SMTP_PORT
     sender = settings.REPORT_EMAIL
     password = settings.REPORT_EMAIL_PASSWORD
-    recipient = settings.REPORT_RECIPIENT_EMAIL
+    raw_recipients = settings.REPORT_RECIPIENT_EMAIL
+    recipients = [r.strip() for r in raw_recipients.split(",") if r.strip()] if raw_recipients else []
 
-    if not all([smtp_server, smtp_port, sender, password, recipient]):
+    if not all([smtp_server, smtp_port, sender, password, recipients]):
         logger.warning("[Report] SMTP not configured — skipping email")
         return False
 
@@ -414,7 +415,7 @@ def _send_email(filepath: str, summary: dict) -> bool:
         msg = MIMEMultipart()
         msg["Subject"] = f"Daily Trade Report — {_today_str()}"
         msg["From"] = sender
-        msg["To"] = recipient
+        msg["To"] = ", ".join(recipients)
 
         body = (
             f"AI Quant Station — Daily Trade Report\n"
@@ -442,7 +443,7 @@ def _send_email(filepath: str, summary: dict) -> bool:
             server.login(sender, password)
             server.send_message(msg)
 
-        logger.info(f"[Report] Email sent to {recipient}")
+        logger.info(f"[Report] Email sent to {', '.join(recipients)}")
         return True
     except Exception as e:
         logger.error(f"[Report] Email failed: {e}")
