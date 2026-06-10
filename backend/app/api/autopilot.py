@@ -382,11 +382,24 @@ async def run_autopilot_cycle(user_id: int):
     state["stats"]["last_run"] = datetime.now(timezone.utc).isoformat()
     add_log(user_id, f"=== Starting Cycle #{state['stats']['total_runs']} ===")
 
-    # Safety limits
+    # Safety limits — persist across server restarts by reading from DB
     today = datetime.now(timezone.utc).date()
     if state["stats"]["daily_reset_date"] != str(today):
-        state["stats"]["daily_trade_count"] = 0
-        state["stats"]["daily_pnl"] = 0.0
+        today_start = datetime(today.year, today.month, today.day, tzinfo=timezone.utc)
+        today_end = today_start + timedelta(days=1)
+        async with AsyncSessionLocal() as db:
+            row = (await db.execute(
+                select(
+                    func.count(AutopilotTrade.id),
+                    func.coalesce(func.sum(AutopilotTrade.profit), 0),
+                ).where(
+                    AutopilotTrade.user_id == user_id,
+                    AutopilotTrade.executed_at >= today_start,
+                    AutopilotTrade.executed_at < today_end,
+                )
+            )).one()
+            state["stats"]["daily_trade_count"] = row[0]
+            state["stats"]["daily_pnl"] = float(row[1])
         state["stats"]["daily_reset_date"] = str(today)
 
     if state["stats"]["daily_trade_count"] >= max_trades:

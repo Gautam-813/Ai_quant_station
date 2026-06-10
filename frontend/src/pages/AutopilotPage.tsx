@@ -22,25 +22,6 @@ interface LogHistoryEntry {
   cycle_number: number | null
 }
 
-interface TradeResult {
-  id: number
-  prompt_number: number
-  prompt_text: string
-  symbol: string
-  direction: string
-  entry_price: number | null
-  stop_loss: number | null
-  take_profit: number | null
-  lot_size: number
-  mt5_ticket: number | null
-  executed_at: string
-  result: string | null
-  profit: number | null
-  closed_at: string | null
-  reasoning: string | null
-  confidence: number | null
-}
-
 interface AutopilotStatus {
   enabled: boolean
   running: boolean
@@ -83,7 +64,7 @@ interface PromptStatsItem {
 export default function AutopilotPage() {
   const { toast } = useToast()
   const [status, setStatus] = useState<AutopilotStatus | null>(null)
-  const [trades, setTrades] = useState<TradeResult[]>([])
+
   const [promptStats, setPromptStats] = useState<PromptStatsItem[]>([])
   const [selectedPromptFilter, setSelectedPromptFilter] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
@@ -137,7 +118,6 @@ export default function AutopilotPage() {
   useEffect(() => {
     fetchProviders()
     fetchStatus()
-    fetchTrades()
     fetchPromptStats()
     fetchPrompts()
     // Poll only for status/running state, not settings
@@ -220,15 +200,6 @@ export default function AutopilotPage() {
       console.error('Failed to fetch status:', error)
     } finally {
       setLoading(false)
-    }
-  }
-
-  const fetchTrades = async () => {
-    try {
-      const res = await axios.get('/api/autopilot/results?limit=50')
-      setTrades(res.data || [])
-    } catch (error) {
-      console.error('Failed to fetch trades:', error)
     }
   }
 
@@ -352,16 +323,6 @@ export default function AutopilotPage() {
       case 'SUCCESS': return 'text-green-400'
       case 'ERROR': return 'text-red-400'
       default: return 'text-gray-300'
-    }
-  }
-
-  const getResultBadge = (result: string | null) => {
-    switch (result) {
-      case 'TP_HIT': return <span className="px-2 py-1 bg-green-500/20 text-green-400 rounded text-xs">TP HIT</span>
-      case 'SL_HIT': return <span className="px-2 py-1 bg-red-500/20 text-red-400 rounded text-xs">SL HIT</span>
-      case 'MANUAL_CLOSE': return <span className="px-2 py-1 bg-yellow-500/20 text-yellow-400 rounded text-xs">MANUAL</span>
-      case 'PENDING': return <span className="px-2 py-1 bg-blue-500/20 text-blue-400 rounded text-xs">OPEN</span>
-      default: return <span className="px-2 py-1 bg-gray-500/20 text-gray-400 rounded text-xs">-</span>
     }
   }
 
@@ -824,65 +785,6 @@ export default function AutopilotPage() {
         </CardContent>
       </Card>
 
-      {/* Trade History */}
-      <Card className="mt-8">
-        <CardHeader className="flex flex-row items-center justify-between">
-          <CardTitle>Trade History {selectedPromptFilter != null ? `(Prompt #${selectedPromptFilter})` : ''}</CardTitle>
-          <Button variant="outline" size="sm" onClick={() => window.open('/api/autopilot/results/export', '_blank')}>
-            Export CSV
-          </Button>
-        </CardHeader>
-        <CardContent>
-          {(() => {
-            const filtered = selectedPromptFilter != null ? trades.filter(t => t.prompt_number === selectedPromptFilter) : trades
-            if (filtered.length === 0) {
-              return <p className="text-muted-foreground text-center py-8">No trades yet</p>
-            }
-            return (
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead>
-                    <tr className="border-b border-border">
-                      <th className="text-left py-3 px-2">Time</th>
-                      <th className="text-left py-3 px-2">#</th>
-                      <th className="text-left py-3 px-2">Symbol</th>
-                      <th className="text-left py-3 px-2">Dir</th>
-                      <th className="text-right py-3 px-2">Entry</th>
-                      <th className="text-right py-3 px-2">SL</th>
-                      <th className="text-right py-3 px-2">TP</th>
-                      <th className="text-right py-3 px-2">Lot</th>
-                      <th className="text-left py-3 px-2">Ticket</th>
-                      <th className="text-left py-3 px-2">Result</th>
-                      <th className="text-right py-3 px-2">P&L</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filtered.map((trade) => (
-                      <tr key={trade.id} className="border-b border-border/30 hover:bg-muted/50">
-                        <td className="py-3 px-2 text-xs">{trade.executed_at?.slice(11, 19) || '-'}</td>
-                        <td className="py-3 px-2 text-xs">{trade.prompt_number}</td>
-                        <td className="py-3 px-2 font-medium">{trade.symbol}</td>
-                        <td className={`py-3 px-2 ${trade.direction === 'BUY' ? 'text-green-500' : 'text-red-500'}`}>
-                          {trade.direction}
-                        </td>
-                        <td className="py-3 px-2 text-right">{trade.entry_price?.toFixed(2) || '-'}</td>
-                        <td className="py-3 px-2 text-right text-red-400">{trade.stop_loss?.toFixed(2) || '-'}</td>
-                        <td className="py-3 px-2 text-right text-green-400">{trade.take_profit?.toFixed(2) || '-'}</td>
-                        <td className="py-3 px-2 text-right">{trade.lot_size}</td>
-                        <td className="py-3 px-2">{trade.mt5_ticket || '-'}</td>
-                        <td className="py-3 px-2">{getResultBadge(trade.result)}</td>
-                        <td className={`py-3 px-2 text-right font-medium ${(trade.profit ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                          {trade.profit != null ? `$${trade.profit.toFixed(2)}` : '-'}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )
-          })()}
-        </CardContent>
-      </Card>
     </div>
   )
 }
