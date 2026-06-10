@@ -740,8 +740,10 @@ async def sync_trade_results(user_id: int, connector_url: str = None):
                     trade.result = res_type
                     state["stats"]["daily_pnl"] = state["stats"].get("daily_pnl", 0) + profit
                     if closed_at_str:
-                        trade.closed_at = datetime.strptime(closed_at_str, '%Y-%m-%d %H:%M:%S')
+                        trade.closed_at = datetime.strptime(closed_at_str, '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
                         if trade.executed_at:
+                            if trade.executed_at.tzinfo is None:
+                                trade.executed_at = trade.executed_at.replace(tzinfo=timezone.utc)
                             diff = trade.closed_at - trade.executed_at
                             trade.duration_minutes = int(diff.total_seconds() / 60)
                     updated_count += 1

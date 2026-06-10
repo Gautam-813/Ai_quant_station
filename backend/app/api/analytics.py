@@ -857,8 +857,12 @@ async def get_strategy_scores(
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get strategy scoreboard with win rate and P&L per prompt."""
+    """Get strategy scoreboard with win rate and P&L per prompt.
+    Refreshes from latest trade data on every call."""
     try:
+        from ..core.strategy_scorer import update_strategy_scores
+        await update_strategy_scores()
+
         from sqlalchemy import select, desc
 
         query = select(StrategyScore)

@@ -66,7 +66,13 @@ async def update_strategy_scores():
                 first = row.first_used
                 last = row.last_used
                 win_rate = (wins / total * 100) if total > 0 else 0.0
-                profit_factor = abs(pnl / (pnl - pnl)) if pnl != 0 else None
+                losses = total - wins
+                gross_profit = (wins * avg_profit) if avg_profit and wins > 0 else 0
+                gross_loss = (losses * avg_loss) if avg_loss and losses > 0 else 0
+                if gross_loss < 0:
+                    profit_factor = round(abs(gross_profit / gross_loss), 2) if gross_profit > 0 else 0.0
+                else:
+                    profit_factor = None
 
                 existing = await db.execute(
                     select(StrategyScore).where(
