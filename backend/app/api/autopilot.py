@@ -531,6 +531,11 @@ IMPORTANT RULES:
    Use pd.to_datetime(df['timestamp'], unit='s') for time conversion.
    Use df.tail(N) for last N rows. NEVER use hardcoded indices like df.iloc[13].
 
+   For multi-timeframe analysis, resample df UP to higher TFs:
+     df_4h = df.resample('4H', on='timestamp').agg({{'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'}})
+   Aliases: '1H'=1h, '4H'=4h, '1D'=1d.
+   You CANNOT resample DOWN (e.g. 1h → 1m) — that creates fake data.
+
 4. ALWAYS output one of these at the end:
    - A JSON block with TRADE_SETUP (see format below)
    - "NO_SETUP" if no trade opportunity
