@@ -186,13 +186,22 @@ async def startup_event():
     except Exception as e:
         print(f"  Strategy scorer start: {e}")
 
+    # Start daily report scheduler (23:50 UTC)
+    try:
+        from .core.email_reports import start_report_scheduler
+        start_report_scheduler()
+    except Exception as e:
+        print(f"  Report scheduler start: {e}")
+
 @app.on_event("shutdown")
 async def shutdown_event():
     from .core.mt5_connector import shutdown_connector
     from .core.mt5_sync import shutdown_scheduler
     from .api.autopilot import shutdown_http_client
+    from .core.email_reports import shutdown_report_scheduler
     await shutdown_connector()
     shutdown_scheduler()
+    shutdown_report_scheduler()
     await shutdown_http_client()
 
 # Middleware chain: UserIdentity (innermost) → CORS → SlowAPI (outermost)

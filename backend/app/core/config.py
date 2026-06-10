@@ -77,6 +77,13 @@ class Settings(BaseSettings):
     # Yahoo Finance (for market data)
     YAHOO_FINANCE_ENABLED: bool = True
     
+    # SMTP / Daily Report Email
+    SMTP_SERVER: str = "smtp.gmail.com"
+    SMTP_PORT: int = 587
+    REPORT_EMAIL: str = ""
+    REPORT_EMAIL_PASSWORD: str = ""
+    REPORT_RECIPIENT_EMAIL: str = ""
+
     # Extra fields from .env (legacy/compat)
     PASSWORD: str = ""
     Bytez: str = ""
