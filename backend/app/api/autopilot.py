@@ -451,25 +451,29 @@ async def run_autopilot_cycle(user_id: int):
         display_id = f"#{prompt_num}"
     add_log(user_id, f"Using Strategy {display_id}: {prompt_text[:50]}...")
 
-    # Detect required candle count based on prompt text
-    def _detect_required_candles(text: str) -> int:
+    # Detect required timeframe from prompt text and fetch from MT5 directly
+    def _detect_timeframe(text: str) -> tuple:
+        """Return (mt5_timeframe, candle_count) based on prompt."""
         lower = text.lower()
         if re.search(r'\b1[-\s]?(?:d|day|w|week)\b|daily|weekly|d1|w1|previous\s*day|yesterday', lower):
-            return 3000
+            return ("1d", 200)
         if re.search(r'\b4[-\s]?(?:h|hour)\b|four[-\s]?hour|h4\b|4hrs?\b', lower):
-            return 2000
+            return ("4h", 200)
         if re.search(r'\b1[-\s]?(?:h|hour)\b|one[-\s]?hour|hourly|h1\b|1hrs?\b', lower):
-            return 1000
-        return 500
+            return ("1h", 300)
+        if re.search(r'\b(?:m5|5m|5[-\s]?min)', lower):
+            return ("5m", 500)
+        if re.search(r'\b(?:m15|15m|15[-\s]?min)', lower):
+            return ("15m", 500)
+        return ("4h", 200)  # default: 4H for swing trading
 
-    # Always request enough 1m data for sandbox resampling (need >=2000 for H4/D1)
-    data_count = max(_detect_required_candles(prompt_text), 2000)
-    market_data = await get_market_data(user_id, symbol, count=data_count, connector_url=connector_url)
+    tf, count = _detect_timeframe(prompt_text)
+    market_data = await get_market_data(user_id, symbol, timeframe=tf, count=count, connector_url=connector_url)
     if not market_data or len(market_data) == 0:
         add_log(user_id, "No market data available", "ERROR")
         state["stats"]["error_count"] += 1
         return
-    add_log(user_id, f"Loaded {len(market_data)} candles for {symbol}")
+    add_log(user_id, f"Loaded {len(market_data)} {tf} candles for {symbol}")
 
     # ── NEW: SANDBOX APPROACH ──────────────────────────────────────────
     # Instead of dumping raw candle text into the AI prompt, we:
@@ -485,27 +489,25 @@ async def run_autopilot_cycle(user_id: int):
 
     code_prompt = f"""You are a quant trader. Write Python code to analyze market data.
 
-The DataFrame `df` is already loaded with ~2000+ rows of 1-minute OHLC data.
+The DataFrame `df` is already loaded with {tf.upper()} OHLC data.
 Columns: open, high, low, close, volume, timestamp (Unix seconds).
-Available (pre-imported): pandas (pd), numpy (np), ta, math, json, datetime, yfinance (yf).
-For daily/weekly context, use: daily = yf.download("GC=F", period="6mo", interval="1d")
+Available: pandas (pd), numpy (np), ta, math, json, datetime.
 Use pd.to_datetime() for timestamp conversion.
 
 Strategy:
 {prompt_text}
 {error_section}
 INSTRUCTIONS:
-1. Resample 1m df to appropriate timeframe (1H, 4H) OR fetch daily with yfinance for longer context.
-2. Compute indicators using `ta` library — exact values, no estimation.
-3. If a high-confidence trade setup exists (confidence >= 60%), output JSON:
+1. Compute indicators on {tf.upper()} data using `ta` library.
+2. If a high-confidence trade setup exists (confidence >= 60%), output JSON:
    ```json
    {{"action": "TRADE_SETUP", "symbol": "{symbol}", "direction": "BUY", "order_type": "market", "entry_price": 0.0, "stop_loss": 0.0, "take_profit": 0.0, "lot_size": {lot_size}, "reasoning": "Brief explanation", "confidence": 75}}
    ```
-4. If NO setup, just print: NO_SETUP
-5. Use print() for ALL output. Always consider risk-reward >= 1:2.
-6. CRITICAL: Write TOP-LEVEL executable code. Do NOT wrap in functions. If you use a function, call it at the end.
+3. If NO setup, just print: NO_SETUP
+4. Use print() for ALL output. Always consider risk-reward >= 1:2.
+5. Write TOP-LEVEL executable code (no function wrappers). Call any helper function at the end."""
 
-Respond ONLY with Python code inside ```python ... ``` block."""
+    add_log(user_id, f"AI prompt: analyze {len(market_data)} {tf} candles for strategy")
 
     api_key = await resolve_api_key(provider, settings, user_id, AsyncSessionLocal)
     if not api_key:
