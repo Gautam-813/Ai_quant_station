@@ -255,6 +255,108 @@ async def get_reports(current_user: dict = Depends(get_current_user)):
     )
 
 
+@router.get("/reports/export")
+async def export_reports(current_user: dict = Depends(get_current_user)):
+    """Export all trades (no limit — returns full trade list)."""
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    thirty_days_ago = today_start - timedelta(days=30)
+
+    trades: list[dict] = []
+
+    mt5_url = settings.MT5_CONNECTOR_URL
+    if mt5_url:
+        mt5_base = mt5_url.rstrip("/")
+        headers = {}
+        if settings.MT5_API_TOKEN:
+            headers["Authorization"] = f"Bearer {settings.MT5_API_TOKEN}"
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(
+                    f"{mt5_base}/history",
+                    params={"hours": 720},
+                    headers=headers,
+                    timeout=30,
+                )
+                if resp.status_code == 200:
+                    mt5_deals = resp.json().get("deals", [])
+
+                    autopilot_pids = {
+                        d.get("position_id")
+                        for d in mt5_deals
+                        if d.get("position_id") and (d.get("comment") or "").strip().startswith("[AUTOPILOT]")
+                    }
+                    auto_deals = [d for d in mt5_deals if d.get("position_id") in autopilot_pids]
+
+                    pos_map: dict = {}
+                    for deal in auto_deals:
+                        pid = deal.get("position_id")
+                        if not pid:
+                            continue
+                        if pid not in pos_map:
+                            pos_map[pid] = {"open": None, "close": None}
+                        if deal.get("entry") == "OPEN":
+                            pos_map[pid]["open"] = deal
+                        else:
+                            pos_map[pid]["close"] = deal
+
+                    for pid, pair in pos_map.items():
+                        open_deal = pair["open"]
+                        close_deal = pair["close"]
+                        if not open_deal:
+                            continue
+
+                        deal_time = open_deal.get("time", "")
+                        try:
+                            deal_dt = datetime.strptime(deal_time, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                        except (ValueError, TypeError):
+                            continue
+                        if deal_dt < thirty_days_ago:
+                            continue
+
+                        direction = open_deal.get("direction", "")
+                        profit = close_deal.get("profit", 0) if close_deal else 0
+                        comment = open_deal.get("comment", "") or ""
+                        prompt_match = __import__("re").search(r"P(\d+)", comment)
+                        prompt_number = int(prompt_match.group(1)) if prompt_match else None
+
+                        close_comment = (close_deal.get("comment", "") or "").lower() if close_deal else ""
+                        if close_deal:
+                            if "sl" in close_comment:
+                                res_type = "SL_HIT"
+                            elif "tp" in close_comment:
+                                res_type = "TP_HIT"
+                            elif profit > 0:
+                                res_type = "PROFIT"
+                            else:
+                                res_type = "LOSS"
+                        else:
+                            res_type = "OPEN"
+
+                        trades.append({
+                            "id": -pid,
+                            "prompt_number": prompt_number,
+                            "prompt_text": f"Prompt #{prompt_number}" if prompt_number else "Autopilot",
+                            "symbol": open_deal.get("symbol", ""),
+                            "direction": direction,
+                            "entry_price": open_deal.get("price"),
+                            "stop_loss": None,
+                            "take_profit": None,
+                            "lot_size": open_deal.get("volume", 0),
+                            "mt5_ticket": pid,
+                            "executed_at": open_deal.get("time", "").replace(" ", "T"),
+                            "result": res_type,
+                            "profit": float(profit) if profit else 0.0,
+                            "closed_at": close_deal.get("time", "").replace(" ", "T") if close_deal else None,
+                            "reasoning": comment,
+                            "confidence": None,
+                        })
+        except Exception:
+            pass
+
+    trades.sort(key=lambda x: x["executed_at"], reverse=True)
+    return {"trades": trades, "total_count": len(trades)}
+
+
 # ── Journal Pydantic models ─────────────────────────────────────────────────
 
 class JournalSummary(BaseModel):
@@ -282,18 +384,11 @@ class JournalResponse(BaseModel):
     total_count: int
 
 
-@router.get("/journal")
-async def get_journal(
-    from_date: str,
-    to_date: Optional[str] = None,
-    page: int = 1,
-    per_page: int = 20,
-    current_user: dict = Depends(get_current_user),
-):
-    """Trade journal — displays [AUTOPILOT] trades from MT5 connector history.
-    No database queries — all data comes from the MT5 connector."""
-    per_page = min(per_page, 100)
+# ── Shared helper: fetch autopilot trades from MT5 ─────────────────────
 
+async def _fetch_mt5_trades(from_date: str, to_date: Optional[str] = None) -> tuple[list[dict], bool]:
+    """Fetch autopilot trades from MT5 connector within a date range.
+    Returns (trades_list, mt5_available)."""
     try:
         day_start = datetime.strptime(from_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     except ValueError:
@@ -329,7 +424,6 @@ async def get_journal(
                     mt5_available = True
                     mt5_deals = resp.json().get("deals", [])
 
-                    # Find all position IDs that are autopilot trades based on the opening deal comment
                     autopilot_pids = {
                         d.get("position_id")
                         for d in mt5_deals
@@ -406,6 +500,33 @@ async def get_journal(
             pass
 
     trades.sort(key=lambda x: x.get("executed_at", ""), reverse=True)
+    return trades, mt5_available
+
+
+@router.get("/journal/export")
+async def export_journal(
+    from_date: str,
+    to_date: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """Export journal trades as JSON (no pagination — all trades in date range)."""
+    trades, _ = await _fetch_mt5_trades(from_date, to_date)
+    return {"trades": trades, "total_count": len(trades)}
+
+
+@router.get("/journal")
+async def get_journal(
+    from_date: str,
+    to_date: Optional[str] = None,
+    page: int = 1,
+    per_page: int = 20,
+    current_user: dict = Depends(get_current_user),
+):
+    """Trade journal — displays [AUTOPILOT] trades from MT5 connector history.
+    No database queries — all data comes from the MT5 connector."""
+    per_page = min(per_page, 100)
+
+    trades, mt5_available = await _fetch_mt5_trades(from_date, to_date)
     total = len(trades)
 
     closed_trades = [t for t in trades if t.get("result") != "OPEN"]

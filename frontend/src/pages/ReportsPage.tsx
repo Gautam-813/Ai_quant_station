@@ -112,30 +112,62 @@ export default function ReportsPage() {
     }
   }, [journalFromDate, journalToDate, journalPage, toast])
 
-  const exportCsv = () => {
-    const trades = tab === 'journal' ? journalData?.trades : data?.trades
-    if (!trades?.length) return
-    const headers = ['Date', 'Source', 'Prompt', 'Symbol', 'Direction', 'Entry', 'Exit', 'SL', 'TP', 'Lot', 'Result', 'P&L', 'Confidence']
-    const rows = trades.map((t: any) => [
-      t.executed_at?.split('T')[0] || '',
-      t.source || 'autopilot',
-      t.prompt_number ? `#${t.prompt_number}` : t.prompt_text || '-',
-      t.symbol,
-      t.direction,
-      t.entry_price ?? '',
-      t.exit_price ?? '',
-      t.stop_loss ?? '',
-      t.take_profit ?? '',
-      t.lot_size,
-      t.result ?? '',
-      t.profit?.toFixed(2) ?? '',
-      t.confidence ?? '',
-    ])
-    const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n')
-    const blob = new Blob([csv], { type: 'text/csv' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a'); a.href = url; a.download = tab === 'journal' ? `journal_${journalFromDate}_${journalToDate}.csv` : 'reports_overview.csv'; a.click()
-    URL.revokeObjectURL(url)
+  const exportCsv = async () => {
+    const toastId = crypto.randomUUID()
+    try {
+      if (tab === 'journal') {
+        toast({ title: 'Exporting...', description: 'Fetching all journal trades' })
+        const res = await axios.get(`/api/analytics/journal/export?from_date=${journalFromDate}&to_date=${journalToDate}`)
+        const trades = res.data.trades
+        if (!trades?.length) { toast({ title: 'No data', description: 'No trades to export' }); return }
+        const headers = ['Date', 'Source', 'Symbol', 'Direction', 'Entry', 'Exit', 'SL', 'TP', 'Lot', 'Result', 'P&L', 'Prompt']
+        const rows = trades.map((t: any) => [
+          t.executed_at?.split('T')[0] || '',
+          t.source || 'autopilot',
+          t.symbol,
+          t.direction,
+          t.entry_price ?? '',
+          t.exit_price ?? '',
+          t.stop_loss ?? '',
+          t.take_profit ?? '',
+          t.lot_size,
+          t.result ?? '',
+          t.profit?.toFixed(2) ?? '',
+          t.prompt_number ? `#${t.prompt_number}` : t.prompt_text || '-',
+        ])
+        const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n')
+        const blob = new Blob([csv], { type: 'text/csv' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a'); a.href = url; a.download = `journal_${journalFromDate}_${journalToDate}.csv`; a.click()
+        URL.revokeObjectURL(url)
+        toast({ title: 'Exported', description: `${trades.length} trades exported` })
+      } else {
+        const trades = data?.trades
+        if (!trades?.length) { toast({ title: 'No data', description: 'No trades to export' }); return }
+        const res = await axios.get('/api/analytics/reports/export')
+        const allTrades = res.data.trades
+        const headers = ['Date', 'Prompt', 'Symbol', 'Direction', 'Entry', 'Lot', 'Result', 'P&L', 'Confidence']
+        const rows = allTrades.map((t: any) => [
+          t.executed_at?.split('T')[0] || '',
+          t.prompt_number ? `#${t.prompt_number}` : t.prompt_text || '-',
+          t.symbol,
+          t.direction,
+          t.entry_price ?? '',
+          t.lot_size,
+          t.result ?? '',
+          t.profit?.toFixed(2) ?? '',
+          t.confidence ?? '',
+        ])
+        const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n')
+        const blob = new Blob([csv], { type: 'text/csv' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a'); a.href = url; a.download = 'reports_overview_export.csv'; a.click()
+        URL.revokeObjectURL(url)
+        toast({ title: 'Exported', description: `${allTrades.length} trades exported` })
+      }
+    } catch {
+      toast({ title: 'Export failed', description: 'Could not export trades', variant: 'destructive' })
+    }
   }
 
   // ── Overview filtered trades ──
@@ -170,7 +202,7 @@ export default function ReportsPage() {
         <h1 className="font-heading text-xl sm:text-2xl md:text-3xl font-bold">Reports</h1>
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={exportCsv}
-            disabled={tab === 'overview' ? !data?.trades.length : !journalData?.trades.length}>
+            disabled={tab === 'overview' ? !data?.trades.length : !(journalData?.summary.total_trades ?? 0)}>
             <Download className="w-4 h-4 mr-2" /> Export CSV
           </Button>
         </div>
