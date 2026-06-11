@@ -398,17 +398,70 @@ def _generate_excel(summary: dict, trades: list[dict], prompt_stats: list[dict])
 
 # ── Step 4: Email ─────────────────────────────────────────────────────────
 
-def _send_email(filepath: str, summary: dict) -> bool:
-    """Send the .xlsx report via SMTP. Returns True on success."""
-    smtp_server = settings.SMTP_SERVER
-    smtp_port = settings.SMTP_PORT
+async def _send_email(filepath: str, summary: dict) -> bool:
+    """Send the .xlsx report via SendGrid HTTPS API or SMTP fallback. Returns True on success."""
     sender = settings.REPORT_EMAIL
-    password = settings.REPORT_EMAIL_PASSWORD
     raw_recipients = settings.REPORT_RECIPIENT_EMAIL
     recipients = [r.strip() for r in raw_recipients.split(",") if r.strip()] if raw_recipients else []
 
-    if not all([smtp_server, smtp_port, sender, password, recipients]):
-        logger.warning("[Report] SMTP not configured — skipping email")
+    if not all([sender, recipients]):
+        logger.warning("[Report] Email not configured — skipping")
+        return False
+
+    # Try SendGrid first (HTTPS API, port 443 — works everywhere)
+    sg_key = os.environ.get("SENDGRID_API_KEY") or ""
+    if sg_key:
+        try:
+            import base64
+            async with httpx.AsyncClient(timeout=30) as client:
+                with open(filepath, "rb") as f:
+                    file_b64 = base64.b64encode(f.read()).decode()
+
+                for email in recipients:
+                    payload = {
+                        "personalizations": [{"to": [{"email": email}], "subject": f"Daily Trade Report — {_today_str()}"}],
+                        "from": {"email": sender},
+                        "content": [{"type": "text/plain", "value": (
+                            f"AI Quant Station — Daily Trade Report\n"
+                            f"{_day_name()}\n\n"
+                            f"Today's Performance:\n"
+                            f"  Total Trades: {summary['total_trades']}\n"
+                            f"  Wins: {summary['wins']}  /  Losses: {summary['losses']}\n"
+                            f"  Win Rate: {summary['win_rate']}%\n"
+                            f"  P&L: ${summary['pnl']:.2f}\n\n"
+                            f"Report attached.\n— AI Quant Station"
+                        )}],
+                        "attachments": [{
+                            "content": file_b64,
+                            "filename": os.path.basename(filepath),
+                            "type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            "disposition": "attachment",
+                        }],
+                    }
+                    resp = await client.post(
+                        "https://api.sendgrid.com/v3/mail/send",
+                        json=payload,
+                        headers={
+                            "Authorization": f"Bearer {sg_key}",
+                            "Content-Type": "application/json",
+                        },
+                    )
+                    if resp.status_code not in (200, 201, 202):
+                        logger.error(f"[Report] SendGrid failed for {email}: {resp.status_code} {resp.text[:200]}")
+                        return False
+
+            logger.info(f"[Report] Email sent via SendGrid to {', '.join(recipients)}")
+            return True
+        except Exception as e:
+            logger.error(f"[Report] SendGrid failed: {e}, falling back to SMTP...")
+
+    # Fallback: SMTP (direct port 587/465)
+    smtp_server = settings.SMTP_SERVER
+    smtp_port = settings.SMTP_PORT
+    password = settings.REPORT_EMAIL_PASSWORD
+
+    if not all([smtp_server, smtp_port, password]):
+        logger.warning("[Report] SMTP not configured either — email skipped")
         return False
 
     try:
@@ -448,7 +501,7 @@ def _send_email(filepath: str, summary: dict) -> bool:
                 server.login(sender, password)
                 server.send_message(msg)
 
-        logger.info(f"[Report] Email sent to {', '.join(recipients)}")
+        logger.info(f"[Report] Email sent via SMTP to {', '.join(recipients)}")
         return True
     except Exception as e:
         logger.error(f"[Report] Email failed: {e}")
@@ -494,7 +547,7 @@ async def run_daily_report():
     filepath = _generate_excel(summary, trades, prompt_stats)
 
     # Step 4: Email
-    _send_email(filepath, summary)
+    await _send_email(filepath, summary)
 
 
 # ── Scheduler start / stop ────────────────────────────────────────────────
