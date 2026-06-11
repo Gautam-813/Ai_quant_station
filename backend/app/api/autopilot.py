@@ -784,92 +784,121 @@ If no setup, print: NO_SETUP"""
             sand_err = sandbox_result.get("error", "Unknown error")[:200]
             add_log(user_id, f"{retry_p} code error: {sand_err}", "WARNING")
 
-    # Fallback: all providers failed code execution, ask first provider directly (no code)
+    # ── BACKUP: all sandbox providers failed, send 50 candles + indicators directly ──
     if not setup:
-        retry_p = _retry_providers[-1]
-        add_log(user_id, f"All providers failed sandbox, direct AI analysis with {retry_p}...", "WARNING")
+        add_log(user_id, "All providers failed sandbox, trying backup (50 candles + indicators)...", "WARNING")
+
+        # Build candle text block (last 50)
         try:
-            df = pd.DataFrame(market_data)
-            close = df['close'].astype(float)
-            high = df['high'].astype(float)
-            low = df['low'].astype(float)
+            df_view = pd.DataFrame(market_data[-50:])
+            rows = []
+            for _, r in df_view.iterrows():
+                t = str(r.get('time') or r.get('datetime') or '')[:16]
+                rows.append(
+                    f"{t}  {float(r['open']):>8.2f}  {float(r['high']):>8.2f}  "
+                    f"{float(r['low']):>8.2f}  {float(r['close']):>8.2f}  {float(r['volume']):>6.0f}"
+                )
+            candle_block = "Date/Time         Open      High      Low       Close     Volume\n" + "\n".join(rows)
+        except Exception as e:
+            add_log(user_id, f"Failed to format candles: {str(e)}", "ERROR")
+            candle_block = "(candle data unavailable)"
 
-            rsi = ta.momentum.rsi(close, window=14)
-            sma20 = ta.trend.sma_indicator(close, window=20)
-            sma50 = ta.trend.sma_indicator(close, window=50)
-            upper = ta.volatility.bollinger_hband(close, window=20, window_dev=2)
-            lower = ta.volatility.bollinger_lband(close, window=20, window_dev=2)
-            atr = ta.volatility.average_true_range(high, low, close, window=14)
-            stoch = ta.momentum.stoch(high, low, close, window=14)
+        # Compute indicators on full data
+        try:
+            full_df = pd.DataFrame(market_data)
+            close_s = full_df['close'].astype(float)
+            high_s = full_df['high'].astype(float)
+            low_s = full_df['low'].astype(float)
 
-            latest = {
-                "price": float(close.iloc[-1]),
-                "rsi": float(rsi.iloc[-1]) if not pd.isna(rsi.iloc[-1]) else "N/A",
-                "sma20": float(sma20.iloc[-1]) if not pd.isna(sma20.iloc[-1]) else "N/A",
-                "sma50": float(sma50.iloc[-1]) if not pd.isna(sma50.iloc[-1]) else "N/A",
-                "bollinger_upper": float(upper.iloc[-1]) if not pd.isna(upper.iloc[-1]) else "N/A",
-                "bollinger_lower": float(lower.iloc[-1]) if not pd.isna(lower.iloc[-1]) else "N/A",
-                "atr": float(atr.iloc[-1]) if not pd.isna(atr.iloc[-1]) else "N/A",
-                "stoch": float(stoch.iloc[-1]) if not pd.isna(stoch.iloc[-1]) else "N/A",
-            }
+            rsi_s = ta.momentum.rsi(close_s, window=14)
+            sma20_s = ta.trend.sma_indicator(close_s, window=20)
+            sma50_s = ta.trend.sma_indicator(close_s, window=50)
+            upper_s = ta.volatility.bollinger_hband(close_s, window=20, window_dev=2)
+            lower_s = ta.volatility.bollinger_lband(close_s, window=20, window_dev=2)
+            atr_s = ta.volatility.average_true_range(high_s, low_s, close_s, window=14)
+            stoch_s = ta.momentum.stoch(high_s, low_s, close_s, window=14)
 
-            fallback_prompt = f"""You are a quant trader. Decide if there is a trade opportunity based on these real computed indicators.
+            ind_lines = [
+                f"RSI(14): {float(rsi_s.iloc[-1]):.1f}" if not pd.isna(rsi_s.iloc[-1]) else "RSI(14): N/A",
+                f"SMA20: {float(sma20_s.iloc[-1]):.2f}" if not pd.isna(sma20_s.iloc[-1]) else "SMA20: N/A",
+                f"SMA50: {float(sma50_s.iloc[-1]):.2f}" if not pd.isna(sma50_s.iloc[-1]) else "SMA50: N/A",
+                f"BB Upper: {float(upper_s.iloc[-1]):.2f}" if not pd.isna(upper_s.iloc[-1]) else "BB Upper: N/A",
+                f"BB Lower: {float(lower_s.iloc[-1]):.2f}" if not pd.isna(lower_s.iloc[-1]) else "BB Lower: N/A",
+                f"ATR(14): {float(atr_s.iloc[-1]):.2f}" if not pd.isna(atr_s.iloc[-1]) else "ATR(14): N/A",
+                f"Stochastic: {float(stoch_s.iloc[-1]):.1f}" if not pd.isna(stoch_s.iloc[-1]) else "Stochastic: N/A",
+            ]
+            indicator_block = "\n".join(ind_lines)
+        except Exception as e:
+            add_log(user_id, f"Failed to compute indicators: {str(e)}", "ERROR")
+            indicator_block = "(indicator data unavailable)"
+
+        backup_prompt = f"""You are a quant trader. Decide if there is a trade opportunity based on the candle data and indicators below.
 
 Symbol: {symbol} ({tf})
-Price: {latest['price']}
-RSI(14): {latest['rsi']}
-SMA20: {latest['sma20']}
-SMA50: {latest['sma50']}
-Bollinger Upper: {latest['bollinger_upper']}
-Bollinger Lower: {latest['bollinger_lower']}
-ATR(14): {latest['atr']}
-Stochastic: {latest['stoch']}
+Total candles loaded: {len(market_data)}
+
+--- COMPUTED INDICATORS ---
+{indicator_block}
+
+--- RECENT 50 CANDLES ---
+{candle_block}
 
 Strategy: {prompt_text}
+{error_section}
 
-Output ONLY one of the following (no code):
-- TRADE_SETUP JSON: {{"action":"TRADE_SETUP","symbol":"{symbol}","direction":"BUY","order_type":"market","entry_price":0,"stop_loss":0,"take_profit":0,"lot_size":{lot_size},"reasoning":"...","confidence":75}}
-- NO_SETUP"""
+Output ONLY one of the following (no code, no explanation outside the JSON):
 
+1. TRADE_SETUP JSON:
+```json
+{{"action":"TRADE_SETUP","symbol":"{symbol}","direction":"BUY","order_type":"market","entry_price":0.0,"stop_loss":0.0,"take_profit":0.0,"lot_size":{lot_size},"reasoning":"Brief explanation","confidence":75}}
+```
+
+2. NO_SETUP"""
+
+        add_log(user_id, "Backup: sending 50 candles + indicators to providers...", "INFO")
+
+        for p_idx, retry_p in enumerate(_retry_providers):
             fallback_response = await _call_ai_with_retry(
-                messages=[{"role": "user", "content": fallback_prompt}],
+                messages=[{"role": "user", "content": backup_prompt}],
                 provider=retry_p,
                 model=model,
                 max_retries=2
             )
+            if not fallback_response:
+                add_log(user_id, f"Backup {retry_p} returned empty, skipping")
+                continue
 
-            if fallback_response:
-                jm = re.search(r'```json\n?(.*?)```', fallback_response, re.DOTALL)
-                if jm:
+            # Parse TRADE_SETUP JSON
+            jm = re.search(r'```json\n?(.*?)```', fallback_response, re.DOTALL)
+            if jm:
+                try:
+                    setup = json.loads(jm.group(1))
+                    add_log(user_id, f"Backup TRADE_SETUP found via {retry_p} (conf={setup.get('confidence')}%)")
+                    break
+                except json.JSONDecodeError:
+                    pass
+
+            if not setup:
+                for line in fallback_response.strip().split("\n"):
                     try:
-                        setup = json.loads(jm.group(1))
+                        obj = json.loads(line.strip())
+                        if isinstance(obj, dict) and obj.get("action") == "TRADE_SETUP":
+                            setup = obj
+                            break
                     except json.JSONDecodeError:
                         pass
-                if not setup:
-                    for line in fallback_response.strip().split("\n"):
-                        try:
-                            obj = json.loads(line.strip())
-                            if isinstance(obj, dict) and obj.get("action") == "TRADE_SETUP":
-                                setup = obj
-                                break
-                        except json.JSONDecodeError:
-                            pass
                 if setup:
-                    add_log(user_id, f"TRADE_SETUP found via fallback (conf={setup.get('confidence')}%)")
-                elif "NO_SETUP" in fallback_response:
-                    add_log(user_id, "Fallback: NO_SETUP", "WARNING")
-                    state["stats"]["skipped_count"] += 1
-                    return
-                else:
-                    add_log(user_id, "Fallback: unclear response", "WARNING")
-                    state["stats"]["skipped_count"] += 1
-                    return
-            else:
-                add_log(user_id, "Fallback AI call failed", "ERROR")
-                state["stats"]["skipped_count"] += 1
-                return
-        except Exception as e:
-            add_log(user_id, f"Fallback analysis failed: {str(e)}", "ERROR")
+                    add_log(user_id, f"Backup TRADE_SETUP found via {retry_p} (conf={setup.get('confidence')}%)")
+                    break
+
+            if "NO_SETUP" in fallback_response:
+                add_log(user_id, f"Backup {retry_p}: NO_SETUP, trying next provider", "WARNING")
+                continue
+
+            add_log(user_id, f"Backup {retry_p}: unclear response, trying next provider", "WARNING")
+
+        if not setup:
+            add_log(user_id, "All backup providers: NO_SETUP or failed", "WARNING")
             state["stats"]["skipped_count"] += 1
             return
 
