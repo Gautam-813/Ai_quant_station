@@ -6,6 +6,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { useAutopilotStore } from '@/store/autopilotStore'
 import { useToast } from '@/hooks/use-toast'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import axios from 'axios'
 
 interface LogEntry {
@@ -798,13 +799,13 @@ export default function AutopilotPage() {
         </CardContent>
       </Card>
 
-      {/* Selected Prompt Trades */}
-      {selectedPromptFilter != null && (
-        <Card className="mt-6">
-          <CardHeader>
-            <CardTitle>Trades for Prompt #{selectedPromptFilter}</CardTitle>
-          </CardHeader>
-          <CardContent>
+      {/* Selected Prompt Trades Dialog */}
+      <Dialog open={selectedPromptFilter != null} onOpenChange={(open) => { if (!open) setSelectedPromptFilter(null) }}>
+        <DialogContent className="max-w-5xl max-h-[80vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle>Trades for Prompt #{selectedPromptFilter}</DialogTitle>
+          </DialogHeader>
+          <div className="flex-1 overflow-auto">
             {promptTradesLoading ? (
               <p className="text-muted-foreground text-center py-8">Loading trades...</p>
             ) : promptTrades.length === 0 ? (
@@ -855,9 +856,9 @@ export default function AutopilotPage() {
                 </table>
               </div>
             )}
-          </CardContent>
-        </Card>
-      )}
+          </div>
+        </DialogContent>
+      </Dialog>
 
     </div>
   )
