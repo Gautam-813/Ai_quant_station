@@ -109,18 +109,11 @@ async def _rebuild_daily_state(user_id: int):
 async def _rebuild_stats(user_id: int):
     """Rebuild all in-memory counters from DB so they persist across restarts."""
     state = _get_state(user_id)
+    state["stats"]["trades_executed"] = 0
+    state["stats"]["skipped_count"] = 0
+    state["stats"]["error_count"] = 0
     try:
         async with AsyncSessionLocal() as db:
-            # Total runs = max cycle number from logs
-            result = await db.execute(
-                select(func.max(AutopilotLog.cycle_number)).where(
-                    AutopilotLog.user_id == user_id
-                )
-            )
-            max_cycle = result.scalar()
-            if max_cycle:
-                state["stats"]["total_runs"] = max_cycle
-
             # Trades executed = count of all trades
             result = await db.execute(
                 select(func.count(AutopilotTrade.id)).where(
@@ -174,6 +167,13 @@ async def _rebuild_stats(user_id: int):
                 )
                 cnt = result.scalar() or 0
                 state["stats"]["error_count"] += cnt
+
+            # Total runs = sum of all three (every cycle ends as trade, skip, or error)
+            state["stats"]["total_runs"] = (
+                state["stats"]["trades_executed"] +
+                state["stats"]["skipped_count"] +
+                state["stats"]["error_count"]
+            )
     except Exception:
         pass
 
