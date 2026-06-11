@@ -438,10 +438,15 @@ def _send_email(filepath: str, summary: dict) -> bool:
             )
             msg.attach(attachment)
 
-        with smtplib.SMTP(smtp_server, smtp_port, timeout=30) as server:
-            server.starttls()
-            server.login(sender, password)
-            server.send_message(msg)
+        if smtp_port == 465:
+            with smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=30) as server:
+                server.login(sender, password)
+                server.send_message(msg)
+        else:
+            with smtplib.SMTP(smtp_server, smtp_port, timeout=30) as server:
+                server.starttls()
+                server.login(sender, password)
+                server.send_message(msg)
 
         logger.info(f"[Report] Email sent to {', '.join(recipients)}")
         return True
