@@ -675,7 +675,7 @@ If no setup, print: NO_SETUP"""
             new_code = await _call_ai_with_retry(
                 messages=[{"role": "user", "content": code_prompt}],
                 provider=retry_p,
-                model=model,
+                model=PROVIDERS[retry_p]["models"][0],
                 max_retries=2
             )
             if not new_code:
@@ -737,7 +737,7 @@ If no setup, print: NO_SETUP"""
                     {"role": "user", "content": f"The code ran but didn't output a valid TRADE_SETUP or NO_SETUP. Fix it to output exactly one of these formats. Output was:\n{output[:400]}"}
                 ],
                 provider=retry_p,
-                model=model,
+                model=PROVIDERS[retry_p]["models"][0],
                 max_retries=2
             )
             if corrected:
@@ -794,9 +794,10 @@ If no setup, print: NO_SETUP"""
             rows = []
             for _, r in df_view.iterrows():
                 t = str(r.get('time') or r.get('datetime') or '')[:16]
+                vol = float(r.get('volume', 0) or 0)
                 rows.append(
                     f"{t}  {float(r['open']):>8.2f}  {float(r['high']):>8.2f}  "
-                    f"{float(r['low']):>8.2f}  {float(r['close']):>8.2f}  {float(r['volume']):>6.0f}"
+                    f"{float(r['low']):>8.2f}  {float(r['close']):>8.2f}  {vol:>6.0f}"
                 )
             candle_block = "Date/Time         Open      High      Low       Close     Volume\n" + "\n".join(rows)
         except Exception as e:
@@ -861,7 +862,7 @@ Output ONLY one of the following (no code, no explanation outside the JSON):
             fallback_response = await _call_ai_with_retry(
                 messages=[{"role": "user", "content": backup_prompt}],
                 provider=retry_p,
-                model=model,
+                model=PROVIDERS[retry_p]["models"][0],
                 max_retries=2
             )
             if not fallback_response:
