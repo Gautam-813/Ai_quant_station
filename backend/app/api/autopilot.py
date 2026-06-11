@@ -78,6 +78,13 @@ def _get_state(user_id: int) -> dict:
     return _user_states[user_id]
 
 
+def _ensure_aware(dt: Optional[datetime]) -> Optional[datetime]:
+    """Make a datetime timezone-aware (UTC) if it is naive."""
+    if dt is not None and dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 async def _rebuild_daily_state(user_id: int):
     """Rebuild daily counters from DB after server restart so safety limits aren't reset."""
     state = _get_state(user_id)
@@ -504,7 +511,7 @@ async def run_autopilot_cycle(user_id: int):
                 except Exception as e:
                     err_str = str(e).lower()
                     if "429" in err_str or "too_many_requests" in err_str or "queue_exceeded" in err_str:
-                        wait = min(2 ** attempt * 5, 30)  # 5s, 10s, 20s, max 30s
+                        wait = min(2 ** attempt * 10, 60)  # 10s, 20s, 40s, max 60s
                         add_log(user_id, f"Provider {p} rate limited (429), waiting {wait}s...", "WARNING")
                         await asyncio.sleep(wait)
                         break  # try next provider
@@ -640,7 +647,7 @@ If no setup, print: NO_SETUP"""
 
     setup = None
     ai_response = generated_code  # Store generated code as AI response for DB
-    for attempt in range(3):
+    for attempt in range(2):
         try:
             sandbox_result = await run_python_code(
                 code=generated_code,
@@ -740,10 +747,93 @@ If no setup, print: NO_SETUP"""
             else:
                 break
 
+    # Fallback: compute indicators server-side and ask AI directly (no code execution)
     if not setup:
-        add_log(user_id, "Failed to get valid setup after retries", "ERROR")
-        state["stats"]["skipped_count"] += 1
-        return
+        add_log(user_id, "Sandbox failed, falling back to direct AI analysis...", "WARNING")
+        try:
+            df = pd.DataFrame(market_data)
+            close = df['close'].astype(float)
+            high = df['high'].astype(float)
+            low = df['low'].astype(float)
+
+            rsi = ta.momentum.rsi(close, window=14)
+            sma20 = ta.trend.sma_indicator(close, window=20)
+            sma50 = ta.trend.sma_indicator(close, window=50)
+            upper = ta.volatility.bollinger_hband(close, window=20, window_dev=2)
+            lower = ta.volatility.bollinger_lband(close, window=20, window_dev=2)
+            atr = ta.volatility.average_true_range(high, low, close, window=14)
+            stoch = ta.momentum.stoch(high, low, close, window=14)
+
+            latest = {
+                "price": float(close.iloc[-1]),
+                "rsi": float(rsi.iloc[-1]) if not pd.isna(rsi.iloc[-1]) else "N/A",
+                "sma20": float(sma20.iloc[-1]) if not pd.isna(sma20.iloc[-1]) else "N/A",
+                "sma50": float(sma50.iloc[-1]) if not pd.isna(sma50.iloc[-1]) else "N/A",
+                "bollinger_upper": float(upper.iloc[-1]) if not pd.isna(upper.iloc[-1]) else "N/A",
+                "bollinger_lower": float(lower.iloc[-1]) if not pd.isna(lower.iloc[-1]) else "N/A",
+                "atr": float(atr.iloc[-1]) if not pd.isna(atr.iloc[-1]) else "N/A",
+                "stoch": float(stoch.iloc[-1]) if not pd.isna(stoch.iloc[-1]) else "N/A",
+            }
+
+            fallback_prompt = f"""You are a quant trader. Decide if there is a trade opportunity based on these real computed indicators.
+
+Symbol: {symbol} ({tf})
+Price: {latest['price']}
+RSI(14): {latest['rsi']}
+SMA20: {latest['sma20']}
+SMA50: {latest['sma50']}
+Bollinger Upper: {latest['bollinger_upper']}
+Bollinger Lower: {latest['bollinger_lower']}
+ATR(14): {latest['atr']}
+Stochastic: {latest['stoch']}
+
+Strategy: {prompt_text}
+
+Output ONLY one of the following (no code):
+- TRADE_SETUP JSON: {{"action":"TRADE_SETUP","symbol":"{symbol}","direction":"BUY","order_type":"market","entry_price":0,"stop_loss":0,"take_profit":0,"lot_size":{lot_size},"reasoning":"...","confidence":75}}
+- NO_SETUP"""
+
+            fallback_response = await _call_ai_with_retry(
+                messages=[{"role": "user", "content": fallback_prompt}],
+                provider=provider,
+                model=model,
+                max_retries=2
+            )
+
+            if fallback_response:
+                jm = re.search(r'```json\n?(.*?)```', fallback_response, re.DOTALL)
+                if jm:
+                    try:
+                        setup = json.loads(jm.group(1))
+                    except json.JSONDecodeError:
+                        pass
+                if not setup:
+                    for line in fallback_response.strip().split("\n"):
+                        try:
+                            obj = json.loads(line.strip())
+                            if isinstance(obj, dict) and obj.get("action") == "TRADE_SETUP":
+                                setup = obj
+                                break
+                        except json.JSONDecodeError:
+                            pass
+                if setup:
+                    add_log(user_id, f"TRADE_SETUP found via fallback (conf={setup.get('confidence')}%)")
+                elif "NO_SETUP" in fallback_response:
+                    add_log(user_id, "Fallback: NO_SETUP", "WARNING")
+                    state["stats"]["skipped_count"] += 1
+                    return
+                else:
+                    add_log(user_id, "Fallback: unclear response", "WARNING")
+                    state["stats"]["skipped_count"] += 1
+                    return
+            else:
+                add_log(user_id, "Fallback AI call failed", "ERROR")
+                state["stats"]["skipped_count"] += 1
+                return
+        except Exception as e:
+            add_log(user_id, f"Fallback analysis failed: {str(e)}", "ERROR")
+            state["stats"]["skipped_count"] += 1
+            return
 
     direction = setup.get("direction", "BUY").upper()
     order_type = setup.get("order_type", "market").lower()
@@ -807,9 +897,7 @@ async def sync_trade_results(user_id: int, connector_url: str = None):
             # Dynamically determine the history window to check based on the oldest open trade
             try:
                 oldest_trade = min(open_trades, key=lambda t: t.executed_at)
-                executed_at = oldest_trade.executed_at
-                if executed_at.tzinfo is None:
-                    executed_at = executed_at.replace(tzinfo=timezone.utc)
+                executed_at = _ensure_aware(oldest_trade.executed_at)
                 now_utc = datetime.now(timezone.utc)
                 hours_diff = int((now_utc - executed_at).total_seconds() / 3600) + 12  # add 12h buffer
                 sync_hours = max(hours_diff, 24)
@@ -857,10 +945,9 @@ async def sync_trade_results(user_id: int, connector_url: str = None):
                     trade.result = res_type
                     state["stats"]["daily_pnl"] = state["stats"].get("daily_pnl", 0) + profit
                     if closed_at_str:
-                        trade.closed_at = datetime.strptime(closed_at_str, '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
-                        if trade.executed_at:
-                            if trade.executed_at.tzinfo is None:
-                                trade.executed_at = trade.executed_at.replace(tzinfo=timezone.utc)
+                        trade.closed_at = _ensure_aware(datetime.strptime(closed_at_str, '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc))
+                        trade.executed_at = _ensure_aware(trade.executed_at)
+                        if trade.executed_at and trade.closed_at:
                             diff = trade.closed_at - trade.executed_at
                             trade.duration_minutes = int(diff.total_seconds() / 60)
                     updated_count += 1
