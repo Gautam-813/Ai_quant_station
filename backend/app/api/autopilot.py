@@ -77,8 +77,29 @@ def _get_state(user_id: int) -> dict:
         }
     return _user_states[user_id]
 
-PROMPT_FILE = str(Path(__file__).resolve().parent.parent.parent.parent / "backend" / "prompt_list.txt")
 
+async def _rebuild_daily_state(user_id: int):
+    """Rebuild daily counters from DB after server restart so safety limits aren't reset."""
+    state = _get_state(user_id)
+    now = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(AutopilotTrade).where(
+                    AutopilotTrade.user_id == user_id,
+                    AutopilotTrade.executed_at >= today_start
+                )
+            )
+            today_trades = result.scalars().all()
+        state["stats"]["daily_trade_count"] = len(today_trades)
+        state["stats"]["daily_pnl"] = round(sum(t.profit or 0 for t in today_trades), 2)
+        state["stats"]["daily_reset_date"] = now.date().isoformat()
+    except Exception:
+        pass
+
+
+PROMPT_FILE = str(Path(__file__).resolve().parent.parent.parent.parent / "backend" / "prompt_list.txt")
 
 def load_prompts():
     """Load prompts from file.
@@ -854,6 +875,7 @@ async def sync_trade_results(user_id: int, connector_url: str = None):
 
 async def autopilot_loop(user_id: int):
     state = _get_state(user_id)
+    await _rebuild_daily_state(user_id)
     try:
         while state["enabled"]:
             if state["running"]:
