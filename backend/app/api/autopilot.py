@@ -140,6 +140,30 @@ async def _rebuild_stats(user_id: int):
             last_ts = result.scalar()
             if last_ts:
                 state["stats"]["last_run"] = last_ts.isoformat()
+
+            # Skipped count = logs with WARNING level containing skip/NO_SETUP
+            result = await db.execute(
+                select(func.count(AutopilotLog.id)).where(
+                    AutopilotLog.user_id == user_id,
+                    AutopilotLog.level == "WARNING",
+                    (AutopilotLog.message.ilike("%skip%")) |
+                    (AutopilotLog.message.ilike("%NO_SETUP%"))
+                )
+            )
+            skipped = result.scalar()
+            if skipped:
+                state["stats"]["skipped_count"] = skipped
+
+            # Error count = logs with ERROR level
+            result = await db.execute(
+                select(func.count(AutopilotLog.id)).where(
+                    AutopilotLog.user_id == user_id,
+                    AutopilotLog.level == "ERROR"
+                )
+            )
+            errs = result.scalar()
+            if errs:
+                state["stats"]["error_count"] = errs
     except Exception:
         pass
 
