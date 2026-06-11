@@ -647,7 +647,7 @@ If no setup, print: NO_SETUP"""
 
     setup = None
     ai_response = generated_code  # Store generated code as AI response for DB
-    # Build provider failover order for sandbox retries
+    # Build provider failover order: start with user's provider, then all others
     from ..core.providers import get_provider_names as _get_providers
     _all_providers = _get_providers()
     try:
@@ -657,9 +657,26 @@ If no setup, print: NO_SETUP"""
     _retry_providers = _all_providers[_current_idx:] + _all_providers[:_current_idx]
     if not _retry_providers:
         _retry_providers = [provider]
-    _retry_idx = 0
 
-    for attempt in range(2):
+    for p_idx, retry_p in enumerate(_retry_providers):
+        # First iteration uses the already-generated code from the initial call.
+        # Subsequent iterations generate new code with the next provider.
+        if p_idx > 0:
+            add_log(user_id, f"Trying provider {retry_p} for code generation...", "INFO")
+            new_code = await _call_ai_with_retry(
+                messages=[{"role": "user", "content": code_prompt}],
+                provider=retry_p,
+                model=model,
+                max_retries=2
+            )
+            if not new_code:
+                add_log(user_id, f"{retry_p} code generation failed, skipping", "WARNING")
+                continue
+            generated_code = new_code
+            ai_response = generated_code
+
+        # Execute code in sandbox
+        add_log(user_id, f"Executing code from {retry_p} in sandbox...", "INFO")
         try:
             sandbox_result = await run_python_code(
                 code=generated_code,
@@ -668,8 +685,8 @@ If no setup, print: NO_SETUP"""
                 user_id=user_id,
             )
         except Exception as e:
-            add_log(user_id, f"Sandbox execution error: {str(e)}", "ERROR")
-            break
+            add_log(user_id, f"Sandbox execution error with {retry_p}: {str(e)}", "ERROR")
+            continue
 
         if sandbox_result.get("success"):
             output = sandbox_result.get("output", "")
@@ -679,7 +696,7 @@ If no setup, print: NO_SETUP"""
             if jm:
                 try:
                     setup = json.loads(jm.group(1))
-                    add_log(user_id, f"TRADE_SETUP found via sandbox (conf={setup.get('confidence')}%)")
+                    add_log(user_id, f"TRADE_SETUP found via {retry_p} (conf={setup.get('confidence')}%)")
                     break
                 except json.JSONDecodeError:
                     pass
@@ -699,78 +716,68 @@ If no setup, print: NO_SETUP"""
                 break
 
             if "NO_SETUP" in output:
-                add_log(user_id, "Sandbox: NO_SETUP - will try with next provider", "WARNING")
-                break  # fall through to next provider fallback
+                add_log(user_id, f"{retry_p} says NO_SETUP, trying next provider", "WARNING")
+                continue
 
-            # Unclear output — retry with next provider
-            if attempt < 2:
-                _retry_idx += 1
-                if _retry_idx >= len(_retry_providers):
-                    _retry_idx = len(_retry_providers) - 1
-                retry_p = _retry_providers[_retry_idx]
-                add_log(user_id, f"Sandbox output unclear, retrying with {retry_p}...", "WARNING")
-                corrected = await _call_ai_with_retry(
-                    messages=[
-                        {"role": "user", "content": code_prompt},
-                        {"role": "assistant", "content": generated_code},
-                        {"role": "user", "content": f"The code ran but didn't output a valid TRADE_SETUP or NO_SETUP. Fix it to output exactly one of these formats. Output was:\n{output[:400]}"}
-                    ],
-                    provider=retry_p,
-                    model=model,
-                    max_retries=2
-                )
-                if corrected:
-                    generated_code = corrected
-                    ai_response = generated_code
-                else:
-                    add_log(user_id, f"AI correction failed after retries", "ERROR")
-                    break
+            # Unclear output — try self-correction once with same provider
+            add_log(user_id, f"{retry_p} output unclear, trying self-correction...", "WARNING")
+            corrected = await _call_ai_with_retry(
+                messages=[
+                    {"role": "user", "content": code_prompt},
+                    {"role": "assistant", "content": generated_code},
+                    {"role": "user", "content": f"The code ran but didn't output a valid TRADE_SETUP or NO_SETUP. Fix it to output exactly one of these formats. Output was:\n{output[:400]}"}
+                ],
+                provider=retry_p,
+                model=model,
+                max_retries=2
+            )
+            if corrected:
+                generated_code = corrected
+                ai_response = generated_code
+                # Execute the corrected code
+                try:
+                    sandbox_result = await run_python_code(
+                        code=generated_code,
+                        market_data=market_data,
+                        symbol=symbol,
+                        user_id=user_id,
+                    )
+                except Exception as e:
+                    add_log(user_id, f"Corrected code from {retry_p} also failed: {str(e)}", "ERROR")
+                    continue
+                if sandbox_result.get("success"):
+                    corrected_output = sandbox_result.get("output", "")
+                    jm2 = re.search(r'```json\n?(.*?)```', corrected_output, re.DOTALL)
+                    if jm2:
+                        try:
+                            setup = json.loads(jm2.group(1))
+                            add_log(user_id, f"TRADE_SETUP found via {retry_p} self-correction (conf={setup.get('confidence')}%)")
+                            break
+                        except json.JSONDecodeError:
+                            pass
+                    if not setup:
+                        for line in corrected_output.strip().split("\n"):
+                            try:
+                                obj = json.loads(line.strip())
+                                if isinstance(obj, dict) and obj.get("action") == "TRADE_SETUP":
+                                    setup = obj
+                                    break
+                            except json.JSONDecodeError:
+                                pass
+                    if setup:
+                        break
+                    if "NO_SETUP" in corrected_output:
+                        add_log(user_id, f"{retry_p} self-correction says NO_SETUP", "WARNING")
+            else:
+                add_log(user_id, f"{retry_p} self-correction failed", "WARNING")
         else:
-            # Sandbox error — self-correct with next provider
-            if attempt < 2:
-                _retry_idx += 1
-                if _retry_idx >= len(_retry_providers):
-                    _retry_idx = len(_retry_providers) - 1
-                retry_p = _retry_providers[_retry_idx]
-                error_msg = sandbox_result.get("error", "Unknown error")
-                sandbox_output = sandbox_result.get("output", "")
-                add_log(user_id, f"Code execution error, self-correcting with {retry_p}...", "WARNING")
-                # Determine hint based on error type
-                error_lower = error_msg.lower()
-                if "index" in error_lower or "out of bounds" in error_lower:
-                    hint = " (HINT: You likely sliced the DataFrame too small before calculating an indicator. Ensure at least 50-200 rows before passing to ta functions. Use df.tail(N) to get the last N rows.)"
-                elif "nan" in error_lower or "nonetype" in error_lower or "none" in error_lower:
-                    hint = " (HINT: Check for NaNs produced by indicators and use .dropna() or handle them before further calculations.)"
-                elif "division" in error_lower or "divide" in error_lower:
-                    hint = " (HINT: Division by zero. Check for zero values before dividing. Add a small epsilon: value / (denominator + 1e-10).)"
-                elif "key" in error_lower or "column" in error_lower:
-                    hint = " (HINT: Column name error. Check df.columns for available columns. Use exact names: open, high, low, close, volume, timestamp.)"
-                else:
-                    hint = ""
-                corrected = await _call_ai_with_retry(
-                    messages=[
-                        {"role": "user", "content": code_prompt},
-                        {"role": "assistant", "content": generated_code},
-                        {"role": "user", "content": f"The Python code failed with this error:{hint}\n\nError:\n{error_msg[:800]}\n\nPartial output:\n{sandbox_output[:300]}"}
-                    ],
-                    provider=retry_p,
-                    model=model,
-                    max_retries=2
-                )
-                if corrected:
-                    generated_code = corrected
-                    ai_response = generated_code
-                else:
-                    add_log(user_id, f"AI correction failed after retries", "ERROR")
-                    break
+            # Sandbox error — try next provider
+            add_log(user_id, f"{retry_p} code execution error, trying next provider", "WARNING")
 
-    # Fallback: compute indicators server-side and ask AI directly (no code execution)
+    # Fallback: all providers failed code execution, ask first provider directly (no code)
     if not setup:
-        _retry_idx += 1
-        if _retry_idx >= len(_retry_providers):
-            _retry_idx = len(_retry_providers) - 1
-        retry_p = _retry_providers[_retry_idx]
-        add_log(user_id, f"Sandbox failed, falling back to direct AI analysis with {retry_p}...", "WARNING")
+        retry_p = _retry_providers[-1]
+        add_log(user_id, f"All providers failed sandbox, direct AI analysis with {retry_p}...", "WARNING")
         try:
             df = pd.DataFrame(market_data)
             close = df['close'].astype(float)
