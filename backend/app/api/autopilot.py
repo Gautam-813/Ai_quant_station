@@ -141,29 +141,39 @@ async def _rebuild_stats(user_id: int):
             if last_ts:
                 state["stats"]["last_run"] = last_ts.isoformat()
 
-            # Skipped count = logs with WARNING level containing skip/NO_SETUP
-            result = await db.execute(
-                select(func.count(AutopilotLog.id)).where(
-                    AutopilotLog.user_id == user_id,
-                    AutopilotLog.level == "WARNING",
-                    (AutopilotLog.message.ilike("%skip%")) |
-                    (AutopilotLog.message.ilike("%NO_SETUP%"))
+            # Skipped count = distinct cycles with skip messages (not per-provider noise)
+            skip_patterns = [
+                "Daily trade limit%Skipping%",
+                "All backup providers%NO_SETUP%",
+                "Skipping cycle%",
+            ]
+            for pattern in skip_patterns:
+                result = await db.execute(
+                    select(func.count(func.distinct(AutopilotLog.cycle_number))).where(
+                        AutopilotLog.user_id == user_id,
+                        AutopilotLog.cycle_number.isnot(None),
+                        AutopilotLog.message.ilike(pattern)
+                    )
                 )
-            )
-            skipped = result.scalar()
-            if skipped:
-                state["stats"]["skipped_count"] = skipped
+                cnt = result.scalar() or 0
+                state["stats"]["skipped_count"] += cnt
 
-            # Error count = logs with ERROR level
-            result = await db.execute(
-                select(func.count(AutopilotLog.id)).where(
-                    AutopilotLog.user_id == user_id,
-                    AutopilotLog.level == "ERROR"
+            # Error count = distinct cycles with error messages (not per-provider noise)
+            error_patterns = [
+                "No market data available",
+                "AI code generation failed after retries",
+                "Trade failed%",
+            ]
+            for pattern in error_patterns:
+                result = await db.execute(
+                    select(func.count(func.distinct(AutopilotLog.cycle_number))).where(
+                        AutopilotLog.user_id == user_id,
+                        AutopilotLog.cycle_number.isnot(None),
+                        AutopilotLog.message.ilike(pattern)
+                    )
                 )
-            )
-            errs = result.scalar()
-            if errs:
-                state["stats"]["error_count"] = errs
+                cnt = result.scalar() or 0
+                state["stats"]["error_count"] += cnt
     except Exception:
         pass
 
