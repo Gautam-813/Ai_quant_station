@@ -482,7 +482,7 @@ async def run_autopilot_cycle(user_id: int):
     # ── AI call helper with 429 retry + provider fallback ────────────────────
     async def _call_ai_with_retry(messages: list, provider: str, model: str, max_retries: int = 3) -> str | None:
         """Call AI with exponential backoff on 429, fallback to next provider."""
-        from ..core.providers import get_provider_names, get_base_url, resolve_api_key
+        from ..core.providers import PROVIDERS, get_provider_names, get_base_url, resolve_api_key
         
         providers = get_provider_names()
         provider_idx = providers.index(provider) if provider in providers else 0
@@ -499,7 +499,7 @@ async def run_autopilot_cycle(user_id: int):
                 try:
                     client = AsyncOpenAI(base_url=get_base_url(p), api_key=api_key)
                     response = await client.chat.completions.create(
-                        model=model if p == provider else providers[0],  # use default model for fallback
+                        model=model if p == provider else PROVIDERS[p]["models"][0],
                         messages=messages,
                         temperature=0.2,
                         max_tokens=2500,
