@@ -106,6 +106,23 @@ async def _rebuild_daily_state(user_id: int):
         pass
 
 
+async def _rebuild_cycle_count(user_id: int):
+    """Rebuild total_runs from DB so cycle numbering persists across restarts."""
+    state = _get_state(user_id)
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(func.max(AutopilotLog.cycle_number)).where(
+                    AutopilotLog.user_id == user_id
+                )
+            )
+            max_cycle = result.scalar()
+            if max_cycle:
+                state["stats"]["total_runs"] = max_cycle
+    except Exception:
+        pass
+
+
 PROMPT_FILE = str(Path(__file__).resolve().parent.parent.parent.parent / "backend" / "prompt_list.txt")
 
 def load_prompts():
@@ -1031,6 +1048,7 @@ async def sync_trade_results(user_id: int, connector_url: str = None):
 async def autopilot_loop(user_id: int):
     state = _get_state(user_id)
     await _rebuild_daily_state(user_id)
+    await _rebuild_cycle_count(user_id)
     try:
         while state["enabled"]:
             if state["running"]:
