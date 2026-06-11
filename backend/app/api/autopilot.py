@@ -670,7 +670,7 @@ If no setup, print: NO_SETUP"""
                 max_retries=2
             )
             if not new_code:
-                add_log(user_id, f"{retry_p} code generation failed, skipping", "WARNING")
+                add_log(user_id, f"{retry_p} code generation returned empty, skipping")
                 continue
             generated_code = new_code
             ai_response = generated_code
@@ -772,7 +772,8 @@ If no setup, print: NO_SETUP"""
                 add_log(user_id, f"{retry_p} self-correction failed", "WARNING")
         else:
             # Sandbox error — try next provider
-            add_log(user_id, f"{retry_p} code execution error, trying next provider", "WARNING")
+            sand_err = sandbox_result.get("error", "Unknown error")[:200]
+            add_log(user_id, f"{retry_p} code error: {sand_err}", "WARNING")
 
     # Fallback: all providers failed code execution, ask first provider directly (no code)
     if not setup:
