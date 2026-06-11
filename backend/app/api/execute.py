@@ -150,7 +150,7 @@ def _code_has_dunder_access(code: str) -> bool:
     try:
         tree = ast.parse(code)
         for node in ast.walk(tree):
-            if isinstance(node, ast.Attribute) and node.attr.startswith('__'):
+            if isinstance(node, ast.Attribute) and node.attr in _DANGEROUS_DUNDERS:
                 return True
         return False
     except SyntaxError:
@@ -187,13 +187,13 @@ def _execute_sandbox_sync(
                 df['datetime'] = _pd.to_datetime(df['datetime'])
                 df = df.set_index('datetime')
                 df.index.name = None
-                # Add 'timestamp' column as Unix seconds for AI code compatibility
-                df['timestamp'] = df.index.astype('int64') // 10**9
+                # Add 'timestamp' column as datetime (not int64) so resample(on='timestamp') works
+                df['timestamp'] = df.index
             elif 'time' in df.columns:
                 df['time'] = _pd.to_datetime(df['time'])
                 df = df.set_index('time')
                 df.index.name = None
-                df['timestamp'] = df.index.astype('int64') // 10**9
+                df['timestamp'] = df.index
         except Exception as e:
             return {"success": False, "error": f"Failed to create DataFrame: {str(e)}"}
 

@@ -515,9 +515,12 @@ async def run_autopilot_cycle(user_id: int):
                         add_log(user_id, f"Provider {p} rate limited (429), waiting {wait}s...", "WARNING")
                         await asyncio.sleep(wait)
                         break  # try next provider
-                    elif p_idx == len(providers) - 1 and attempt == max_retries - 1:
-                        raise
-                    continue
+                    else:
+                        err_msg = str(e)[:200]
+                        add_log(user_id, f"Provider {p} error: {err_msg}", "WARNING")
+                        if p_idx == len(providers) - 1 and attempt == max_retries - 1:
+                            raise
+                        continue
         return None
 
     # Detect required timeframe from prompt text and fetch from MT5 directly
@@ -596,9 +599,9 @@ IMPORTANT RULES:
    - ta.momentum.stoch(high, low, close, window=14)
 
 3. The DataFrame `df` is already loaded with {tf.upper()} OHLC data.
-   Columns: open, high, low, close, volume, timestamp (Unix seconds int64).
-   The timestamp is also the DataFrame index (as datetime).
-   Use pd.to_datetime(df['timestamp'], unit='s') for time conversion.
+   Columns: open, high, low, close, volume, timestamp (datetime).
+   The DataFrame index is also datetime (same as timestamp column).
+   timestamp is ALREADY a datetime object — DO NOT call pd.to_datetime() on it.
    Use df.tail(N) for last N rows. NEVER use hardcoded indices like df.iloc[13].
 
    For multi-timeframe analysis, resample df UP to higher TFs:
@@ -615,8 +618,10 @@ IMPORTANT RULES:
 6. After resample() or dropna(), always check len(df) before accessing elements.
    Do NOT assume the resampled DataFrame has the same row count.
 
-7. NEVER use __dunder__ attribute access (like __class__, __dict__, __globals__).
-   The sandbox blocks any code containing __dunder__ patterns.
+7. NEVER write the double-underscore __ character sequence in your code.
+   ANY code containing __ (like __class__, __dict__, __name__, __version__, __init__)
+   will be REJECTED by the sandbox. This includes debug prints, comments, and strings.
+   If you need to check a type, use type(obj).__name__ is REJECTED — use str(type(obj)) instead.
 
 {data_warning}
 Strategy:
