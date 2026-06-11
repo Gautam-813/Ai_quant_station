@@ -596,7 +596,8 @@ IMPORTANT RULES:
    - ta.momentum.stoch(high, low, close, window=14)
 
 3. The DataFrame `df` is already loaded with {tf.upper()} OHLC data.
-   Columns: open, high, low, close, volume, timestamp (Unix seconds).
+   Columns: open, high, low, close, volume, timestamp (Unix seconds int64).
+   The timestamp is also the DataFrame index (as datetime).
    Use pd.to_datetime(df['timestamp'], unit='s') for time conversion.
    Use df.tail(N) for last N rows. NEVER use hardcoded indices like df.iloc[13].
 
@@ -613,6 +614,9 @@ IMPORTANT RULES:
 
 6. After resample() or dropna(), always check len(df) before accessing elements.
    Do NOT assume the resampled DataFrame has the same row count.
+
+7. NEVER use __dunder__ attribute access (like __class__, __dict__, __globals__).
+   The sandbox blocks any code containing __dunder__ patterns.
 
 {data_warning}
 Strategy:

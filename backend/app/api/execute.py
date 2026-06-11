@@ -187,6 +187,13 @@ def _execute_sandbox_sync(
                 df['datetime'] = _pd.to_datetime(df['datetime'])
                 df = df.set_index('datetime')
                 df.index.name = None
+                # Add 'timestamp' column as Unix seconds for AI code compatibility
+                df['timestamp'] = df.index.astype('int64') // 10**9
+            elif 'time' in df.columns:
+                df['time'] = _pd.to_datetime(df['time'])
+                df = df.set_index('time')
+                df.index.name = None
+                df['timestamp'] = df.index.astype('int64') // 10**9
         except Exception as e:
             return {"success": False, "error": f"Failed to create DataFrame: {str(e)}"}
 
