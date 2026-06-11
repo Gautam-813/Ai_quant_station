@@ -182,6 +182,8 @@ def _execute_sandbox_sync(
             for col in ['open', 'high', 'low', 'close', 'volume']:
                 if col in df.columns:
                     df[col] = _pd.to_numeric(df[col], errors='coerce')
+            if 'volume' not in df.columns:
+                df['volume'] = 0  # MT5 may not include volume — prevent AI code from crashing
             # Restore datetime index from 'datetime' column when available
             if 'datetime' in df.columns:
                 df['datetime'] = _pd.to_datetime(df['datetime'])

@@ -599,9 +599,9 @@ IMPORTANT RULES:
    - ta.momentum.stoch(high, low, close, window=14)
 
 3. The DataFrame `df` is already loaded with {tf.upper()} OHLC data.
-   Columns: open, high, low, close, volume, timestamp (datetime).
-   The DataFrame index is also datetime (same as timestamp column).
-   timestamp is ALREADY a datetime object — DO NOT call pd.to_datetime() on it.
+    Columns: open, high, low, close, volume (may be 0 if unavailable), timestamp (datetime).
+    The DataFrame index is also datetime (same as timestamp column).
+    timestamp is ALREADY a datetime object — DO NOT call pd.to_datetime() on it.
    Use df.tail(N) for last N rows. NEVER use hardcoded indices like df.iloc[13].
 
    For multi-timeframe analysis, resample df UP to higher TFs:
