@@ -647,6 +647,18 @@ If no setup, print: NO_SETUP"""
 
     setup = None
     ai_response = generated_code  # Store generated code as AI response for DB
+    # Build provider failover order for sandbox retries
+    from ..core.providers import get_provider_names as _get_providers
+    _all_providers = _get_providers()
+    try:
+        _current_idx = _all_providers.index(provider)
+    except ValueError:
+        _current_idx = 0
+    _retry_providers = _all_providers[_current_idx:] + _all_providers[:_current_idx]
+    if not _retry_providers:
+        _retry_providers = [provider]
+    _retry_idx = 0
+
     for attempt in range(2):
         try:
             sandbox_result = await run_python_code(
@@ -687,20 +699,23 @@ If no setup, print: NO_SETUP"""
                 break
 
             if "NO_SETUP" in output:
-                add_log(user_id, "Sandbox: NO_SETUP - No trade opportunity", "WARNING")
-                state["stats"]["skipped_count"] += 1
-                return
+                add_log(user_id, "Sandbox: NO_SETUP - will try with next provider", "WARNING")
+                break  # fall through to next provider fallback
 
-            # Unclear output — retry with feedback (with 429 retry + provider fallback)
+            # Unclear output — retry with next provider
             if attempt < 2:
-                add_log(user_id, f"Sandbox output unclear, retrying...", "WARNING")
+                _retry_idx += 1
+                if _retry_idx >= len(_retry_providers):
+                    _retry_idx = len(_retry_providers) - 1
+                retry_p = _retry_providers[_retry_idx]
+                add_log(user_id, f"Sandbox output unclear, retrying with {retry_p}...", "WARNING")
                 corrected = await _call_ai_with_retry(
                     messages=[
                         {"role": "user", "content": code_prompt},
                         {"role": "assistant", "content": generated_code},
                         {"role": "user", "content": f"The code ran but didn't output a valid TRADE_SETUP or NO_SETUP. Fix it to output exactly one of these formats. Output was:\n{output[:400]}"}
                     ],
-                    provider=provider,
+                    provider=retry_p,
                     model=model,
                     max_retries=2
                 )
@@ -711,11 +726,15 @@ If no setup, print: NO_SETUP"""
                     add_log(user_id, f"AI correction failed after retries", "ERROR")
                     break
         else:
-            # Sandbox error — self-correct with specific hints
+            # Sandbox error — self-correct with next provider
             if attempt < 2:
+                _retry_idx += 1
+                if _retry_idx >= len(_retry_providers):
+                    _retry_idx = len(_retry_providers) - 1
+                retry_p = _retry_providers[_retry_idx]
                 error_msg = sandbox_result.get("error", "Unknown error")
                 sandbox_output = sandbox_result.get("output", "")
-                add_log(user_id, f"Code execution error, self-correcting...", "WARNING")
+                add_log(user_id, f"Code execution error, self-correcting with {retry_p}...", "WARNING")
                 # Determine hint based on error type
                 error_lower = error_msg.lower()
                 if "index" in error_lower or "out of bounds" in error_lower:
@@ -734,7 +753,7 @@ If no setup, print: NO_SETUP"""
                         {"role": "assistant", "content": generated_code},
                         {"role": "user", "content": f"The Python code failed with this error:{hint}\n\nError:\n{error_msg[:800]}\n\nPartial output:\n{sandbox_output[:300]}"}
                     ],
-                    provider=provider,
+                    provider=retry_p,
                     model=model,
                     max_retries=2
                 )
@@ -744,12 +763,14 @@ If no setup, print: NO_SETUP"""
                 else:
                     add_log(user_id, f"AI correction failed after retries", "ERROR")
                     break
-            else:
-                break
 
     # Fallback: compute indicators server-side and ask AI directly (no code execution)
     if not setup:
-        add_log(user_id, "Sandbox failed, falling back to direct AI analysis...", "WARNING")
+        _retry_idx += 1
+        if _retry_idx >= len(_retry_providers):
+            _retry_idx = len(_retry_providers) - 1
+        retry_p = _retry_providers[_retry_idx]
+        add_log(user_id, f"Sandbox failed, falling back to direct AI analysis with {retry_p}...", "WARNING")
         try:
             df = pd.DataFrame(market_data)
             close = df['close'].astype(float)
@@ -795,7 +816,7 @@ Output ONLY one of the following (no code):
 
             fallback_response = await _call_ai_with_retry(
                 messages=[{"role": "user", "content": fallback_prompt}],
-                provider=provider,
+                provider=retry_p,
                 model=model,
                 max_retries=2
             )
