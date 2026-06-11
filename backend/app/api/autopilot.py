@@ -106,11 +106,12 @@ async def _rebuild_daily_state(user_id: int):
         pass
 
 
-async def _rebuild_cycle_count(user_id: int):
-    """Rebuild total_runs from DB so cycle numbering persists across restarts."""
+async def _rebuild_stats(user_id: int):
+    """Rebuild all in-memory counters from DB so they persist across restarts."""
     state = _get_state(user_id)
     try:
         async with AsyncSessionLocal() as db:
+            # Total runs = max cycle number from logs
             result = await db.execute(
                 select(func.max(AutopilotLog.cycle_number)).where(
                     AutopilotLog.user_id == user_id
@@ -119,6 +120,26 @@ async def _rebuild_cycle_count(user_id: int):
             max_cycle = result.scalar()
             if max_cycle:
                 state["stats"]["total_runs"] = max_cycle
+
+            # Trades executed = count of all trades
+            result = await db.execute(
+                select(func.count(AutopilotTrade.id)).where(
+                    AutopilotTrade.user_id == user_id
+                )
+            )
+            count = result.scalar()
+            if count:
+                state["stats"]["trades_executed"] = count
+
+            # Last run = most recent log timestamp
+            result = await db.execute(
+                select(func.max(AutopilotLog.timestamp)).where(
+                    AutopilotLog.user_id == user_id
+                )
+            )
+            last_ts = result.scalar()
+            if last_ts:
+                state["stats"]["last_run"] = last_ts.isoformat()
     except Exception:
         pass
 
@@ -1048,7 +1069,7 @@ async def sync_trade_results(user_id: int, connector_url: str = None):
 async def autopilot_loop(user_id: int):
     state = _get_state(user_id)
     await _rebuild_daily_state(user_id)
-    await _rebuild_cycle_count(user_id)
+    await _rebuild_stats(user_id)
     try:
         while state["enabled"]:
             if state["running"]:
