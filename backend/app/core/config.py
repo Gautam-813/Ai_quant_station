@@ -84,6 +84,7 @@ class Settings(BaseSettings):
     REPORT_EMAIL: str = ""
     REPORT_EMAIL_PASSWORD: str = ""
     REPORT_RECIPIENT_EMAIL: str = ""
+    SENDGRID_API_KEY: str = ""
 
     # Extra fields from .env (legacy/compat)
     PASSWORD: str = ""

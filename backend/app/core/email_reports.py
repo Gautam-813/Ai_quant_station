@@ -409,7 +409,7 @@ async def _send_email(filepath: str, summary: dict) -> bool:
         return False
 
     # Try SendGrid first (HTTPS API, port 443 — works everywhere)
-    sg_key = os.environ.get("SENDGRID_API_KEY") or ""
+    sg_key = settings.SENDGRID_API_KEY
     if sg_key:
         try:
             import base64
