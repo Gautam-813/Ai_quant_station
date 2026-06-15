@@ -44,6 +44,15 @@ logs/
 *.tmp
 temp/
 
+# Reports & generated artifacts
+daily_reports/
+*.xlsx
+
+# Scratch / test files
+check_data.py
+test_poc.py
+test_sandbox_autopilot.py
+
 # Large Data & Binaries
 data_archive/
 MT5_Connector.exe
