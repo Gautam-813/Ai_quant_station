@@ -21,6 +21,11 @@ class StrategyScore(Base):
     avg_loss = Column(Float, nullable=True)
     profit_factor = Column(Float, nullable=True)
 
+    total_tokens = Column(Integer, default=0)
+    avg_tokens = Column(Integer, nullable=True)
+    total_cost = Column(Float, default=0.0)
+    avg_cost = Column(Float, nullable=True)
+
     first_used = Column(DateTime, nullable=True)
     last_used = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))

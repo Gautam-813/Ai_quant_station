@@ -24,8 +24,9 @@ from ..core.config import settings
 from ..core.security import get_current_user
 from ..core.database import AsyncSessionLocal
 from ..core.providers import PROVIDERS, get_api_key as _get_api_key, get_base_url, resolve_api_key
-from ..models.ai_memory import AutopilotTrade, AutopilotSettings, UserPrompt, AutopilotLog
+from ..models.ai_memory import AutopilotTrade, AutopilotSettings, UserPrompt, AutopilotLog, ModelUsage
 from ..models.strategy_score import StrategyScore
+from ..core.providers import estimate_cost
 
 router = APIRouter(prefix="/autopilot", tags=["Autopilot"])
 
@@ -402,6 +403,42 @@ async def execute_trade(user_id: int, symbol: str, direction: str, volume: float
         return {"success": False, "error": str(e)}
 
 
+async def _update_model_usage(user_id: int, usage: dict):
+    """Update ModelUsage counters for a successful API call (fire-and-forget)."""
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(ModelUsage).where(
+                    ModelUsage.provider == usage["provider"],
+                    ModelUsage.model == usage["model"],
+                    ModelUsage.user_id == user_id,
+                )
+            )
+            mu = result.scalar_one_or_none()
+            cost = estimate_cost(
+                usage["prompt_tokens"], usage["completion_tokens"],
+                usage["provider"], usage["model"],
+            )
+            if mu:
+                mu.total_requests += 1
+                mu.total_tokens += usage["total_tokens"]
+                mu.total_cost += cost
+                mu.last_used = datetime.now(timezone.utc)
+            else:
+                mu = ModelUsage(
+                    provider=usage["provider"],
+                    model=usage["model"],
+                    user_id=user_id,
+                    total_requests=1,
+                    total_tokens=usage["total_tokens"],
+                    total_cost=cost,
+                )
+                db.add(mu)
+            await db.commit()
+    except Exception:
+        pass  # Never crash the autopilot loop
+
+
 async def check_open_positions(connector_url: str = None, user_id: int = 0):
     try:
         connector_url = (connector_url or settings.MT5_CONNECTOR_URL or "").strip() or None
@@ -552,8 +589,10 @@ async def run_autopilot_cycle(user_id: int):
     add_log(user_id, f"Using Strategy {display_id}: {prompt_text[:50]}...")
 
     # ── AI call helper with 429 retry + provider fallback ────────────────────
-    async def _call_ai_with_retry(messages: list, provider: str, model: str, max_retries: int = 3) -> str | None:
-        """Call AI with exponential backoff on 429, fallback to next provider."""
+    async def _call_ai_with_retry(messages: list, provider: str, model: str, max_retries: int = 3) -> tuple[str | None, dict | None]:
+        """Call AI with exponential backoff on 429, fallback to next provider.
+        Returns (content, usage_dict) where usage_dict has prompt_tokens, completion_tokens, total_tokens.
+        """
         from ..core.providers import PROVIDERS, get_provider_names, get_base_url, resolve_api_key
         
         providers = get_provider_names()
@@ -579,7 +618,22 @@ async def run_autopilot_cycle(user_id: int):
                     )
                     content = response.choices[0].message.content or ""
                     match = re.search(r'```(?:python)?\n?(.*?)```', content, re.DOTALL)
-                    return match.group(1).strip() if match else content.strip()
+                    result = match.group(1).strip() if match else content.strip()
+                    # Capture token usage from API response
+                    usage = None
+                    actual_model = model if p == provider else PROVIDERS[p]["models"][0]
+                    if hasattr(response, 'usage') and response.usage:
+                        usage = {
+                            "provider": p,
+                            "model": actual_model,
+                            "prompt_tokens": response.usage.prompt_tokens or 0,
+                            "completion_tokens": response.usage.completion_tokens or 0,
+                            "total_tokens": response.usage.total_tokens or 0,
+                        }
+                    # Always log usage to ModelUsage (fire-and-forget)
+                    if usage:
+                        asyncio.create_task(_update_model_usage(user_id, usage))
+                    return result, usage
                 except Exception as e:
                     err_str = str(e).lower()
                     if "429" in err_str or "too_many_requests" in err_str or "queue_exceeded" in err_str:
@@ -593,7 +647,7 @@ async def run_autopilot_cycle(user_id: int):
                         if p_idx == len(providers) - 1 and attempt == max_retries - 1:
                             raise
                         continue
-        return None
+        return None, None
 
     # Detect required timeframe from prompt text and fetch from MT5 directly
     def _detect_timeframe(text: str) -> tuple:
@@ -711,7 +765,8 @@ If no setup, print: NO_SETUP"""
     full_raw_response = ""
 
     # Step 1: AI generates analysis code (with 429 retry + provider fallback)
-    generated_code = await _call_ai_with_retry(
+    _last_usage = None
+    generated_code, _last_usage = await _call_ai_with_retry(
         messages=[{"role": "user", "content": code_prompt}],
         provider=provider,
         model=model,
@@ -744,7 +799,7 @@ If no setup, print: NO_SETUP"""
         # Subsequent iterations generate new code with the next provider.
         if p_idx > 0:
             add_log(user_id, f"Trying provider {retry_p} for code generation...", "INFO")
-            new_code = await _call_ai_with_retry(
+            new_code, _last_usage = await _call_ai_with_retry(
                 messages=[{"role": "user", "content": code_prompt}],
                 provider=retry_p,
                 model=PROVIDERS[retry_p]["models"][0],
@@ -802,7 +857,7 @@ If no setup, print: NO_SETUP"""
 
             # Unclear output — try self-correction once with same provider
             add_log(user_id, f"{retry_p} output unclear, trying self-correction...", "WARNING")
-            corrected = await _call_ai_with_retry(
+            corrected, _last_usage = await _call_ai_with_retry(
                 messages=[
                     {"role": "user", "content": code_prompt},
                     {"role": "assistant", "content": generated_code},
@@ -931,7 +986,7 @@ Output ONLY one of the following (no code, no explanation outside the JSON):
         add_log(user_id, "Backup: sending 50 candles + indicators to providers...", "INFO")
 
         for p_idx, retry_p in enumerate(_retry_providers):
-            fallback_response = await _call_ai_with_retry(
+            fallback_response, _last_usage = await _call_ai_with_retry(
                 messages=[{"role": "user", "content": backup_prompt}],
                 provider=retry_p,
                 model=PROVIDERS[retry_p]["models"][0],
@@ -940,6 +995,7 @@ Output ONLY one of the following (no code, no explanation outside the JSON):
             if not fallback_response:
                 add_log(user_id, f"Backup {retry_p} returned empty, skipping")
                 continue
+            ai_response = fallback_response
 
             # Parse TRADE_SETUP JSON
             jm = re.search(r'```json\n?(.*?)```', fallback_response, re.DOTALL)
@@ -1003,7 +1059,14 @@ Output ONLY one of the following (no code, no explanation outside the JSON):
                 symbol=symbol, direction=direction, order_type=order_type, entry_price=entry_price,
                 stop_loss=sl, take_profit=tp, lot_size=lot,
                 mt5_ticket=ticket, execution_price=exec_price, execution_status="executed",
-                reasoning=reasoning, confidence=confidence, ai_response=ai_response, raw_thinking=full_raw_response, cycle_number=state["stats"]["total_runs"]
+                reasoning=reasoning, confidence=confidence, ai_response=ai_response,
+                raw_thinking=full_raw_response,
+                provider=(_last_usage.get("provider") if _last_usage else None),
+                model=(_last_usage.get("model") if _last_usage else None),
+                prompt_tokens=(_last_usage.get("prompt_tokens") if _last_usage else None),
+                completion_tokens=(_last_usage.get("completion_tokens") if _last_usage else None),
+                total_tokens=(_last_usage.get("total_tokens") if _last_usage else None),
+                cycle_number=state["stats"]["total_runs"],
             )
             db.add(trade)
             await db.commit()

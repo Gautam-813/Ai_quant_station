@@ -113,6 +113,85 @@ PROVIDERS: Dict[str, Dict[str, Any]] = {
 }
 
 
+# Cost per 1M tokens (input, output) for each provider.
+# Model-specific overrides override the provider default.
+# Prices are in USD per 1M tokens. Set to 0 for free providers.
+# Update these as provider pricing changes.
+PRICING: Dict[str, Dict[str, Any]] = {
+    "nvidia": {
+        "default": (1.50, 5.00),
+        "models": {
+            "deepseek-ai/deepseek-v3.1": (0.50, 2.00),
+            "deepseek-ai/deepseek-r1-distill-qwen-32b": (0.50, 2.00),
+            "nvidia/llama-3.1-405b-instruct": (3.00, 10.00),
+        },
+    },
+    "groq": {
+        "default": (0.50, 0.70),
+        "models": {
+            "llama-3.3-70b-versatile": (0.59, 0.79),
+            "llama-3.1-8b-instant": (0.05, 0.08),
+            "mixtral-8x7b-32768": (0.24, 0.24),
+        },
+    },
+    "openrouter": {
+        "default": (2.00, 8.00),
+        "models": {},
+    },
+    "gemini": {
+        "default": (0.50, 2.00),
+        "models": {
+            "gemini-2.5-flash": (0.10, 0.40),
+            "gemini-2.5-pro": (1.25, 5.00),
+            "gemini-1.5-flash": (0.08, 0.30),
+            "gemini-1.5-pro": (1.00, 4.00),
+        },
+    },
+    "github": {
+        "default": (0.0, 0.0),
+        "models": {},
+    },
+    "cerebras": {
+        "default": (0.60, 0.60),
+        "models": {},
+    },
+    "mistral": {
+        "default": (2.00, 6.00),
+        "models": {},
+    },
+    "anthropic": {
+        "default": (3.00, 15.00),
+        "models": {
+            "claude-sonnet-4-20250514": (3.00, 15.00),
+            "claude-3-5-sonnet-20241022": (3.00, 15.00),
+            "claude-3-5-haiku-20241022": (0.80, 4.00),
+            "claude-opus-4-20250514": (15.00, 75.00),
+        },
+    },
+    "tokenlb": {
+        "default": (2.00, 8.00),
+        "models": {},
+    },
+}
+
+
+def get_pricing(provider_id: str, model_name: str) -> tuple:
+    """Return (input_cost_per_1M, output_cost_per_1M) for a provider/model pair."""
+    cfg = PRICING.get(provider_id)
+    if not cfg:
+        return (0.0, 0.0)
+    model_prices = cfg.get("models", {})
+    if model_name in model_prices:
+        return model_prices[model_name]
+    return cfg.get("default", (0.0, 0.0))
+
+
+def estimate_cost(prompt_tokens: int, completion_tokens: int, provider_id: str, model_name: str) -> float:
+    """Estimate cost in USD for a given API call."""
+    input_rate, output_rate = get_pricing(provider_id, model_name)
+    return (prompt_tokens * input_rate + completion_tokens * output_rate) / 1_000_000
+
+
 def get_api_key(provider_id: str, settings_obj) -> str:
     """Get the API key for a provider from settings."""
     cfg = PROVIDERS.get(provider_id)

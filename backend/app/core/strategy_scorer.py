@@ -4,6 +4,8 @@ from sqlalchemy import text as sql_text, select
 
 from ..core.database import AsyncSessionLocal
 from ..models.strategy_score import StrategyScore
+from ..models.ai_memory import AutopilotTrade
+from ..core.providers import estimate_cost
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +52,37 @@ async def update_strategy_scores():
             """))
 
             rows = result.fetchall()
+
+            # Compute per-prompt token/cost from autopilot_trades
+            token_rows = await db.execute(sql_text("""
+                SELECT prompt_text, symbol, direction,
+                       SUM(COALESCE(total_tokens,0)) as total_tokens,
+                       AVG(COALESCE(total_tokens,0)) as avg_tokens,
+                       provider, model
+                FROM autopilot_trades
+                WHERE result IS NOT NULL AND total_tokens IS NOT NULL
+                GROUP BY prompt_text, symbol, direction, provider, model
+            """))
+            token_map = {}
+            for tr in token_rows.fetchall():
+                key = (tr.prompt_text, tr.symbol, tr.direction)
+                cost = estimate_cost(tr.avg_tokens or 0, 0, tr.provider or "", tr.model or "")
+                if key not in token_map:
+                    token_map[key] = {"total_tokens": 0, "total_cost": 0.0}
+                # Each row is per (prompt, symbol, direction, provider, model)
+                actual_cost = 0.0
+                if tr.provider and tr.model:
+                    # Estimate cost assuming half prompt / half completion ratio
+                    prompt_share = int((tr.avg_tokens or 0) * 0.7)
+                    completion_share = (tr.avg_tokens or 0) - prompt_share
+                    actual_cost = estimate_cost(
+                        prompt_share, completion_share,
+                        tr.provider, tr.model,
+                    )
+                    actual_cost *= (tr.total_tokens / max(tr.avg_tokens, 1))  # scale by trade count
+                token_map[key]["total_tokens"] += tr.total_tokens or 0
+                token_map[key]["total_cost"] += actual_cost
+
             updated_count = 0
 
             for row in rows:
@@ -74,6 +107,13 @@ async def update_strategy_scores():
                 else:
                     profit_factor = None
 
+                token_key = (prompt_text, symbol, direction)
+                token_data = token_map.get(token_key, {})
+                total_tok = token_data.get("total_tokens", 0)
+                total_cost_val = token_data.get("total_cost", 0.0)
+                avg_tokens = int(total_tok / total) if total > 0 else None
+                avg_cost = round(total_cost_val / total, 6) if total > 0 else None
+
                 existing = await db.execute(
                     select(StrategyScore).where(
                         StrategyScore.prompt_text == prompt_text,
@@ -93,6 +133,10 @@ async def update_strategy_scores():
                     score.avg_profit = avg_profit
                     score.avg_loss = avg_loss
                     score.profit_factor = profit_factor
+                    score.total_tokens = total_tok
+                    score.avg_tokens = avg_tokens
+                    score.total_cost = total_cost_val
+                    score.avg_cost = avg_cost
                     score.first_used = first
                     score.last_used = last
                     score.updated_at = datetime.now(timezone.utc)
@@ -110,6 +154,10 @@ async def update_strategy_scores():
                         avg_profit=avg_profit,
                         avg_loss=avg_loss,
                         profit_factor=profit_factor,
+                        total_tokens=total_tok,
+                        avg_tokens=avg_tokens,
+                        total_cost=total_cost_val,
+                        avg_cost=avg_cost,
                         first_used=first,
                         last_used=last,
                     )

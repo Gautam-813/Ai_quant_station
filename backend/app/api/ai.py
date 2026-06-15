@@ -807,8 +807,14 @@ def calculate_signals(df): ...
                 
                 # Capture token usage if available
                 token_usage = None
+                token_detail = {}
                 if hasattr(response, 'usage') and response.usage:
                     token_usage = response.usage.total_tokens
+                    token_detail = {
+                        "prompt_tokens": response.usage.prompt_tokens or 0,
+                        "completion_tokens": response.usage.completion_tokens or 0,
+                        "total_tokens": token_usage,
+                    }
                 
                 # Capture full raw API response
                 try:
@@ -988,12 +994,23 @@ def calculate_signals(df): ...
                     ModelUsage.provider == chat_req.provider, ModelUsage.model == chat_req.model,
                     ModelUsage.user_id == current_user["id"]))
                 usage = usage_result.scalar_one_or_none()
+                cost = 0.0
+                if token_detail:
+                    from ..core.providers import estimate_cost
+                    cost = estimate_cost(
+                        token_detail["prompt_tokens"], token_detail["completion_tokens"],
+                        chat_req.provider, chat_req.model,
+                    )
                 if usage:
                     usage.total_requests += 1
+                    usage.total_tokens += token_detail.get("total_tokens", 0)
+                    usage.total_cost += cost
                     usage.last_used = datetime.now(timezone.utc)
                 else:
                     usage = ModelUsage(provider=chat_req.provider, model=chat_req.model,
-                        user_id=current_user["id"], total_requests=1)
+                        user_id=current_user["id"], total_requests=1,
+                        total_tokens=token_detail.get("total_tokens", 0),
+                        total_cost=cost)
                     db.add(usage)
                 await db.commit()
             except Exception as e:

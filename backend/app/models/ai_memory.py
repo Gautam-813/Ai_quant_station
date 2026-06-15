@@ -190,6 +190,12 @@ class AutopilotTrade(Base):
     ai_response = Column(Text, nullable=True)
     raw_thinking = Column(JSON, nullable=True)
 
+    provider = Column(String, nullable=True)
+    model = Column(String, nullable=True)
+    prompt_tokens = Column(Integer, nullable=True)
+    completion_tokens = Column(Integer, nullable=True)
+    total_tokens = Column(Integer, nullable=True)
+
     cycle_number = Column(Integer, nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
