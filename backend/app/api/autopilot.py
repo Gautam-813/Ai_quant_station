@@ -451,6 +451,341 @@ async def check_open_positions(connector_url: str = None, user_id: int = 0):
     return []
 
 
+def _infer_prompt_tags(prompt_text: str) -> dict:
+    """Infer strategy metadata from free-form prompt text.
+
+    This keeps the existing prompt file format intact while giving Autopilot
+    enough structure to choose prompts by market condition.
+    """
+    text = (prompt_text or "").lower()
+    styles = set()
+    timeframes = set()
+    avoid_when = set()
+
+    keyword_styles = [
+        ("breakout", ["breakout", "break out", "range break", "breaks above", "breaks below"]),
+        ("trend_following", ["trend", "ema", "moving average", "higher high", "lower low", "pullback"]),
+        ("mean_reversion", ["mean reversion", "overbought", "oversold", "rsi", "bollinger", "reversal"]),
+        ("scalping", ["scalp", "scalping", "m1", "m5", "1 minute", "5 minute"]),
+        ("momentum", ["momentum", "impulse", "strong candle", "volume spike"]),
+        ("range", ["range", "support", "resistance", "sideways", "consolidation"]),
+    ]
+    for style, needles in keyword_styles:
+        if any(n in text for n in needles):
+            styles.add(style)
+
+    tf_patterns = [
+        ("1m", r"\b(?:m1|1m|1[-\s]?min(?:ute)?s?)\b"),
+        ("5m", r"\b(?:m5|5m|5[-\s]?min(?:ute)?s?)\b"),
+        ("15m", r"\b(?:m15|15m|15[-\s]?min(?:ute)?s?)\b"),
+        ("30m", r"\b(?:m30|30m|30[-\s]?min(?:ute)?s?)\b"),
+        ("1h", r"\b(?:h1|1h|1[-\s]?hour|hourly)\b"),
+        ("4h", r"\b(?:h4|4h|4[-\s]?hour)\b"),
+        ("1d", r"\b(?:d1|1d|daily|day)\b"),
+    ]
+    for label, pattern in tf_patterns:
+        if re.search(pattern, text):
+            timeframes.add(label)
+
+    if "breakout" in styles:
+        avoid_when.add("low_volatility_range")
+    if "mean_reversion" in styles or "range" in styles:
+        avoid_when.add("strong_trend")
+    if "scalping" in styles:
+        avoid_when.add("high_spread")
+
+    if not styles:
+        styles.add("general")
+
+    return {
+        "styles": sorted(styles),
+        "timeframes": sorted(timeframes),
+        "avoid_when": sorted(avoid_when),
+    }
+
+
+def _classify_market_regime(market_data: list[dict]) -> dict:
+    """Classify market state from OHLC candles using deterministic indicators."""
+    if not market_data or len(market_data) < 30:
+        return {
+            "regime": "unknown",
+            "trend": "unknown",
+            "volatility": "unknown",
+            "direction_bias": "neutral",
+            "confidence": 0,
+            "reason": "insufficient_data",
+            "candle_count": len(market_data or []),
+        }
+
+    try:
+        df = pd.DataFrame(market_data).copy()
+        for col in ("open", "high", "low", "close", "volume"):
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = df.dropna(subset=["open", "high", "low", "close"])
+        if len(df) < 30:
+            raise ValueError("not enough numeric candles")
+
+        close = df["close"].astype(float)
+        high = df["high"].astype(float)
+        low = df["low"].astype(float)
+        last_close = float(close.iloc[-1])
+
+        ema_fast = ta.trend.ema_indicator(close, window=20)
+        ema_slow = ta.trend.ema_indicator(close, window=50 if len(df) >= 50 else 30)
+        atr = ta.volatility.average_true_range(high, low, close, window=14)
+        bb_high = ta.volatility.bollinger_hband(close, window=20, window_dev=2)
+        bb_low = ta.volatility.bollinger_lband(close, window=20, window_dev=2)
+
+        latest_atr = float(atr.iloc[-1]) if not pd.isna(atr.iloc[-1]) else 0.0
+        atr_mean = float(atr.tail(50).mean()) if len(atr.dropna()) else 0.0
+        atr_ratio = latest_atr / atr_mean if atr_mean else 1.0
+        bb_width_pct = ((float(bb_high.iloc[-1]) - float(bb_low.iloc[-1])) / last_close * 100) if last_close else 0.0
+
+        fast_now = float(ema_fast.iloc[-1])
+        fast_prev = float(ema_fast.iloc[-10]) if len(ema_fast.dropna()) >= 10 else fast_now
+        slow_now = float(ema_slow.iloc[-1])
+        ema_slope_pct = ((fast_now - fast_prev) / last_close * 100) if last_close else 0.0
+
+        adx_value = None
+        try:
+            adx = ta.trend.adx(high, low, close, window=14)
+            adx_value = float(adx.iloc[-1]) if not pd.isna(adx.iloc[-1]) else None
+        except Exception:
+            adx_value = None
+
+        if atr_ratio >= 1.35 or bb_width_pct >= 1.8:
+            volatility = "high"
+        elif atr_ratio <= 0.75 and bb_width_pct <= 0.8:
+            volatility = "low"
+        else:
+            volatility = "normal"
+
+        trend_strength = abs(ema_slope_pct)
+        is_trending = trend_strength >= 0.08 or (adx_value is not None and adx_value >= 22)
+        if is_trending and fast_now > slow_now and last_close >= slow_now:
+            trend = "bullish"
+            direction_bias = "BUY"
+        elif is_trending and fast_now < slow_now and last_close <= slow_now:
+            trend = "bearish"
+            direction_bias = "SELL"
+        else:
+            trend = "range"
+            direction_bias = "neutral"
+
+        if trend in ("bullish", "bearish") and volatility == "high":
+            regime = f"{trend}_trend_high_volatility"
+        elif trend in ("bullish", "bearish"):
+            regime = f"{trend}_trend"
+        elif volatility == "low":
+            regime = "low_volatility_range"
+        elif volatility == "high":
+            regime = "high_volatility_range"
+        else:
+            regime = "range"
+
+        confidence = 50
+        confidence += min(25, int(trend_strength * 120))
+        if adx_value is not None:
+            confidence += 10 if adx_value >= 22 else -5
+        if volatility == "normal":
+            confidence += 5
+        confidence = max(10, min(confidence, 90))
+
+        return {
+            "regime": regime,
+            "trend": trend,
+            "volatility": volatility,
+            "direction_bias": direction_bias,
+            "confidence": confidence,
+            "candle_count": len(df),
+            "last_close": round(last_close, 5),
+            "atr": round(latest_atr, 5),
+            "atr_ratio": round(atr_ratio, 3),
+            "bb_width_pct": round(bb_width_pct, 3),
+            "ema_slope_pct": round(ema_slope_pct, 4),
+            "adx": round(adx_value, 2) if adx_value is not None else None,
+        }
+    except Exception as e:
+        return {
+            "regime": "unknown",
+            "trend": "unknown",
+            "volatility": "unknown",
+            "direction_bias": "neutral",
+            "confidence": 0,
+            "reason": str(e)[:120],
+            "candle_count": len(market_data or []),
+        }
+
+
+def _score_prompt_regime_fit(tags: dict, regime: dict) -> tuple[float, list[str]]:
+    styles = set(tags.get("styles") or [])
+    avoid_when = set(tags.get("avoid_when") or [])
+    regime_name = regime.get("regime") or "unknown"
+    trend = regime.get("trend")
+    volatility = regime.get("volatility")
+    score = 0.0
+    reasons = []
+
+    if trend in ("bullish", "bearish"):
+        if "trend_following" in styles or "momentum" in styles:
+            score += 18
+            reasons.append("trend strategy fits trending market")
+        if "breakout" in styles and volatility in ("normal", "high"):
+            score += 10
+            reasons.append("breakout strategy fits active trend")
+        if "mean_reversion" in styles or "range" in styles:
+            score -= 12
+            reasons.append("range/reversal strategy penalized in trend")
+    elif "range" in str(regime_name):
+        if "mean_reversion" in styles or "range" in styles:
+            score += 16
+            reasons.append("range strategy fits ranging market")
+        if "trend_following" in styles and volatility == "low":
+            score -= 10
+            reasons.append("trend strategy penalized in quiet range")
+
+    if volatility == "high":
+        if "momentum" in styles or "breakout" in styles:
+            score += 10
+            reasons.append("momentum/breakout fits high volatility")
+        if "scalping" in styles:
+            score -= 5
+            reasons.append("scalping slightly penalized in high volatility")
+    elif volatility == "low":
+        if "breakout" in styles:
+            score -= 12
+            reasons.append("breakout penalized in low volatility")
+        if "mean_reversion" in styles or "range" in styles:
+            score += 8
+            reasons.append("mean reversion fits low volatility")
+
+    for avoid in avoid_when:
+        if avoid == "strong_trend" and trend in ("bullish", "bearish"):
+            score -= 10
+        elif avoid == "low_volatility_range" and regime_name == "low_volatility_range":
+            score -= 10
+
+    return score, reasons
+
+
+async def _choose_prompt_with_context(
+    user_id: int,
+    prompt_pool: list[dict],
+    symbol: str,
+    market_regime: dict,
+) -> tuple[dict, dict]:
+    """Choose a prompt using regime fit plus historical performance."""
+    scores_by_prompt: dict[str, list[StrategyScore]] = {}
+    recent_by_prompt: dict[str, dict] = {}
+
+    try:
+        async with AsyncSessionLocal() as db:
+            score_result = await db.execute(
+                select(StrategyScore).where(
+                    StrategyScore.symbol == symbol,
+                    StrategyScore.total_trades >= 3,
+                )
+            )
+            for score in score_result.scalars().all():
+                scores_by_prompt.setdefault(score.prompt_text, []).append(score)
+
+            recent_result = await db.execute(
+                select(AutopilotTrade)
+                .where(
+                    AutopilotTrade.user_id == user_id,
+                    AutopilotTrade.symbol == symbol,
+                    AutopilotTrade.profit.isnot(None),
+                )
+                .order_by(AutopilotTrade.executed_at.desc())
+                .limit(200)
+            )
+            for trade in recent_result.scalars().all():
+                bucket = recent_by_prompt.setdefault(
+                    trade.prompt_text,
+                    {"trades": 0, "wins": 0, "pnl": 0.0},
+                )
+                bucket["trades"] += 1
+                bucket["pnl"] += trade.profit or 0.0
+                if (trade.profit or 0.0) > 0:
+                    bucket["wins"] += 1
+    except Exception:
+        pass
+
+    ranked = []
+    for prompt in prompt_pool:
+        tags = _infer_prompt_tags(prompt["text"])
+        regime_score, fit_reasons = _score_prompt_regime_fit(tags, market_regime)
+        score = 50.0 + regime_score
+        history_reasons = []
+
+        strategy_rows = scores_by_prompt.get(prompt["text"], [])
+        if strategy_rows:
+            best = max(
+                strategy_rows,
+                key=lambda s: (
+                    s.total_trades or 0,
+                    s.profit_factor or 0,
+                    s.total_pnl or 0,
+                ),
+            )
+            win_rate = best.win_rate or 0.0
+            profit_factor = best.profit_factor or 0.0
+            total_pnl = best.total_pnl or 0.0
+            sample = best.total_trades or 0
+            score += min(22, max(-18, (win_rate - 50) * 0.45))
+            if profit_factor:
+                score += min(12, (profit_factor - 1.0) * 8)
+            score += min(10, max(-10, total_pnl / 25))
+            history_reasons.append(
+                f"scoreboard {sample} trades, win {win_rate:.1f}%, pf {profit_factor or 0:.2f}"
+            )
+
+        recent = recent_by_prompt.get(prompt["text"])
+        if recent and recent["trades"] >= 3:
+            recent_wr = recent["wins"] / recent["trades"] * 100
+            score += min(12, max(-12, (recent_wr - 50) * 0.35))
+            score += min(8, max(-8, recent["pnl"] / 20))
+            history_reasons.append(
+                f"recent {recent['trades']} trades, win {recent_wr:.1f}%, pnl {recent['pnl']:+.2f}"
+            )
+
+        score = max(5.0, min(score, 95.0))
+        weight = max(1, int(score))
+        ranked.append({
+            "prompt": prompt,
+            "score": round(score, 2),
+            "weight": weight,
+            "tags": tags,
+            "reasons": fit_reasons + history_reasons,
+        })
+
+    ranked.sort(key=lambda item: item["score"], reverse=True)
+    weighted = []
+    for item in ranked:
+        weighted.extend([item] * item["weight"])
+
+    selected = random.choice(weighted) if weighted else random.choice(ranked)
+    context = {
+        "selection_mode": "regime_score_weighted",
+        "selected_score": selected["score"],
+        "selected_tags": selected["tags"],
+        "selected_reasons": selected["reasons"],
+        "market_regime": market_regime,
+        "top_candidates": [
+            {
+                "id": item["prompt"]["id"],
+                "is_custom": item["prompt"]["is_custom"],
+                "score": item["score"],
+                "tags": item["tags"],
+                "reasons": item["reasons"][:3],
+            }
+            for item in ranked[:5]
+        ],
+    }
+    return selected["prompt"], context
+
+
 async def run_autopilot_cycle(user_id: int):
     state = _get_state(user_id)
     default_prompts = load_prompts()
@@ -543,40 +878,30 @@ async def run_autopilot_cycle(user_id: int):
         state["stats"]["skipped_count"] += 1
         return
 
-    # Score-weighted prompt selection (fallback to random if no scores)
-    chosen = None
-    try:
-        async with AsyncSessionLocal() as db:
-            result = await db.execute(
-                select(StrategyScore).where(
-                    StrategyScore.symbol == symbol,
-                    StrategyScore.total_trades >= 3,
-                ).order_by(StrategyScore.win_rate.desc())
-            )
-            scores = result.scalars().all()
+    baseline_market_data = await get_market_data(
+        user_id,
+        symbol,
+        timeframe="15m",
+        count=300,
+        connector_url=connector_url,
+    )
+    market_regime = _classify_market_regime(baseline_market_data or [])
+    add_log(
+        user_id,
+        (
+            "Market regime: "
+            f"{market_regime.get('regime')} | trend={market_regime.get('trend')} "
+            f"vol={market_regime.get('volatility')} bias={market_regime.get('direction_bias')} "
+            f"confidence={market_regime.get('confidence')}%"
+        ),
+    )
 
-        if scores:
-            weighted = []
-            for p in prompt_pool:
-                matching_scores = [
-                    s for s in scores
-                    if s.prompt_text == p["text"] and s.direction is None
-                ]
-                if matching_scores:
-                    s = matching_scores[0]
-                    weight = max(int(s.win_rate) - 30, 5) if s.total_trades >= 5 else 10
-                else:
-                    weight = 10
-                weighted.extend([p] * weight)
-
-            if weighted:
-                chosen = random.choice(weighted)
-
-    except Exception:
-        pass
-
-    if not chosen:
-        chosen = random.choice(prompt_pool)
+    chosen, decision_context = await _choose_prompt_with_context(
+        user_id=user_id,
+        prompt_pool=prompt_pool,
+        symbol=symbol,
+        market_regime=market_regime,
+    )
 
     prompt_id_val = chosen["id"]
     prompt_text = chosen["text"]
@@ -586,7 +911,13 @@ async def run_autopilot_cycle(user_id: int):
     else:
         prompt_num = prompt_id_val
         display_id = f"#{prompt_num}"
-    add_log(user_id, f"Using Strategy {display_id}: {prompt_text[:50]}...")
+    selected_score = decision_context.get("selected_score")
+    selected_tags = decision_context.get("selected_tags", {})
+    selected_styles = ",".join(selected_tags.get("styles") or ["general"])
+    add_log(
+        user_id,
+        f"Using Strategy {display_id} | score={selected_score} | styles={selected_styles}: {prompt_text[:50]}...",
+    )
 
     # ── AI call helper with 429 retry + provider fallback ────────────────────
     async def _call_ai_with_retry(messages: list, provider: str, model: str, max_retries: int = 3) -> tuple[str | None, dict | None]:
@@ -696,6 +1027,25 @@ async def run_autopilot_cycle(user_id: int):
     if error_feedback:
         error_section = f"\nPREVIOUS TRADE ERROR FEEDBACK (learn from this):\n{error_feedback}\n- Adjust stop loss / take profit to be further from entry.\n- Do NOT repeat the same mistake.\n"
 
+    top_candidates = decision_context.get("top_candidates", [])
+    top_candidate_lines = []
+    for item in top_candidates[:3]:
+        styles = ",".join((item.get("tags") or {}).get("styles") or [])
+        top_candidate_lines.append(
+            f"- {item.get('id')}: score={item.get('score')} styles={styles}"
+        )
+    decision_section = f"""
+AUTOPILOT DECISION CONTEXT:
+- Market regime: {market_regime.get('regime')} (trend={market_regime.get('trend')}, volatility={market_regime.get('volatility')}, directional_bias={market_regime.get('direction_bias')})
+- Regime confidence: {market_regime.get('confidence')}%
+- Selected prompt score: {decision_context.get('selected_score')}
+- Selected prompt tags: {json.dumps(decision_context.get('selected_tags', {}))}
+- Selection reasons: {"; ".join(decision_context.get('selected_reasons') or []) or "No historical reasons yet"}
+- Top prompt candidates:
+{chr(10).join(top_candidate_lines) if top_candidate_lines else "- No ranked candidates available"}
+Use this context as guidance. If the selected strategy does not fit the actual candles, output NO_SETUP.
+"""
+
     candle_count = len(market_data)
     data_warning = ""
     if candle_count < 100:
@@ -752,6 +1102,7 @@ IMPORTANT RULES:
 {data_warning}
 Strategy:
 {prompt_text}
+{decision_section}
 {error_section}
 OUTPUT FORMAT (if setup found):
 ```json
@@ -1061,6 +1412,11 @@ Output ONLY one of the following (no code, no explanation outside the JSON):
                 mt5_ticket=ticket, execution_price=exec_price, execution_status="executed",
                 reasoning=reasoning, confidence=confidence, ai_response=ai_response,
                 raw_thinking=full_raw_response,
+                market_regime=market_regime.get("regime"),
+                regime_details=market_regime,
+                prompt_tags=decision_context.get("selected_tags"),
+                decision_score=decision_context.get("selected_score"),
+                decision_context=decision_context,
                 provider=(_last_usage.get("provider") if _last_usage else None),
                 model=(_last_usage.get("model") if _last_usage else None),
                 prompt_tokens=(_last_usage.get("prompt_tokens") if _last_usage else None),
@@ -1287,6 +1643,9 @@ class TradeResult(BaseModel):
     closed_at: Optional[str]
     reasoning: Optional[str]
     confidence: Optional[float]
+    market_regime: Optional[str] = None
+    decision_score: Optional[float] = None
+    prompt_tags: Optional[dict] = None
 
 
 class LogEntry(BaseModel):
@@ -1755,7 +2114,10 @@ async def get_trade_results(
                 profit=t.profit,
                 closed_at=t.closed_at.isoformat() if t.closed_at else None,
                 reasoning=t.reasoning,
-                confidence=t.confidence
+                confidence=t.confidence,
+                market_regime=t.market_regime,
+                decision_score=t.decision_score,
+                prompt_tags=t.prompt_tags,
             )
             for t in trades
         ]

@@ -189,6 +189,11 @@ class AutopilotTrade(Base):
     confidence = Column(Float, nullable=True)
     ai_response = Column(Text, nullable=True)
     raw_thinking = Column(JSON, nullable=True)
+    market_regime = Column(String, nullable=True, index=True)
+    regime_details = Column(JSON, nullable=True)
+    prompt_tags = Column(JSON, nullable=True)
+    decision_score = Column(Float, nullable=True)
+    decision_context = Column(JSON, nullable=True)
 
     provider = Column(String, nullable=True)
     model = Column(String, nullable=True)
