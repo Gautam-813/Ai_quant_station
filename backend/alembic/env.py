@@ -55,6 +55,7 @@ def run_migrations_offline() -> None:
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode."""
     url = get_database_url()
+    is_sqlite = url.startswith("sqlite")
 
     # Build a sync engine for Alembic from the async URL
     configuration = config.get_section(config.config_ini_section)
@@ -64,18 +65,17 @@ def run_migrations_online() -> None:
         configuration,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
-        # For SQLite: disable execution isolation so foreign keys work
-        connect_args={"check_same_thread": False},
+        connect_args={"check_same_thread": False} if is_sqlite else {},
     )
 
-    with connectable.connect() as connection:
-        # Enable foreign keys for SQLite
+    if is_sqlite:
         @event.listens_for(connectable, "connect")
         def _enable_foreign_keys(dbapi_conn, _connection_record):
             cursor = dbapi_conn.cursor()
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.close()
 
+    with connectable.connect() as connection:
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
