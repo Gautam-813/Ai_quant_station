@@ -24,7 +24,7 @@ from ..core.config import settings
 from ..core.security import get_current_user
 from ..core.database import AsyncSessionLocal
 from ..core.providers import PROVIDERS, get_api_key as _get_api_key, get_base_url, resolve_api_key
-from ..models.ai_memory import AutopilotTrade, AutopilotSettings, UserPrompt, AutopilotLog, ModelUsage
+from ..models.ai_memory import AutopilotTrade, AutopilotSettings, UserPrompt, AutopilotLog, ModelUsage, AiCallLog
 from ..models.strategy_score import StrategyScore
 from ..core.providers import estimate_cost
 
@@ -437,6 +437,33 @@ async def _update_model_usage(user_id: int, usage: dict):
             await db.commit()
     except Exception:
         pass  # Never crash the autopilot loop
+
+
+async def _log_ai_call(user_id: int, prompt_number: int, cycle_number: int, usage: dict, stage: str):
+    """Log every AI API call to AiCallLog for cost attribution (fire-and-forget)."""
+    try:
+        from ..core.providers import estimate_cost
+        cost = estimate_cost(
+            usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0),
+            usage.get("provider", ""), usage.get("model", ""),
+        )
+        async with AsyncSessionLocal() as db:
+            log = AiCallLog(
+                user_id=user_id, prompt_number=prompt_number,
+                cycle_number=cycle_number,
+                provider=usage.get("provider"),
+                model=usage.get("model"),
+                prompt_tokens=usage.get("prompt_tokens", 0),
+                completion_tokens=usage.get("completion_tokens", 0),
+                total_tokens=usage.get("total_tokens", 0),
+                stage=stage,
+                outcome="pending",
+                cost=cost,
+            )
+            db.add(log)
+            await db.commit()
+    except Exception:
+        pass  # Never crash the autopilot
 
 
 async def check_open_positions(connector_url: str = None, user_id: int = 0):
@@ -920,10 +947,14 @@ async def run_autopilot_cycle(user_id: int):
     )
 
     # ── AI call helper with 429 retry + provider fallback ────────────────────
-    async def _call_ai_with_retry(messages: list, provider: str, model: str, max_retries: int = 3) -> tuple[str | None, dict | None]:
+    _call_count = 0
+    _call_tokens = 0
+
+    async def _call_ai_with_retry(messages: list, provider: str, model: str, max_retries: int = 3, stage: str = "initial") -> tuple[str | None, dict | None]:
         """Call AI with exponential backoff on 429, fallback to next provider.
         Returns (content, usage_dict) where usage_dict has prompt_tokens, completion_tokens, total_tokens.
         """
+        nonlocal _call_count, _call_tokens
         from ..core.providers import PROVIDERS, get_provider_names, get_base_url, resolve_api_key
         
         providers = get_provider_names()
@@ -964,6 +995,16 @@ async def run_autopilot_cycle(user_id: int):
                     # Always log usage to ModelUsage (fire-and-forget)
                     if usage:
                         asyncio.create_task(_update_model_usage(user_id, usage))
+                    # Track call count + total tokens across all calls
+                    _call_count += 1
+                    if usage:
+                        _call_tokens += usage["total_tokens"]
+                    # Log to AiCallLog (fire-and-forget)
+                    if usage:
+                        asyncio.create_task(_log_ai_call(
+                            user_id, prompt_num, state["stats"]["total_runs"],
+                            usage, stage,
+                        ))
                     return result, usage
                 except Exception as e:
                     err_str = str(e).lower()
@@ -1117,11 +1158,13 @@ If no setup, print: NO_SETUP"""
 
     # Step 1: AI generates analysis code (with 429 retry + provider fallback)
     _last_usage = None
+    _source = "sandbox"
     generated_code, _last_usage = await _call_ai_with_retry(
         messages=[{"role": "user", "content": code_prompt}],
         provider=provider,
         model=model,
-        max_retries=3
+        max_retries=3,
+        stage="initial",
     )
     if not generated_code:
         add_log(user_id, "AI code generation failed after retries", "ERROR")
@@ -1154,7 +1197,8 @@ If no setup, print: NO_SETUP"""
                 messages=[{"role": "user", "content": code_prompt}],
                 provider=retry_p,
                 model=PROVIDERS[retry_p]["models"][0],
-                max_retries=2
+                max_retries=2,
+                stage="failover",
             )
             if not new_code:
                 add_log(user_id, f"{retry_p} code generation returned empty, skipping")
@@ -1216,7 +1260,8 @@ If no setup, print: NO_SETUP"""
                 ],
                 provider=retry_p,
                 model=PROVIDERS[retry_p]["models"][0],
-                max_retries=2
+                max_retries=2,
+                stage="self_correct",
             )
             if corrected:
                 generated_code = corrected
@@ -1341,12 +1386,14 @@ Output ONLY one of the following (no code, no explanation outside the JSON):
                 messages=[{"role": "user", "content": backup_prompt}],
                 provider=retry_p,
                 model=PROVIDERS[retry_p]["models"][0],
-                max_retries=2
+                max_retries=2,
+                stage="backup",
             )
             if not fallback_response:
                 add_log(user_id, f"Backup {retry_p} returned empty, skipping")
                 continue
             ai_response = fallback_response
+            _source = "backup"
 
             # Parse TRADE_SETUP JSON
             jm = re.search(r'```json\n?(.*?)```', fallback_response, re.DOTALL)
@@ -1422,6 +1469,9 @@ Output ONLY one of the following (no code, no explanation outside the JSON):
                 prompt_tokens=(_last_usage.get("prompt_tokens") if _last_usage else None),
                 completion_tokens=(_last_usage.get("completion_tokens") if _last_usage else None),
                 total_tokens=(_last_usage.get("total_tokens") if _last_usage else None),
+                source=_source,
+                call_count=_call_count if _call_count > 0 else None,
+                call_tokens=_call_tokens if _call_tokens > 0 else None,
                 cycle_number=state["stats"]["total_runs"],
             )
             db.add(trade)

@@ -201,6 +201,10 @@ class AutopilotTrade(Base):
     completion_tokens = Column(Integer, nullable=True)
     total_tokens = Column(Integer, nullable=True)
 
+    source = Column(String, nullable=True)
+    call_count = Column(Integer, nullable=True)
+    call_tokens = Column(Integer, nullable=True)
+
     cycle_number = Column(Integer, nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
@@ -308,4 +312,27 @@ class AutopilotLog(Base):
         Index("ix_autopilot_logs_user_timestamp", "user_id", "timestamp"),
         Index("ix_autopilot_logs_user_level", "user_id", "level"),
         Index("ix_autopilot_logs_user_cycle", "user_id", "cycle_number"),
+    )
+
+
+class AiCallLog(Base):
+    """Log every AI API call made by the autopilot — including failed/retry calls."""
+    __tablename__ = "ai_call_logs"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    prompt_number = Column(Integer, nullable=True, index=True)
+    cycle_number = Column(Integer, nullable=True, index=True)
+    provider = Column(String, nullable=True)
+    model = Column(String, nullable=True)
+    prompt_tokens = Column(Integer, default=0)
+    completion_tokens = Column(Integer, default=0)
+    total_tokens = Column(Integer, default=0)
+    stage = Column(String, nullable=True)
+    outcome = Column(String, nullable=True)
+    cost = Column(Float, default=0.0)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+
+    __table_args__ = (
+        Index("ix_ai_call_logs_user_cycle", "user_id", "cycle_number"),
     )

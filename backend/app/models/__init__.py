@@ -19,6 +19,7 @@ from .ai_memory import (
     UserPrompt,
     DefaultPromptStrategy,
     AutopilotSettings,
+    AiCallLog,
 )
 from .historical_lab import HistoricalBacktest
 from .strategy_score import StrategyScore
@@ -42,4 +43,5 @@ __all__ = [
     "HistoricalBacktest",
     "StrategyScore",
     "ChatEmbedding",
+    "AiCallLog",
 ]

@@ -25,6 +25,8 @@ class StrategyScore(Base):
     avg_tokens = Column(Integer, nullable=True)
     total_cost = Column(Float, default=0.0)
     avg_cost = Column(Float, nullable=True)
+    cost_efficiency = Column(Float, nullable=True)
+    roi_per_dollar = Column(Float, nullable=True)
 
     first_used = Column(DateTime, nullable=True)
     last_used = Column(DateTime, nullable=True)
