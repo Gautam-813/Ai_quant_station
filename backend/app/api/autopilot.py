@@ -1510,6 +1510,22 @@ Output ONLY one of the following (no code, no explanation outside the JSON):
         state["stats"]["error_count"] += 1
 
 
+async def _is_market_open() -> bool:
+    """Check if XAUUSD market is currently open.
+    XAUUSD: Sunday 23:00 UTC → Friday 22:00 UTC. Saturday fully closed.
+    """
+    now = datetime.now(timezone.utc)
+    wd = now.weekday()
+    hour = now.hour
+    if wd == 5:  # Saturday
+        return False
+    if wd == 4 and hour >= 22:  # Friday after 22:00 UTC
+        return False
+    if wd == 6 and hour < 23:  # Sunday before 23:00 UTC
+        return False
+    return True
+
+
 async def sync_all_trades_from_mt5(user_id: int, connector_url: str = None, hours: int = 720):
     """Full back-sync: fetch ALL MT5 history, match by comment, create missing local records."""
     try:
@@ -1769,6 +1785,14 @@ async def autopilot_loop(user_id: int):
                     add_log(user_id, f"Daily loss limit (${max_loss}) reached. Stopping.", "WARNING")
                     state["running"] = False
                     hit_loss_limit = True
+
+                # Market open check — skip if XAUUSD is closed (weekend)
+                if not await _is_market_open():
+                    add_log(user_id, "Market closed (Sat/Sun). Skipping until Sunday 23:00 UTC.", "INFO")
+                    state["stats"]["skipped_count"] += 1
+                    await asyncio.sleep(3600)  # re-check every hour
+                    continue
+
                 await sync_trade_results(user_id)
                 if not hit_loss_limit:
                     await run_autopilot_cycle(user_id)
