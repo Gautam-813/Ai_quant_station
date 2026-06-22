@@ -439,31 +439,37 @@ async def _update_model_usage(user_id: int, usage: dict):
         pass  # Never crash the autopilot loop
 
 
-async def _log_ai_call(user_id: int, prompt_number: int, cycle_number: int, usage: dict, stage: str):
-    """Log every AI API call to AiCallLog for cost attribution (fire-and-forget)."""
+async def _log_ai_call(
+    user_id: int, prompt_number: int, cycle_number: int,
+    provider: str, model: str, stage: str,
+    outcome: str = "pending",
+    prompt_tokens: int = 0, completion_tokens: int = 0, total_tokens: int = 0,
+    error_message: str = None,
+) -> int | None:
+    """Log every AI API call to AiCallLog. Returns the log ID or None on failure."""
     try:
         from ..core.providers import estimate_cost
         cost = estimate_cost(
-            usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0),
-            usage.get("provider", ""), usage.get("model", ""),
+            prompt_tokens, completion_tokens,
+            provider or "", model or "",
         )
         async with AsyncSessionLocal() as db:
             log = AiCallLog(
                 user_id=user_id, prompt_number=prompt_number,
                 cycle_number=cycle_number,
-                provider=usage.get("provider"),
-                model=usage.get("model"),
-                prompt_tokens=usage.get("prompt_tokens", 0),
-                completion_tokens=usage.get("completion_tokens", 0),
-                total_tokens=usage.get("total_tokens", 0),
-                stage=stage,
-                outcome="pending",
-                cost=cost,
+                provider=provider, model=model,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                stage=stage, outcome=outcome,
+                error_message=error_message, cost=cost,
             )
             db.add(log)
             await db.commit()
+            await db.refresh(log)
+            return log.id
     except Exception:
-        pass  # Never crash the autopilot
+        return None
 
 
 async def check_open_positions(connector_url: str = None, user_id: int = 0):
@@ -949,12 +955,26 @@ async def run_autopilot_cycle(user_id: int):
     # ── AI call helper with 429 retry + provider fallback ────────────────────
     _call_count = 0
     _call_tokens = 0
+    _call_log_ids: list[int] = []
+
+    async def _log_call(outcome: str, p: str, m: str, st: str, pt: int = 0, ct: int = 0, tt: int = 0, err: str = None):
+        nonlocal _call_count, _call_tokens
+        _call_count += 1
+        if tt:
+            _call_tokens += tt
+        log_id = await _log_ai_call(
+            user_id, prompt_num, state["stats"]["total_runs"],
+            p, m, st, outcome=outcome,
+            prompt_tokens=pt, completion_tokens=ct, total_tokens=tt,
+            error_message=err,
+        )
+        if log_id:
+            _call_log_ids.append(log_id)
 
     async def _call_ai_with_retry(messages: list, provider: str, model: str, max_retries: int = 3, stage: str = "initial") -> tuple[str | None, dict | None]:
         """Call AI with exponential backoff on 429, fallback to next provider.
         Returns (content, usage_dict) where usage_dict has prompt_tokens, completion_tokens, total_tokens.
         """
-        nonlocal _call_count, _call_tokens
         from ..core.providers import PROVIDERS, get_provider_names, get_base_url, resolve_api_key
         
         providers = get_provider_names()
@@ -965,14 +985,16 @@ async def run_autopilot_cycle(user_id: int):
                 p = providers[p_idx]
                 api_key = await resolve_api_key(p, settings, user_id, AsyncSessionLocal)
                 if not api_key:
+                    await _log_call("no_key", p, model if p == provider else PROVIDERS[p]["models"][0], stage)
                     continue
                 if p == "nvidia" and not api_key.startswith("nvapi-"):
                     api_key = f"nvapi-{api_key}"
+                actual_model = model if p == provider else PROVIDERS[p]["models"][0]
                 
                 try:
                     client = AsyncOpenAI(base_url=get_base_url(p), api_key=api_key)
                     response = await client.chat.completions.create(
-                        model=model if p == provider else PROVIDERS[p]["models"][0],
+                        model=actual_model,
                         messages=messages,
                         temperature=0.2,
                         max_tokens=2500,
@@ -981,9 +1003,7 @@ async def run_autopilot_cycle(user_id: int):
                     content = response.choices[0].message.content or ""
                     match = re.search(r'```(?:python)?\n?(.*?)```', content, re.DOTALL)
                     result = match.group(1).strip() if match else content.strip()
-                    # Capture token usage from API response
                     usage = None
-                    actual_model = model if p == provider else PROVIDERS[p]["models"][0]
                     if hasattr(response, 'usage') and response.usage:
                         usage = {
                             "provider": p,
@@ -992,30 +1012,25 @@ async def run_autopilot_cycle(user_id: int):
                             "completion_tokens": response.usage.completion_tokens or 0,
                             "total_tokens": response.usage.total_tokens or 0,
                         }
-                    # Always log usage to ModelUsage (fire-and-forget)
                     if usage:
                         asyncio.create_task(_update_model_usage(user_id, usage))
-                    # Track call count + total tokens across all calls
-                    _call_count += 1
-                    if usage:
-                        _call_tokens += usage["total_tokens"]
-                    # Log to AiCallLog (fire-and-forget)
-                    if usage:
-                        asyncio.create_task(_log_ai_call(
-                            user_id, prompt_num, state["stats"]["total_runs"],
-                            usage, stage,
-                        ))
+                        await _log_call("success", p, actual_model, stage,
+                            usage["prompt_tokens"], usage["completion_tokens"], usage["total_tokens"])
+                    else:
+                        await _log_call("no_usage", p, actual_model, stage)
                     return result, usage
                 except Exception as e:
                     err_str = str(e).lower()
                     if "429" in err_str or "too_many_requests" in err_str or "queue_exceeded" in err_str:
-                        wait = min(2 ** attempt * 10, 60)  # 10s, 20s, 40s, max 60s
+                        wait = min(2 ** attempt * 10, 60)
                         add_log(user_id, f"Provider {p} rate limited (429), waiting {wait}s...", "WARNING")
+                        await _log_call("rate_limited", p, actual_model, stage, err=str(e)[:200])
                         await asyncio.sleep(wait)
-                        break  # try next provider
+                        break
                     else:
                         err_msg = str(e)[:200]
                         add_log(user_id, f"Provider {p} error: {err_msg}", "WARNING")
+                        await _log_call("error", p, actual_model, stage, err=err_msg)
                         if p_idx == len(providers) - 1 and attempt == max_retries - 1:
                             raise
                         continue

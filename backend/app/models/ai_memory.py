@@ -330,6 +330,7 @@ class AiCallLog(Base):
     total_tokens = Column(Integer, default=0)
     stage = Column(String, nullable=True)
     outcome = Column(String, nullable=True)
+    error_message = Column(String, nullable=True)
     cost = Column(Float, default=0.0)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
 
