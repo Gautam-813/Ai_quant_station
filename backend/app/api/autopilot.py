@@ -1192,14 +1192,15 @@ If no setup, print: NO_SETUP"""
 
     setup = None
     ai_response = generated_code  # Store generated code as AI response for DB
-    # Build provider failover order: start with user's provider, then all others
+    # Build provider failover order: user's pick first, then known-working,
+    # then the rest sorted by reliability.
     from ..core.providers import get_provider_names as _get_providers
+    _priority = ("cerebras", "github")
     _all_providers = _get_providers()
-    try:
-        _current_idx = _all_providers.index(provider)
-    except ValueError:
-        _current_idx = 0
-    _retry_providers = _all_providers[_current_idx:] + _all_providers[:_current_idx]
+    _remaining = [p for p in _all_providers if p != provider]
+    _known_working = [p for p in _remaining if p in _priority]
+    _others = [p for p in _remaining if p not in _priority]
+    _retry_providers = [provider] + _known_working + _others
     if not _retry_providers:
         _retry_providers = [provider]
 
