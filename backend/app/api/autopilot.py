@@ -1510,6 +1510,133 @@ Output ONLY one of the following (no code, no explanation outside the JSON):
         state["stats"]["error_count"] += 1
 
 
+async def sync_all_trades_from_mt5(user_id: int, connector_url: str = None, hours: int = 720):
+    """Full back-sync: fetch ALL MT5 history, match by comment, create missing local records."""
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(AutopilotSettings).where(AutopilotSettings.user_id == user_id))
+            settings_obj = result.scalar_one_or_none()
+            if not settings_obj:
+                return
+            connector_url = (connector_url or settings_obj.mt5_connector_url or settings.MT5_CONNECTOR_URL or "").strip() or None
+            if not connector_url:
+                return
+
+            history_data = await async_request("GET", f"{connector_url}/history", params={"hours": hours})
+            if not history_data or not history_data.get("success"):
+                add_log(user_id, "Full sync: history fetch failed", "WARNING")
+                return
+            deals = history_data.get("deals", [])
+            if not deals:
+                return
+
+            # Group by position_id into open/close pairs
+            positions = {}
+            for d in deals:
+                pid = d.get("position_id")
+                if pid:
+                    positions.setdefault(pid, {})[d["entry"]] = d
+
+            # Get all existing local tickets
+            existing = await db.execute(
+                select(AutopilotTrade.mt5_ticket).where(AutopilotTrade.user_id == user_id)
+            )
+            existing_tickets = {row[0] for row in existing if row[0]}
+
+            created = 0
+            updated = 0
+            for pid, pair in positions.items():
+                close = pair.get("CLOSE")
+                opn = pair.get("OPEN")
+                if not close or not opn:
+                    continue
+                ticket = opn.get("ticket") or close.get("ticket")
+                comment = opn.get("comment", "") or close.get("comment", "")
+                m = re.search(r"\[AUTOPILOT\]\s*(?:Custom-)?P?(\d+)", comment)
+                if not m:
+                    continue
+                prompt_num = int(m.group(1))
+
+                # Try to match existing local trade by ticket or position_id
+                existing_trade = None
+                result_set = await db.execute(
+                    select(AutopilotTrade).where(
+                        AutopilotTrade.user_id == user_id,
+                        AutopilotTrade.mt5_ticket == ticket,
+                    )
+                )
+                existing_trade = result_set.scalar_one_or_none()
+
+                profit = close.get("profit", 0) or 0
+                exit_price = close.get("price")
+                closed_at_str = close.get("time")
+                volume = opn.get("volume", 0) or 0
+                symbol = opn.get("symbol", "")
+                entry_price = opn.get("price", 0) or 0
+                direction = opn.get("direction", "BUY").upper()
+                entry_time_str = opn.get("time")
+                close_comment = (close.get("comment", "") or "").lower()
+
+                res_type = "MANUAL_CLOSE"
+                if "sl" in close_comment:
+                    res_type = "SL_HIT"
+                elif "tp" in close_comment:
+                    res_type = "TP_HIT"
+                elif profit > 0:
+                    res_type = "PROFIT"
+                else:
+                    res_type = "LOSS"
+
+                def _parse_ts(s):
+                    if not s:
+                        return None
+                    return datetime.strptime(s, '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
+
+                if existing_trade:
+                    if existing_trade.result is None or existing_trade.profit is None:
+                        existing_trade.profit = profit
+                        existing_trade.exit_price = exit_price
+                        existing_trade.result = res_type
+                        existing_trade.closed_at = _parse_ts(closed_at_str)
+                        if existing_trade.executed_at and existing_trade.closed_at:
+                            diff = existing_trade.closed_at - existing_trade.executed_at
+                            existing_trade.duration_minutes = int(diff.total_seconds() / 60)
+                        updated += 1
+                else:
+                    executed_at = _parse_ts(entry_time_str)
+                    closed_at = _parse_ts(closed_at_str)
+                    duration = int((closed_at - executed_at).total_seconds() / 60) if executed_at and closed_at else None
+                    new_trade = AutopilotTrade(
+                        user_id=user_id,
+                        prompt_number=prompt_num,
+                        prompt_text=f"(synced from MT5 - P#{prompt_num})",
+                        symbol=symbol,
+                        direction=direction,
+                        entry_price=entry_price,
+                        lot_size=volume,
+                        order_type="market",
+                        mt5_ticket=ticket,
+                        executed_at=executed_at,
+                        execution_price=entry_price,
+                        execution_status="executed",
+                        result=res_type,
+                        profit=profit,
+                        exit_price=exit_price,
+                        closed_at=closed_at,
+                        duration_minutes=duration,
+                        source="mt5_sync",
+                    )
+                    db.add(new_trade)
+                    created += 1
+
+            if created > 0 or updated > 0:
+                await db.commit()
+                add_log(user_id, f"Full sync: {created} created, {updated} updated from MT5 history", "INFO")
+
+    except Exception as e:
+        add_log(user_id, f"Full sync failed: {str(e)}", "ERROR")
+
+
 async def sync_trade_results(user_id: int, connector_url: str = None):
     try:
         async with AsyncSessionLocal() as db:
@@ -1597,6 +1724,17 @@ async def autopilot_loop(user_id: int):
     state = _get_state(user_id)
     await _rebuild_daily_state(user_id)
     await _rebuild_stats(user_id)
+    # Full back-sync from MT5 history at startup (captures trades that were missed)
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(AutopilotSettings).where(AutopilotSettings.user_id == user_id))
+            s = result.scalar_one_or_none()
+            if s:
+                connector_url = (s.mt5_connector_url or settings.MT5_CONNECTOR_URL or "").strip() or None
+                if connector_url:
+                    await sync_all_trades_from_mt5(user_id, connector_url)
+    except Exception:
+        pass
     try:
         while state["enabled"]:
             if state["running"]:

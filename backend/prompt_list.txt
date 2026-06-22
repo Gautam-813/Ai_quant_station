@@ -16,9 +16,13 @@ If yes and the higher low is at a prior support structure, generate a long trade
 using the higher low as your stop anchor.
 
 PROMPT #4:
-Look for a bullish engulfing candle at a major XAUUSD support on the H1 or H4
-timeframe. If a valid candle has formed within the last 3 bars, generate the
-trade. State which timeframe the signal is on.
+Look for a bullish engulfing candle at a clearly defined XAUUSD support level
+that has at least 2 prior touches within the last 30 candles. The engulfing
+candle must completely absorb the previous candle (higher high AND lower low)
+AND close above the midpoint of its own range. Only trade if the support level
+is within 0.5% of current price. State the support level, number of touches,
+and engulfing range in pips. Skip if support is unclear or has fewer than 2
+touches.
 
 PROMPT #5:
 Identify if RSI on H4 XAUUSD is below 35 while price sits at a structural
