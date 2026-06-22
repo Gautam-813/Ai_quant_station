@@ -1099,7 +1099,7 @@ AUTOPILOT DECISION CONTEXT:
 - Selection reasons: {"; ".join(decision_context.get('selected_reasons') or []) or "No historical reasons yet"}
 - Top prompt candidates:
 {chr(10).join(top_candidate_lines) if top_candidate_lines else "- No ranked candidates available"}
-Use this context as guidance. If the selected strategy does not fit the actual candles, output NO_SETUP.
+Use this context as guidance.
 """
 
     candle_count = len(market_data)
@@ -1141,16 +1141,29 @@ IMPORTANT RULES:
    Aliases: '1H'=1h, '4H'=4h, '1D'=1d.
    You CANNOT resample DOWN (e.g. 1h → 1m) — that creates fake data.
 
-4. ALWAYS output one of these at the end:
-   - A JSON block with TRADE_SETUP (see format below)
-   - "NO_SETUP" if no trade opportunity
+4. You have THREE possible outputs at the end:
 
-5. Risk-Reward must be >= 1:2 for any trade setup.
+   A) FULL TRADE SETUP — clear setup, good risk-reward (RR >= 1:1.5), confidence 60-95.
+      ```json
+      {{"action": "TRADE_SETUP", "symbol": "{symbol}", "direction": "BUY", "order_type": "market", "entry_price": 0.0, "stop_loss": 0.0, "take_profit": 0.0, "lot_size": {lot_size}, "reasoning": "Brief explanation", "confidence": 75}}
+      ```
 
-6. After resample() or dropna(), always check len(df) before accessing elements.
+   B) REDUCED SETUP — setup exists but lower conviction (RR >= 1:1, confidence 40-59).
+      Use half the standard lot size ({lot_size}/2) and tighter stop.
+      ```json
+      {{"action": "TRADE_SETUP", "symbol": "{symbol}", "direction": "BUY", "order_type": "market", "entry_price": 0.0, "stop_loss": 0.0, "take_profit": 0.0, "lot_size": {lot_size}/2, "reasoning": "Lower conviction: explain why", "confidence": 50}}
+      ```
+
+   C) NO_SETUP — no trade opportunity at all.
+
+   Pick A if confidence >= 60 AND RR >= 1:1.5.
+   Pick B if confidence 40-59 AND RR >= 1:1.
+   Pick C if confidence < 40 or no valid level.
+
+5. After resample() or dropna(), always check len(df) before accessing elements.
    Do NOT assume the resampled DataFrame has the same row count.
 
-7. NEVER write the double-underscore __ character sequence in your code.
+6. NEVER write the double-underscore __ character sequence in your code.
    ANY code containing __ (like __class__, __dict__, __name__, __version__, __init__)
    will be REJECTED by the sandbox. This includes debug prints, comments, and strings.
    If you need to check a type, use type(obj).__name__ is REJECTED — use str(type(obj)) instead.
@@ -1160,12 +1173,7 @@ Strategy:
 {prompt_text}
 {decision_section}
 {error_section}
-OUTPUT FORMAT (if setup found):
-```json
-{{"action": "TRADE_SETUP", "symbol": "{symbol}", "direction": "BUY", "order_type": "market", "entry_price": 0.0, "stop_loss": 0.0, "take_profit": 0.0, "lot_size": {lot_size}, "reasoning": "Brief explanation", "confidence": 75}}
-```
-
-If no setup, print: NO_SETUP"""
+"""
 
     add_log(user_id, f"AI prompt: analyze {len(market_data)} {tf} candles for strategy")
 

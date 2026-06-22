@@ -46,9 +46,11 @@ If price is touching that trendline now with a bullish reaction, generate a long
 trade. State the trendline angle and which swing lows define it.
 
 PROMPT #10:
-Identify if XAUUSD is consolidating in a tight range (less than 15 pips) just
-above a major support level for at least 3 consecutive H1 candles. If yes,
-generate a buy on breakout above that consolidation with stop at support.
+Identify if XAUUSD has been in a tight range (less than 10 pips) for 4+
+consecutive H1 candles near a key moving average (21 or 50 EMA). If price
+breaks the range with a candle closing outside it and body > 60% of range,
+generate the trade in the breakout direction with stop at the opposite range
+boundary. State the range boundaries and which EMA is nearby.
 
 PROMPT #11:
 Analyze the 200 EMA on H1 XAUUSD. If price has pulled back to the 200 EMA from
@@ -137,9 +139,10 @@ resistance, then reversed and closed back below it. If this has occurred in the
 last 3 bars, generate the short trade. Treat the false breakout high as stop.
 
 PROMPT #28:
-Check for a lower high formation below the previous swing high on XAUUSD.
-If the lower high is at or near a known resistance zone, generate a short trade.
-State the previous swing high and the current lower high levels.
+Identify the last 3 swing highs on XAUUSD H4. If the most recent swing high is
+at least 5 pips lower than the previous one AND price has rejected from it with
+a bearish candle (close in lower 30% of range), generate a short trade with
+stop 3 pips above the recent high. State all three swing high levels.
 
 PROMPT #29:
 Look for a trendline resistance on XAUUSD connecting at least 3 swing highs.
@@ -187,20 +190,23 @@ XAUUSD. If price has tested that level and printed a clear bearish rejection
 pattern, generate the short. State how many previous rejections that level has.
 
 PROMPT #38:
-Look for exhaustion signals at XAUUSD resistance — a series of narrowing
-candles with shrinking range near the high, suggesting buying pressure is
-drying up. If visible in the last 5 bars, generate the short trade.
+Look for 3+ consecutive XAUUSD candles with shrinking bodies (each body smaller
+than the previous) near a structural resistance level. If the last candle has a
+body less than 40% of its range AND closed below its midpoint, generate the
+short trade with stop above the highest high of the 3-candle cluster. State the
+body size ratio of the first vs last candle.
 
 PROMPT #39:
-Check if XAUUSD has formed a bearish structure breakdown — a lower close
-below the most recent swing low after failing to break resistance. If this
-structure shift is confirmed, generate the short continuation trade.
+Check if XAUUSD has made a lower close below the most recent swing low after
+failing to break the prior swing high. Only trade if this is the SECOND
+consecutive lower close. Generate a short continuation trade with stop above
+the failed swing high. Skip if only one lower close.
 
 PROMPT #40:
-Analyze current XAUUSD session context. Identify if resistance is near a key
-psychological level (round number: X000, X500, X250). If price is rejecting
-that level in the current session with a clean bearish signal, generate the
-short.
+Look for a clean rejection candle at XAUUSD resistance where the high is within
+3 pips of a round number (e.g., 3300, 3325, 3350). The rejection must have a
+wick at least 2x the body size. If found, generate a short trade with stop 2
+pips above the round number. Skip if no round number is nearby within 5 pips.
 
 
 PROMPT #41:
@@ -214,9 +220,12 @@ pulled back to the 50 EMA without breaking the last higher low, generate a
 long continuation trade. If trend is unclear, say SKIP IT.
 
 PROMPT #43:
-Look for a bullish flag on XAUUSD — a strong impulse move followed by a
-shallow, tight consolidation angled slightly downward. If the flag is intact
-and breakout is occurring, generate the long continuation trade.
+Identify a strong directional impulse on XAUUSD (candle body > 1.5x ATR). After
+the impulse, look for 3-5 consolidation candles moving counter-trend. If the
+consolidation stays within 38.2% retracement of the impulse and the last
+consolidation candle closes in the direction of the original impulse, generate
+a continuation trade in the impulse direction with stop below the consolidation
+low. State the impulse size in ATR units.
 
 PROMPT #44:
 Identify a breakout above a consolidation range on XAUUSD followed by a
@@ -247,9 +256,11 @@ wick), generate the continuation long. State the exact breakout and retest
 levels.
 
 PROMPT #49:
-Identify if XAUUSD is in a trend where EMA 21 is above EMA 50 and both are
-sloping upward. If price pulls back to touch EMA 21 and bounces, generate the
-long continuation trade with stop below EMA 50.
+Check if XAUUSD 50 EMA is sloping clearly upward (each of the last 5 closes
+above it). If price has pulled back to touch or cross below the 50 EMA but the
+last 2 candles closed progressively higher from it, generate a long trade with
+stop 5 pips below the lowest touch. Skip if the 50 EMA is flat or declining.
+State the EMA slope direction.
 
 PROMPT #50:
 Look for an impulse-pullback-continuation pattern on XAUUSD: strong move,
@@ -257,9 +268,11 @@ shallow retracement (38–50% of the impulse), and then a new breakout above
 the impulse high. Generate the trade at the breakout candle close.
 
 PROMPT #51:
-Identify the ADX value on XAUUSD H4. If ADX is above 25, the trend is strong.
-Generate a continuation trade only in the direction of the trend. If ADX is
-below 20, say SKIP IT — market is ranging.
+Calculate ADX(14) on XAUUSD H4. If ADX > 25 AND the last 3 candles are all in
+the same direction (all bullish OR all bearish closes), generate a continuation
+trade in that direction with stop at the most recent candle's extreme. If ADX
+< 20, check if a breakout from a 10-bar range has occurred and trade the
+breakout instead with stop at the opposite range boundary.
 
 PROMPT #52:
 Check if XAUUSD is making higher highs on the daily chart. If yes, drop to H4
@@ -296,22 +309,27 @@ occurred in the last 3 bars, generate a long trade targeting the next
 structural resistance.
 
 PROMPT #58:
-Identify a measured move target on XAUUSD. If price is in a trend and has
-completed one leg, project the same distance for leg 2. If price is entering
-the leg 2 initiation zone, generate the continuation trade toward the
-measured target.
+Identify the most recent 10-bar range on XAUUSD. If price has broken out of
+that range AND retested the breakout level with a single candle that closed
+back beyond it, generate the trade in the breakout direction. Set the target
+at 1x the breakout range distance. Valid only if the retest candle has a body
+> 50% of its range. State the range in pips and the retest candle body ratio.
 
 PROMPT #59:
-Look for a volatility contraction before expansion on XAUUSD (Bollinger Band
-squeeze or ATR compression). If bands are tightening and price is near the
-midline of the trend structure, generate the trade in the expected expansion
-direction.
+Check if XAUUSD Bollinger Bands (20, 2) have narrowed for 5+ consecutive
+candles (band width decreasing each bar, measurable). If a breakout candle
+closes outside the bands AND the close is at the extreme (upper 20% of range
+for long, lower 20% for short), generate the trade with stop at the opposite
+band. Skip if the breakout candle body is less than 60% of its range. State the
+band width change percentage.
 
 PROMPT #60:
-Identify a channel trend on XAUUSD — price bouncing between parallel upper
-and lower trendlines for at least 4 touches. If price is at the channel
-support (in an uptrend) or channel resistance (in a downtrend), generate the
-channel trade.
+Draw lines connecting the 4 most recent swing highs and the 4 most recent swing
+lows on XAUUSD H4. If price has bounced between parallel boundaries at least 3
+times, define the channel. If price is at the lower boundary in an uptrend
+(higher highs on H4 confirmed), generate a long. If at the upper boundary in a
+downtrend (lower lows confirmed), generate a short. Skip if fewer than 3
+touches of either boundary.
 
 
 PROMPT #61:
@@ -326,10 +344,13 @@ trade in the direction of the BOS, entering on the first pullback after
 the break.
 
 PROMPT #63:
-Look for a fair value gap (FVG) on XAUUSD — a 3-candle pattern where the
-first and third candles do not overlap, leaving an imbalance. If price is
-currently filling that FVG from above (bearish) or below (bullish), generate
-the trade.
+Check for a 3-candle imbalance pattern on XAUUSD H1: the low of candle 3 is
+above the high of candle 1 (bullish FVG) OR the high of candle 3 is below the
+low of candle 1 (bearish FVG). Only trade if price is currently filling that
+FVG AND the middle candle's close was in the direction of the gap. Generate
+the trade in the gap direction with stop 2 pips beyond the opposite side of the
+FVG. Require the FVG to be at least 3 pips wide to be valid. State the FVG
+width in pips.
 
 PROMPT #64:
 Identify an order block on XAUUSD — the last bearish candle before a strong
@@ -365,10 +386,11 @@ volume. If this pattern has formed, generate the trade in the direction of
 the reversal.
 
 PROMPT #70:
-Identify if XAUUSD has formed an equal high (two highs at nearly identical
-price within 3 pips). Equal highs signal a liquidity target above. If price
-is approaching those equal highs with momentum, generate the long for the
-liquidity grab then plan the short.
+Scan the last 20 XAUUSD H4 candles for an equal high pattern: two swing highs
+within 2 pips of each other, separated by at least 2 bars. If found AND price
+is currently near that level with a bearish rejection candle (close in lower
+30% of range), generate the short trade with stop 3 pips above the equal highs.
+Skip if no equal high pattern within 20 bars.
 
 PROMPT #71:
 Look for a mitigation block on XAUUSD — a bearish order block that caused a
@@ -376,20 +398,29 @@ down move but has since been broken to the upside. If price comes back to
 mitigate (retest) that block, generate a long trade from it.
 
 PROMPT #72:
-Identify a market structure shift on XAUUSD M15: price was making lower lows
-but just broke a swing high. If the shift is confirmed with a strong candle
-close, generate a long trade targeting the nearest H1 resistance.
+Check for a market structure shift on XAUUSD H1: price was making a clear
+sequence of higher highs and higher lows (bullish) OR lower highs and lower lows
+(bearish), then broke the most recent structure point (previous swing low in
+uptrend, previous swing high in downtrend). If the break candle closed beyond
+the structure point with body > 60% of its range, generate a trade in the NEW
+direction with stop at the broken structure point. Skip if trend was not clear
+before the break. State the structure sequence count.
 
 PROMPT #73:
-Check for a premium/discount array on XAUUSD. Identify the current range high
-and low. If price is at a 75%+ premium (near range high) in a bearish
-higher-timeframe context, generate a short. If at 25% discount in bullish
-context, generate a long.
+Identify the most recent 20-bar range on XAUUSD. Mark the high as 100% and low
+as 0%. If price is in the discount zone (0-33%) with a bullish reversal candle
+(close in upper 60% of its range) AND the H4 trend is up (higher highs),
+generate a long. If in the premium zone (67-100%) with a bearish reversal AND
+H4 trend is down (lower lows), generate a short. Skip if H4 trend is unclear or
+price is in the middle zone (33-67%).
 
 PROMPT #74:
-Look for a breaker block on XAUUSD — a previous support that failed, price
-broke below, then reversed and is now coming back up to retest the old support
-(now resistance) as a supply zone. Generate the short from the breaker block.
+Identify a clear support level on XAUUSD H4 that price broke below with force
+(break candle body > 1.5x ATR). After the break, if price returns to test that
+old support (now resistance) from below AND prints a bearish rejection candle
+(close in lower 30% of range), generate a short trade with stop 3 pips above
+the old support level. Skip if the break candle was not forceful enough. State
+the break candle size relative to ATR.
 
 PROMPT #75:
 Identify a strong imbalance zone (multiple FVGs stacked in the same direction)
@@ -403,10 +434,13 @@ distance in pips. If sweep > 8 pips and reversal candle closed inside prior
 range, generate the trade.
 
 PROMPT #77:
-Identify a consolidation base on XAUUSD where price has compressed for at
-least 6 bars near a prior swing point. Smart money accumulation/distribution
-tends to occur here. Generate the trade in the direction of the eventual
-breakout using the base high/low as the trigger.
+Look for a 6+ bar consolidation on XAUUSD where the range between highest high
+and lowest low is less than the 14-bar ATR value. If price breaks out of this
+consolidation with a candle closing more than 1 ATR beyond the consolidation
+boundary AND the breakout candle body is > 60% of its range, generate the trade
+in the breakout direction with stop inside the consolidation at its opposite
+boundary. Skip if the breakout candle is a doji or has a body less than
+half its range. State the consolidation range vs ATR ratio.
 
 PROMPT #78:
 Check if XAUUSD has returned to an unmitigated order block — one that has not
@@ -437,10 +471,12 @@ entry signal. Only generate a trade when all 3 are aligned. State each
 timeframe's verdict.
 
 PROMPT #83:
-Generate a XAUUSD trade combining: a smart money concept (order block or FVG),
-a classic technical signal (support/resistance or trendline), and a price
-action candle confirmation (engulfing, pin bar, or rejection wick). All three
-must be present.
+Generate a XAUUSD trade if and only if: (1) price is at a structural level
+(support or resistance) that has been tested at least 2 times before, AND
+(2) the most recent candle shows clear rejection at that level with a wick
+at least 2x the body size. State the level, how many prior touches, and the
+wick-to-body ratio. No additional conditions required. Confidence = base 55%,
+add 5% per additional prior touch above 2.
 
 PROMPT #84:
 Create the highest-probability XAUUSD setup you can construct by combining:
@@ -449,10 +485,12 @@ confirmation. Assign a confidence score out of 100 and justify it. Only
 generate if confidence is 65 or above.
 
 PROMPT #85:
-Identify a XAUUSD setup where price, momentum, and structure all agree.
-Price must be at a key level, RSI/MACD must confirm the direction, and market
-structure must show a valid pattern (HH/HL for long, LH/LL for short). Generate
-only when all align.
+Check if XAUUSD meets 2 out of 3 conditions: (1) price at structural S/R with
+2+ prior touches, (2) RSI(14) below 40 (for long) or above 60 (for short),
+(3) the last candle closed in the intended trade direction with body > 50%
+of its range. If 2 of 3 are true, generate the trade. State which 2 conditions
+triggered and which one (if any) is missing. Confidence = 50% + 15% per
+additional condition met.
 
 PROMPT #86:
 Generate a XAUUSD trade where the entry is confirmed by: a key price level
@@ -473,15 +511,20 @@ be true simultaneously. If even one fails, output SKIP IT with the failing
 condition.
 
 PROMPT #89:
-Generate a XAUUSD short trade using: bearish D1 close + H4 rejection from
-supply zone + RSI below 50 and declining on H4. All three must be present.
-Output SKIP IT if any condition is missing. State each condition explicitly.
+Generate an XAUUSD short if and only if the last H4 candle is bearish (close
+below open) AND price is at a prior supply zone (rejected there at least once
+before) AND the most recent H1 candle is also bearish. All 3 conditions must
+be present. If only 2 are present, output WAITING FOR CONFIRMATION with the
+missing condition. Set take profit at 1.5x the stop distance. State each
+condition explicitly as YES or NO.
 
 PROMPT #90:
-Construct the single best XAUUSD trade setup currently available using any
-combination of technical signals. Justify why this is the best setup over all
-alternatives. Assign probability, state max pain level (where you are definitely
-wrong), and declare TAKE IT or SKIP IT.
+Analyze XAUUSD and identify the clearest single setup available right now.
+Criteria: price at a level with 2+ touches, a confirming candle at that level,
+and trend direction supporting the trade. Assign a confidence score (50-95).
+If confidence >= 60, generate the trade with entry, SL, TP, and reasoning.
+If confidence < 60, output PASS WITH TRIGGER — state the exact price level
+that would create a valid setup if reached. Be specific about levels.
 
 PROMPT #91:
 Analyze current XAUUSD conditions and first answer: is the market trending,
@@ -489,15 +532,19 @@ ranging, or choppy? If choppy (ADX below 20, no clear S/R holding), output
 NO TRADE ZONE with explanation of what needs to happen before a trade is valid.
 
 PROMPT #92:
-Before generating any XAUUSD trade, check the economic calendar for the next
-4 hours. If there is a high-impact USD or gold-related event (FOMC, NFP, CPI,
-Fed speaker), output WAIT — NEWS RISK and state the event and time. Only
-generate a trade if the calendar is clear.
+Check the current day of week and time. If it is Friday before 17:00 GMT or
+a known high-impact event day (1st Friday of month, FOMC Wednesday), reduce
+lot size by 50% as a precaution. Do NOT skip trades — the risk management is
+built into position sizing. Proceed with normal trade analysis regardless.
+Output REDUCED SIZE 50% if the filter triggers, otherwise output FULL SIZE.
 
 PROMPT #93:
-Evaluate current XAUUSD spread and volatility. If the spread is wider than
-50 pips OR ATR is more than 2x its 14-period average, output HIGH VOLATILITY —
-REDUCE SIZE or SKIP IT with your reasoning. Market conditions must be tradeable.
+Calculate the 14-period ATR on XAUUSD H1. If current ATR is more than 1.5x
+its 20-period average, reduce lot size by 50% but DO NOT skip — high volatility
+creates opportunity. If the spread would be wider than 50 pips OR current ATR
+is more than 3x its average, then skip entirely. Otherwise proceed with the
+best available setup. Output READY WITH REDUCED SIZE or READY FULL SIZE or
+SKIPPED HIGH VOLATILITY. State the ATR ratio.
 
 PROMPT #94:
 Identify if XAUUSD is currently in no-man's-land between clear support and
@@ -524,10 +571,13 @@ and entry is late, output MISSED — WAIT FOR NEXT SETUP. Never chase. State the
 ideal entry that was missed.
 
 PROMPT #98:
-Generate a XAUUSD scenario analysis: what does the chart look like if bulls are
-in control vs. bears are in control? State the exact price levels that confirm
-each scenario. Then generate one trade based on the more likely scenario with
-evidence.
+Define two clear scenarios for XAUUSD right now: bullish case and bearish case.
+For each scenario, state the exact price level that must break to confirm it.
+Then, pick ONE scenario that already has a candle forming in its direction
+(at least 50% complete towards the chosen scenario's target). Generate the trade
+only for your chosen scenario. If neither scenario has a confirming candle,
+output WAIT FOR CONFIRMATION — BULLISH TRIGGER AT [price] / BEARISH TRIGGER
+AT [price]. Be exact about trigger levels.
 
 PROMPT #99:
 Evaluate whether current XAUUSD price action is clean or messy. Clean = clear
@@ -536,7 +586,11 @@ overlapping candles, wicks everywhere, no clear structure. If messy, output
 SKIP IT and explain.
 
 PROMPT #100:
-Run a full XAUUSD analysis: trend (D1) -> structure (H4) -> entry (H1) ->
-confirmation (M15). At each step, state what you see. Generate a trade only if
-each step supports the same direction. This is your highest-conviction setup.
-Minimum confidence 70% required to proceed.
+Run a 3-step XAUUSD check. Step 1 — Trend: is D1 showing higher highs/higher
+lows (bullish) or lower highs/lower lows (bearish)? Step 2 — Structure: is
+there an unbroken support level (for long) or resistance (for short) within
+10-30 pips of current price on H4? Step 3 — Entry: does the most recent H1
+candle close at the extreme in the trend direction (upper 30% for long, lower
+30% for short) with body > 60% of its range? If all 3 align, generate the
+trade. If 2 of 3 align, generate with confidence reduced by 15%. If only 1,
+output INSUFFICIENT ALIGNMENT and state which conditions are missing.
