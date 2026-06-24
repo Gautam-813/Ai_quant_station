@@ -1071,7 +1071,27 @@ async def run_autopilot_cycle(user_id: int):
         return
     add_log(user_id, f"Loaded {len(market_data)} {tf} candles for {symbol}")
 
-    # ── NEW: SANDBOX APPROACH ──────────────────────────────────────────
+    # ── Compute ATR for SL/TP sizing ──
+    atr_value = 0.0
+    avg_atr_20 = 0.0
+    try:
+        df_atr = pd.DataFrame(market_data)
+        if 'high' in df_atr.columns and 'low' in df_atr.columns and 'close' in df_atr.columns:
+            atr_series = ta.volatility.average_true_range(
+                df_atr['high'].astype(float),
+                df_atr['low'].astype(float),
+                df_atr['close'].astype(float),
+                window=14
+            )
+            valid = atr_series.dropna()
+            if len(valid) > 0:
+                atr_value = float(valid.iloc[-1])
+                avg_atr_20 = float(valid.tail(min(20, len(valid))).mean())
+    except Exception:
+        pass
+    add_log(user_id, f"ATR(14): {atr_value:.2f} | Avg(20): {avg_atr_20:.2f}")
+
+    # ── SANDBOX APPROACH ──────────────────────────────────────────────
     # Instead of dumping raw candle text into the AI prompt, we:
     # 1. Ask AI to write analysis code (short prompt, ~150 tokens)
     # 2. Execute the code in sandbox with 1m OHLC data
@@ -1169,6 +1189,15 @@ IMPORTANT RULES:
    If you need to check a type, use type(obj).__name__ is REJECTED — use str(type(obj)) instead.
 
 {data_warning}
+CURRENT VOLATILITY:
+- ATR(14): {atr_value:.2f} | AVG ATR(20): {avg_atr_20:.2f}
+- CRITICAL: Stop loss MUST be within 1.0x to 2.0x ATR distance from entry price.
+  Example: ATR={atr_value:.1f}, entry=4060 → SL must be at {4060-atr_value*2:.1f} to {4060+atr_value*2:.1f} (NOT at a swing high 80+ pts away).
+- You can compute ATR in your code: atr_14 = ta.volatility.average_true_range(df['high'], df['low'], df['close'], window=14).iloc[-1]
+- Take profit must give minimum RR of 1:1.5 (TP distance >= 1.5x SL distance).
+- If ATR > 1.5x its 20-period average (high volatility), use tighter stop (1.0x ATR) and reduce lot size by 25%.
+- If ATR < 0.5x its 20-period average (low volatility), normal SL rules apply.
+
 Strategy:
 {prompt_text}
 {decision_section}
@@ -1394,6 +1423,12 @@ Total candles loaded: {len(market_data)}
 Strategy: {prompt_text}
 {error_section}
 
+CRITICAL SL/TP RULES:
+- Stop loss MUST be within 1.0x to 2.0x ATR distance from entry (ATR(14) = {atr_value:.2f}).
+- Max stop distance = {atr_value * 2:.1f} points from entry.
+- Take profit must give at least 1:1.5 RR (TP distance >= 1.5x SL distance).
+- If you cannot set SL within this range, output NO_SETUP.
+
 Output ONLY one of the following (no code, no explanation outside the JSON):
 
 1. TRADE_SETUP JSON:
@@ -1461,6 +1496,27 @@ Output ONLY one of the following (no code, no explanation outside the JSON):
     lot = setup.get("lot_size", lot_size)
     reasoning = setup.get("reasoning", "")
     confidence = setup.get("confidence", 70)
+
+    # ── SL/TP post-processing: clamp unreasonably wide stops ──
+    if entry_price and sl and atr_value and atr_value > 0:
+        sl_dist = abs(entry_price - sl)
+        max_sl_dist = atr_value * 2.5
+        if sl_dist > max_sl_dist:
+            if direction == "BUY":
+                sl = entry_price - max_sl_dist
+            else:
+                sl = entry_price + max_sl_dist
+            add_log(user_id, f"SL clamped from {sl_dist:.2f}pts to {max_sl_dist:.2f}pts (max 2.5x ATR={atr_value:.2f})", "WARNING")
+    if entry_price and tp and sl and atr_value and atr_value > 0:
+        tp_dist = abs(entry_price - tp)
+        sl_dist = abs(entry_price - sl)
+        min_tp_dist = sl_dist * 1.5
+        if tp_dist < min_tp_dist:
+            if direction == "BUY":
+                tp = entry_price + min_tp_dist
+            else:
+                tp = entry_price - min_tp_dist
+            add_log(user_id, f"TP adjusted from {tp_dist:.2f}pts to {min_tp_dist:.2f}pts (min 1.5x SL={sl_dist:.2f})", "WARNING")
 
     add_log(user_id, f"TRADE SETUP - {direction} ({order_type}) | Entry: {entry_price} SL: {sl} TP: {tp} Lot: {lot} Confidence: {confidence}%")
 
