@@ -2,6 +2,8 @@
 Autopilot API - Automatic trading based on AI analysis
 """
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -30,6 +32,7 @@ from ..core.providers import estimate_cost
 
 router = APIRouter(prefix="/autopilot", tags=["Autopilot"])
 
+logger = logging.getLogger("autopilot")
 
 def _capture_raw_response(response) -> dict | None:
     try:
@@ -248,6 +251,15 @@ def add_log(user_id: int, message: str, level: str = "INFO"):
     state["logs"].append(log_entry)
     if len(state["logs"]) > 100:
         state["logs"] = state["logs"][-100:]
+    # Also emit to Python logger so journalctl captures it
+    if level == "ERROR":
+        logger.error("[user=%d] %s", user_id, message)
+    elif level == "WARNING":
+        logger.warning("[user=%d] %s", user_id, message)
+    elif level == "SUCCESS":
+        logger.info("[user=%d] %s", user_id, message)
+    else:
+        logger.info("[user=%d] %s", user_id, message)
     # Persist to DB (fire-and-forget)
     cycle_number = state.get("stats", {}).get("total_runs")
     asyncio.create_task(_persist_log(user_id, level, message, cycle_number))
