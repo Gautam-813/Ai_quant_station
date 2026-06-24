@@ -1191,8 +1191,8 @@ IMPORTANT RULES:
 {data_warning}
 CURRENT VOLATILITY:
 - ATR(14): {atr_value:.2f} | AVG ATR(20): {avg_atr_20:.2f}
-- CRITICAL: Stop loss MUST be within 1.0x to 2.0x ATR distance from entry price.
-  Example: ATR={atr_value:.1f}, entry=4060 → SL must be at {4060-atr_value*2:.1f} to {4060+atr_value*2:.1f} (NOT at a swing high 80+ pts away).
+- CRITICAL: Stop loss MUST be within 1.0x to 1.5x ATR distance from entry price, NEVER exceed 30 points.
+  Example: ATR={atr_value:.1f}, entry=4060 → SL must be at {4060-atr_value*1.5:.1f} to {4060+atr_value*1.5:.1f} (NOT at a swing high 80+ pts away).
 - You can compute ATR in your code: atr_14 = ta.volatility.average_true_range(df['high'], df['low'], df['close'], window=14).iloc[-1]
 - Take profit must give minimum RR of 1:1.5 (TP distance >= 1.5x SL distance).
 - If ATR > 1.5x its 20-period average (high volatility), use tighter stop (1.0x ATR) and reduce lot size by 25%.
@@ -1424,8 +1424,8 @@ Strategy: {prompt_text}
 {error_section}
 
 CRITICAL SL/TP RULES:
-- Stop loss MUST be within 1.0x to 2.0x ATR distance from entry (ATR(14) = {atr_value:.2f}).
-- Max stop distance = {atr_value * 2:.1f} points from entry.
+- Stop loss MUST be within 1.0x to 1.5x ATR distance from entry (ATR(14) = {atr_value:.2f}), max 30 points.
+- Max stop distance = {min(atr_value * 1.5, 30):.1f} points from entry.
 - Take profit must give at least 1:1.5 RR (TP distance >= 1.5x SL distance).
 - If you cannot set SL within this range, output NO_SETUP.
 
@@ -1500,13 +1500,22 @@ Output ONLY one of the following (no code, no explanation outside the JSON):
     # ── SL/TP post-processing: clamp unreasonably wide stops ──
     if entry_price and sl and atr_value and atr_value > 0:
         sl_dist = abs(entry_price - sl)
-        max_sl_dist = atr_value * 2.5
+        max_sl_by_atr = atr_value * 1.5
+        if "XAU" in symbol or "GOLD" in symbol:
+            hard_cap = 30.0
+        elif "JPY" in symbol:
+            hard_cap = 0.50
+        elif "/" in symbol:
+            hard_cap = 0.0050
+        else:
+            hard_cap = max_sl_by_atr
+        max_sl_dist = min(max_sl_by_atr, hard_cap)
         if sl_dist > max_sl_dist:
             if direction == "BUY":
                 sl = entry_price - max_sl_dist
             else:
                 sl = entry_price + max_sl_dist
-            add_log(user_id, f"SL clamped from {sl_dist:.2f}pts to {max_sl_dist:.2f}pts (max 2.5x ATR={atr_value:.2f})", "WARNING")
+            add_log(user_id, f"SL clamped from {sl_dist:.2f}pts to {max_sl_dist:.2f}pts (1.5x ATR={max_sl_by_atr:.2f}, hard cap={hard_cap})", "WARNING")
     if entry_price and tp and sl and atr_value and atr_value > 0:
         tp_dist = abs(entry_price - tp)
         sl_dist = abs(entry_price - sl)
