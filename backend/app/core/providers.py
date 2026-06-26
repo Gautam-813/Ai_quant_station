@@ -45,10 +45,10 @@ PROVIDERS: Dict[str, Dict[str, Any]] = {
         "base_url": "https://openrouter.ai/api/v1",
         "needs_nvapi_prefix": False,
         "models": [
-            "anthropic/claude-3.5-sonnet",
+            "openai/gpt-4o-mini",
+            "openai/gpt-4o",
             "meta-llama/llama-3.1-70b-instruct",
-            "google/gemini-pro-1.5",
-            "mistralai/mixtral-8x22b-instruct",
+            "google/gemini-2.0-flash-001",
         ],
     },
     "gemini": {
