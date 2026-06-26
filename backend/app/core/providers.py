@@ -110,6 +110,15 @@ PROVIDERS: Dict[str, Dict[str, Any]] = {
             "gemini-2.5-pro",
         ],
     },
+    "zenmux": {
+        "name": "ZenMux",
+        "env_key": "ZENMUX_API_KEY",
+        "base_url": "https://zenmux.ai/api/v1",
+        "needs_nvapi_prefix": False,
+        "models": [
+            "z-ai/glm-5.2",
+        ],
+    },
 }
 
 
@@ -170,6 +179,10 @@ PRICING: Dict[str, Dict[str, Any]] = {
     },
     "tokenlb": {
         "default": (2.00, 8.00),
+        "models": {},
+    },
+    "zenmux": {
+        "default": (0.0, 0.0),
         "models": {},
     },
 }

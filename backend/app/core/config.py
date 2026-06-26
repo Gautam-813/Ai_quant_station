@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     MISTRAL_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""
     TOKENLB_API_KEY: str = ""
+    ZENMUX_API_KEY: str = ""
 
     # CORS
     CORS_ORIGINS: str = "http://localhost:5173,http://localhost:3000"
