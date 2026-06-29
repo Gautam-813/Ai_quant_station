@@ -1043,8 +1043,6 @@ async def run_autopilot_cycle(user_id: int):
                         err_msg = str(e)[:200]
                         add_log(user_id, f"Provider {p} error: {err_msg}", "WARNING")
                         await _log_call("error", p, actual_model, stage, err=err_msg)
-                        if p_idx == len(providers) - 1 and attempt == max_retries - 1:
-                            raise
                         continue
         return None, None
 
