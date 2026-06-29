@@ -1506,6 +1506,10 @@ Output ONLY one of the following (no code, no explanation outside the JSON):
     sl = setup.get("stop_loss")
     tp = setup.get("take_profit")
     lot = setup.get("lot_size", lot_size)
+    # Clamp lot to at least the configured default (MT5 rejects below 0.01)
+    if lot < lot_size:
+        add_log(user_id, f"Lot {lot} below minimum {lot_size}, adjusted to {lot_size}", "WARNING")
+        lot = lot_size
     reasoning = setup.get("reasoning", "")
     confidence = setup.get("confidence", 70)
 
