@@ -1,128 +1,143 @@
 """
 Master Report Generator
 =======================
-Merges all existing daily_report_*.xlsx files in daily_reports/ into one
-master Excel file covering the full period.
+Fetches ALL [AUTOPILOT] trades directly from MT5 connector API and generates
+a master Excel report covering the full period with 4 sheets:
+  1. Master Summary — overall stats
+  2. Day-by-Day — per-date breakdown with bar chart
+  3. All Trades — every trade in a flat table
+  4. Prompt Performance — per-prompt aggregated stats
 
 Usage:
-    # From backend/ directory:
-    python -m scripts.generate_master_report
-
-    # Dry-run (no email):
-    python -m scripts.generate_master_report --dry-run
+    cd backend/
+    python -m scripts.generate_master_report          # generate + email
+    python -m scripts.generate_master_report --dry-run # skip email
 """
 import argparse
+import asyncio
 import os
 import re
 import sys
-from datetime import datetime
+from collections import defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 
-# Ensure backend/ is on sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from openpyxl import Workbook, load_workbook
+import httpx
+from openpyxl import Workbook
 from openpyxl.chart import BarChart, Reference
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 
 REPORTS_DIR = Path(__file__).resolve().parent.parent / "daily_reports"
+CONNECTOR_URL = "http://193.38.138.202:5001"
+API_TOKEN = os.environ.get("MT5_API_TOKEN", "")
 
 
-# ── Parsing ────────────────────────────────────────────────────────────────
+# ── Fetch from MT5 Connector ──────────────────────────────────────────────
 
-def _parse_daily_xlsx(filepath: Path) -> dict | None:
-    """Parse a daily_report_YYYY-MM-DD.xlsx file. Returns {summary, trades} or None."""
-    try:
-        wb = load_workbook(filepath, read_only=True, data_only=True)
-    except Exception as e:
-        print(f"  [WARN] Cannot open {filepath.name}: {e}")
-        return None
+async def _fetch_all_autopilot_trades() -> list[dict]:
+    """Fetch ALL [AUTOPILOT] trades from MT5 connector history endpoint.
+    Uses hours=5000 to capture everything available."""
+    headers = {}
+    if API_TOKEN:
+        headers["Authorization"] = f"Bearer {API_TOKEN}"
 
-    if "Daily Report" not in wb.sheetnames:
-        print(f"  [WARN] {filepath.name}: no 'Daily Report' sheet, skipping")
-        wb.close()
-        return None
+    print(f"  Fetching from {CONNECTOR_URL}/history?hours=5000 ...")
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.get(
+            f"{CONNECTOR_URL}/history",
+            params={"hours": 5000},
+            headers=headers,
+        )
+    if resp.status_code != 200:
+        print(f"  [ERR] MT5 connector returned {resp.status_code}: {resp.text[:200]}")
+        return []
 
-    ws = wb["Daily Report"]
-    rows = list(ws.iter_rows(values_only=True))
+    deals = resp.json().get("deals", [])
+    print(f"  Raw deals received: {len(deals)}")
 
-    # Extract date from row 2 (e.g. "Monday, June 11, 2026   |   Report Generated: 23:51 UTC")
-    date_str = ""
-    if len(rows) > 1 and rows[1][0]:
-        full = str(rows[1][0])
-        date_part = full.split("|")[0].strip()
-        try:
-            dt = datetime.strptime(date_part, "%A, %B %d, %Y")
-            date_str = dt.strftime("%Y-%m-%d")
-        except ValueError:
-            date_str = date_part
+    # Identify [AUTOPILOT] position_ids
+    autopilot_pids = {
+        d.get("position_id")
+        for d in deals
+        if d.get("position_id") and (d.get("comment") or "").strip().startswith("[AUTOPILOT]")
+    }
+    auto_deals = [d for d in deals if d.get("position_id") in autopilot_pids]
+    print(f"  [AUTOPILOT] deals: {len(auto_deals)}")
 
-    # Summary rows 4-10 (0-indexed: 3-9)
-    # Row 5 (idx 4): Total Trades
-    # Row 6 (idx 5): Wins
-    # Row 7 (idx 6): Losses
-    # Row 8 (idx 7): Win Rate
-    # Row 9 (idx 8): Daily P&L
-    # Row 10 (idx 9): Best Prompt
-    summary = {"date": date_str}
-    summary_labels = ["total_trades", "wins", "losses", "win_rate", "pnl", "best_prompt"]
-    for i, key in enumerate(summary_labels):
-        idx = 4 + i
-        if idx < len(rows):
-            val = rows[idx][3] if len(rows[idx]) > 3 else None  # Column D (index 3)
-            if key == "win_rate" and val is not None:
-                val = str(val).replace("%", "").strip()
-                try:
-                    val = float(val)
-                except ValueError:
-                    val = 0.0
-            elif key == "pnl" and val is not None:
-                val = str(val).replace("$", "").replace(",", "").strip()
-                try:
-                    val = float(val)
-                except ValueError:
-                    val = 0.0
-            elif key in ("total_trades", "wins", "losses") and val is not None:
-                try:
-                    val = int(val)
-                except (ValueError, TypeError):
-                    val = 0
-            summary[key] = val
+    # Group by position_id into open/close pairs
+    pos_map: dict = {}
+    for deal in auto_deals:
+        pid = deal.get("position_id")
+        if not pid:
+            continue
+        if pid not in pos_map:
+            pos_map[pid] = {"open": None, "close": None}
+        if deal.get("entry") == "OPEN":
+            pos_map[pid]["open"] = deal
+        else:
+            pos_map[pid]["close"] = deal
 
-    # Trades: start after "Today's Trades" header + header row
-    # Header at row 13 (idx 12), column headers at row 14 (idx 13), data starts row 15 (idx 14)
+    print(f"  Unique positions: {len(pos_map)}")
+    print()
+
+    # Build trade records
     trades = []
-    trade_start = 14  # 0-indexed
-    for r in rows[trade_start:]:
-        if not r or not r[0]:
-            continue
-        ticket = r[0]
-        if ticket is None or str(ticket).strip() == "":
-            continue
-        if str(ticket).strip().startswith("Prompt"):
-            break  # reached "Prompt Performance" section
-        trade = {
-            "ticket": str(ticket) if ticket else "",
-            "symbol": str(r[1]) if len(r) > 1 and r[1] else "",
-            "direction": str(r[2]) if len(r) > 2 and r[2] else "",
-            "entry_price": float(r[3]) if len(r) > 3 and r[3] is not None else None,
-            "exit_price": float(r[4]) if len(r) > 4 and r[4] is not None else None,
-            "lot_size": float(r[5]) if len(r) > 5 and r[5] is not None else 0.0,
-            "profit": float(r[6]) if len(r) > 6 and r[6] is not None else 0.0,
-            "prompt": str(r[7]) if len(r) > 7 and r[7] else "",
-            "result": str(r[8]) if len(r) > 8 and r[8] else "",
-        }
-        trade["date"] = date_str
-        trades.append(trade)
+    for pid, pair in pos_map.items():
+        open_deal = pair["open"]
+        close_deal = pair["close"]
+        if not open_deal:
+            continue  # no open entry — skip
 
-    wb.close()
-    return {"summary": summary, "trades": trades, "date": date_str}
+        profit = close_deal.get("profit", 0) if close_deal else 0
+        comment = open_deal.get("comment", "") or ""
+        prompt_match = re.search(r"P(\d+)", comment)
+        prompt_number = int(prompt_match.group(1)) if prompt_match else None
+
+        close_comment = (close_deal.get("comment", "") or "").lower() if close_deal else ""
+        if close_deal:
+            if "sl" in close_comment:
+                res_type = "Loss"
+            elif "tp" in close_comment:
+                res_type = "Win"
+            elif profit > 0:
+                res_type = "Win"
+            else:
+                res_type = "Loss"
+        else:
+            res_type = "Open"
+
+        deal_time = open_deal.get("time", "")
+        try:
+            dt = datetime.strptime(deal_time, "%Y-%m-%d %H:%M:%S")
+        except (ValueError, TypeError):
+            dt = datetime.min
+
+        trades.append({
+            "ticket": str(pid),
+            "symbol": open_deal.get("symbol", ""),
+            "direction": open_deal.get("direction", ""),
+            "entry_price": open_deal.get("price"),
+            "exit_price": close_deal.get("price") if close_deal else None,
+            "lot_size": open_deal.get("volume", 0),
+            "profit": round(float(profit) if profit else 0.0, 2),
+            "prompt_number": prompt_number,
+            "prompt": f"#{prompt_number}" if prompt_number else "",
+            "result": res_type,
+            "datetime": dt,
+            "date": dt.strftime("%Y-%m-%d") if dt else "",
+            "executed_at": deal_time,
+        })
+
+    trades.sort(key=lambda t: t["datetime"])
+    return trades
 
 
 # ── Aggregation ────────────────────────────────────────────────────────────
 
 def _compute_overall(trades: list[dict]) -> dict:
-    closed = [t for t in trades if t.get("result", "") and t["result"] != "Open"]
+    closed = [t for t in trades if t["result"] != "Open"]
     wins = sum(1 for t in closed if t["result"] == "Win")
     losses = sum(1 for t in closed if t["result"] == "Loss")
     pnl = sum(t["profit"] for t in closed)
@@ -139,11 +154,40 @@ def _compute_overall(trades: list[dict]) -> dict:
     }
 
 
+def _compute_daily_breakdown(trades: list[dict]) -> list[dict]:
+    closed = [t for t in trades if t["result"] != "Open"]
+    days: dict[str, dict] = {}
+    for t in closed:
+        date_key = t["date"]
+        if date_key not in days:
+            days[date_key] = {"date": date_key, "trades": 0, "wins": 0, "losses": 0, "pnl": 0.0}
+        days[date_key]["trades"] += 1
+        if t["result"] == "Win":
+            days[date_key]["wins"] += 1
+        elif t["result"] == "Loss":
+            days[date_key]["losses"] += 1
+        days[date_key]["pnl"] += t["profit"]
+
+    result = []
+    for d in sorted(days.keys()):
+        day_data = days[d]
+        total = day_data["wins"] + day_data["losses"]
+        day_data["win_rate"] = round(day_data["wins"] / total * 100, 1) if total > 0 else 0.0
+        day_data["pnl"] = round(day_data["pnl"], 2)
+        try:
+            dt = datetime.strptime(d, "%Y-%m-%d")
+            day_data["day_name"] = dt.strftime("%A")
+        except (ValueError, TypeError):
+            day_data["day_name"] = ""
+        result.append(day_data)
+    return result
+
+
 def _compute_prompt_stats(trades: list[dict]) -> list[dict]:
-    closed = [t for t in trades if t.get("result", "") and t["result"] != "Open"]
+    closed = [t for t in trades if t["result"] != "Open"]
     groups: dict[str, dict] = {}
     for t in closed:
-        key = t.get("prompt", "?") or "?"
+        key = t["prompt"] or "?"
         if key not in groups:
             groups[key] = {"prompt": key, "wins": 0, "losses": 0, "pnl": 0.0}
         groups[key]["pnl"] += t["profit"]
@@ -170,34 +214,11 @@ def _compute_prompt_stats(trades: list[dict]) -> list[dict]:
     return stats
 
 
-def _compute_daily_breakdown(all_days: list[dict]) -> list[dict]:
-    """Build day-by-day breakdown from parsed file summaries."""
-    result = []
-    for day in all_days:
-        d = {
-            "date": day.get("date", ""),
-            "trades": day.get("summary", {}).get("total_trades", 0),
-            "wins": day.get("summary", {}).get("wins", 0),
-            "losses": day.get("summary", {}).get("losses", 0),
-            "pnl": day.get("summary", {}).get("pnl", 0.0),
-        }
-        total = d["wins"] + d["losses"]
-        d["win_rate"] = round(d["wins"] / total * 100, 1) if total > 0 else 0.0
-        try:
-            dt = datetime.strptime(d["date"], "%Y-%m-%d")
-            d["day_name"] = dt.strftime("%A")
-        except (ValueError, TypeError):
-            d["day_name"] = ""
-        result.append(d)
-    return result
-
-
 # ── Excel Generation ──────────────────────────────────────────────────────
 
 def _generate_master_excel(overall: dict, daily_breakdown: list[dict],
                            all_trades: list[dict], prompt_stats: list[dict]) -> str:
     wb = Workbook()
-
     thin = Side(style="thin")
     header_font = Font(bold=True, size=11)
     title_font = Font(bold=True, size=14)
@@ -207,7 +228,6 @@ def _generate_master_excel(overall: dict, daily_breakdown: list[dict],
     # ── Sheet 1: Master Summary ──
     ws = wb.active
     ws.title = "Master Summary"
-
     for col, w in zip("ABCDEFGHIJ", [14, 14, 10, 12, 12, 10, 12, 14, 14, 10]):
         ws.column_dimensions[col].width = w
 
@@ -232,9 +252,11 @@ def _generate_master_excel(overall: dict, daily_breakdown: list[dict],
     ws[f"A{r}"] = "Overall Performance"
     ws[f"A{r}"].font = section_font
 
+    open_count = sum(1 for t in all_trades if t["result"] == "Open")
     labels = [
         ("Trading Days", len(daily_breakdown)),
         ("Total Trades (Closed)", overall["total_trades"]),
+        ("Open Positions", open_count),
         ("Wins", overall["wins"]),
         ("Losses", overall["losses"]),
         ("Win Rate", f"{overall['win_rate']}%"),
@@ -283,26 +305,22 @@ def _generate_master_excel(overall: dict, daily_breakdown: list[dict],
 
     # Bar chart
     if daily_breakdown:
-        chart_start = prev_row + 1  # first data row
+        chart_start = prev_row + 1
         chart_end = chart_start + len(daily_breakdown) - 1
-
         chart = BarChart()
         chart.type = "col"
         chart.title = "Daily P&L — Full Period"
         chart.y_axis.title = "P&L ($)"
         chart.x_axis.title = "Day"
         chart.style = 10
-
         data_ref = Reference(ws2, min_col=7, min_row=chart_start, max_row=chart_end)
         cats_ref = Reference(ws2, min_col=2, min_row=chart_start, max_row=chart_end)
         chart.add_data(data_ref, titles_from_data=False)
         chart.set_categories(cats_ref)
         chart.width = 22
         chart.height = 14
-
         series = chart.series[0]
         series.graphicalProperties.solidFill = "2563EB"
-
         ws2.add_chart(chart, f"A{r2 + 2}")
 
     # ── Sheet 3: All Trades ──
@@ -384,7 +402,6 @@ def _generate_master_excel(overall: dict, daily_breakdown: list[dict],
 # ── Email ──────────────────────────────────────────────────────────────────
 
 def _send_email(filepath: str, overall: dict) -> bool:
-    """Send the master report via SMTP."""
     try:
         from app.core.config import settings
     except ImportError:
@@ -407,10 +424,11 @@ def _send_email(filepath: str, overall: dict) -> bool:
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
 
+    now_str = datetime.utcnow().strftime('%Y-%m-%d %H:%M')
     subject = f"Master Trade Report — Full Period ({datetime.utcnow().strftime('%Y-%m-%d')})"
     body = (
         f"AI Quant Station — Full Period Master Report\n"
-        f"{datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC\n\n"
+        f"{now_str} UTC\n\n"
         f"Overall Performance:\n"
         f"  Total Trades (Closed): {overall['total_trades']}\n"
         f"  Wins: {overall['wins']}  /  Losses: {overall['losses']}\n"
@@ -425,12 +443,10 @@ def _send_email(filepath: str, overall: dict) -> bool:
         msg["From"] = sender
         msg["To"] = ", ".join(recipients)
         msg.attach(MIMEText(body, "plain"))
-
         with open(filepath, "rb") as f:
             att = MIMEApplication(f.read(), _subtype="xlsx")
             att.add_header("Content-Disposition", "attachment", filename=os.path.basename(filepath))
             msg.attach(att)
-
         if smtp_port == 465:
             with smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=30) as server:
                 server.login(sender, password)
@@ -440,7 +456,6 @@ def _send_email(filepath: str, overall: dict) -> bool:
                 server.starttls()
                 server.login(sender, password)
                 server.send_message(msg)
-
         print(f"  [OK] Email sent to {', '.join(recipients)}")
         return True
     except Exception as e:
@@ -451,53 +466,41 @@ def _send_email(filepath: str, overall: dict) -> bool:
 # ── Main ───────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate master trade report from daily .xlsx files")
+    parser = argparse.ArgumentParser(description="Generate master trade report from MT5 connector")
     parser.add_argument("--dry-run", action="store_true", help="Generate report but skip email")
+    parser.add_argument("--hours", type=int, default=5000, help="Hours of history to fetch (default: 5000)")
     args = parser.parse_args()
 
     if not REPORTS_DIR.is_dir():
-        print(f"[ERR] Reports directory not found: {REPORTS_DIR}")
+        REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Fetch trades from MT5 connector
+    trades = asyncio.run(_fetch_all_autopilot_trades())
+
+    if not trades:
+        print("[ERR] No trades fetched — aborting")
         sys.exit(1)
 
-    # Find all daily report files
-    files = sorted(REPORTS_DIR.glob("daily_report_*.xlsx"))
-    if not files:
-        print(f"[ERR] No daily_report_*.xlsx files found in {REPORTS_DIR}")
-        sys.exit(1)
+    # Compute stats
+    overall = _compute_overall(trades)
+    daily_breakdown = _compute_daily_breakdown(trades)
+    prompt_stats = _compute_prompt_stats(trades)
 
-    print(f"Found {len(files)} daily report files in {REPORTS_DIR}")
+    print(f"  Total: {len(daily_breakdown)} trading days, {len(trades)} trades ({overall['total_trades']} closed)")
+    print(f"  Overall P&L: ${overall['pnl']:.2f} ({overall['wins']}W / {overall['losses']}L, {overall['win_rate']}%)")
     print()
 
-    # Parse all files
-    all_days = []
-    all_trades = []
-    for fp in files:
-        print(f"  Reading: {fp.name}...")
-        parsed = _parse_daily_xlsx(fp)
-        if parsed:
-            all_days.append(parsed)
-            all_trades.extend(parsed["trades"])
-            print(f"    → {len(parsed['trades'])} trades, P&L ${parsed['summary'].get('pnl', 0):.2f}")
-        else:
-            print(f"    → skipped")
-
-    if not all_trades:
-        print("\n[ERR] No trades found in any file — aborting")
-        sys.exit(1)
-
-    print(f"\n  Total: {len(all_days)} days, {len(all_trades)} trades")
-
-    # Compute aggregate stats
-    overall = _compute_overall(all_trades)
-    daily_breakdown = _compute_daily_breakdown(all_days)
-    prompt_stats = _compute_prompt_stats(all_trades)
-
-    print(f"  Overall P&L: ${overall['pnl']:.2f} ({overall['wins']}W / {overall['losses']}L, {overall['win_rate']}%)")
+    # Show day-by-day
+    print("  Day-by-Day:")
+    for dd in daily_breakdown:
+        day_str = f"    {dd['date']} ({dd['day_name']}): {dd['trades']} trades, {dd['wins']}W/{dd['losses']}L, ${dd['pnl']:+.2f}"
+        print(day_str)
+    print()
 
     # Generate Excel
-    filepath = _generate_master_excel(overall, daily_breakdown, all_trades, prompt_stats)
+    filepath = _generate_master_excel(overall, daily_breakdown, trades, prompt_stats)
 
-    # Email (unless dry-run)
+    # Email
     if args.dry_run:
         print("\n  [SKIP] --dry-run: email not sent")
     else:
