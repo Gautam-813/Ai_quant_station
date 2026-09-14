@@ -1,37 +1,29 @@
 """
-Monitor script: checks backend + MT5 connector health, sends email alerts on failure.
+Monitor script: checks backend + MT5 connector health, sends Telegram alerts on failure.
 Run every 5 minutes via cron/systemd timer.
 """
 import os
 import sys
 import json
-import smtplib
 import subprocess
 import urllib.request
-from email.mime.text import MIMEText
 from datetime import datetime
 
 BACKEND_URL = os.getenv("MONITOR_BACKEND_URL", "http://127.0.0.1:8002")
 CONNECTOR_URL = os.getenv("MONITOR_CONNECTOR_URL", "http://193.38.138.202:5001")
-ALERT_EMAIL = os.getenv("MONITOR_ALERT_EMAIL", "")
-SMTP_USER = os.getenv("MONITOR_SMTP_USER", "")
-SMTP_PASS = os.getenv("MONITOR_SMTP_PASS", "")
-SMTP_SERVER = os.getenv("MONITOR_SMTP_SERVER", "smtp.gmail.com")
-SMTP_PORT = int(os.getenv("MONITOR_SMTP_PORT", "587"))
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 def _send_alert(subject: str, body: str):
-    if not ALERT_EMAIL or not SMTP_USER or not SMTP_PASS:
-        print(f"[MONITOR] No SMTP configured. Would send: {subject}")
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print(f"[MONITOR] No Telegram configured. Would send: {subject}")
         return
-    msg = MIMEText(body)
-    msg["Subject"] = subject
-    msg["To"] = ALERT_EMAIL
-    msg["From"] = SMTP_USER
+    text = f"*{subject}*\n\n{body}"
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = json.dumps({"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"}).encode()
+    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
     try:
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as s:
-            s.starttls()
-            s.login(SMTP_USER, SMTP_PASS)
-            s.send_message(msg)
+        urllib.request.urlopen(req, timeout=15)
         print(f"[MONITOR] Alert sent: {subject}")
     except Exception as e:
         print(f"[MONITOR] Failed to send alert: {e}")

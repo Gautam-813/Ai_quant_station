@@ -186,7 +186,7 @@ async def startup_event():
     except Exception as e:
         print(f"  Strategy scorer start: {e}")
 
-    # Start daily report scheduler (23:50 UTC)
+    # Start daily report scheduler (Mon-Fri 9AM IST + Saturday weekly 9AM IST)
     try:
         from .core.email_reports import start_report_scheduler
         start_report_scheduler()
