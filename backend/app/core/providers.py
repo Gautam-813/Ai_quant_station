@@ -20,11 +20,10 @@ PROVIDERS: Dict[str, Dict[str, Any]] = {
         "base_url": "https://integrate.api.nvidia.com/v1",
         "needs_nvapi_prefix": True,
         "models": [
-            "qwen/qwen3.5-122b-a10b",
-            "qwen/qwen2.5-coder-32b-instruct",
-            "deepseek-ai/deepseek-v3.1",
-            "deepseek-ai/deepseek-r1-distill-qwen-32b",
-            "nvidia/llama-3.1-405b-instruct",
+            "nvidia/llama-3.1-nemotron-ultra-253b-v1",
+            "deepseek-ai/deepseek-v4-flash-0731",
+            "mistralai/mistral-large-2-instruct",
+            "nvidia/llama-3.1-nemotron-70b-instruct",
         ],
     },
     "groq": {
@@ -33,7 +32,6 @@ PROVIDERS: Dict[str, Dict[str, Any]] = {
         "base_url": "https://api.groq.com/openai/v1",
         "needs_nvapi_prefix": False,
         "models": [
-            "llama-3.3-70b-versatile",
             "llama-3.1-8b-instant",
             "mixtral-8x7b-32768",
             "gemma2-9b-it",
