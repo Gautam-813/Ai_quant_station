@@ -2,8 +2,11 @@
 Central AI Provider Registry
 All provider configuration lives here. Imported by ai.py, autopilot.py,
 historical_lab.py, backtest.py — single source of truth.
+
+Supports comma-separated API keys per provider for automatic fallback.
+Set NVIDIA_API_KEY=key1,key2,key3 in .env — each key is tried in order.
 """
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -117,6 +120,39 @@ PROVIDERS: Dict[str, Dict[str, Any]] = {
             "z-ai/glm-5.2",
         ],
     },
+    "deepseek": {
+        "name": "DeepSeek",
+        "env_key": "DEEPSEEK_API_KEY",
+        "base_url": "https://api.deepseek.com/v1",
+        "needs_nvapi_prefix": False,
+        "models": [
+            "deepseek-chat",
+            "deepseek-reasoner",
+        ],
+    },
+    "qwen": {
+        "name": "Alibaba Qwen",
+        "env_key": "QWEN_API_KEY",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "needs_nvapi_prefix": False,
+        "models": [
+            "qwen-plus",
+            "qwen-turbo",
+            "qwen-max",
+            "qwen-long",
+        ],
+    },
+    "grok": {
+        "name": "xAI Grok",
+        "env_key": "XAI_API_KEY",
+        "base_url": "https://api.x.ai/v1",
+        "needs_nvapi_prefix": False,
+        "models": [
+            "grok-3-beta",
+            "grok-3-mini-beta",
+            "grok-2-1212",
+        ],
+    },
 }
 
 
@@ -183,6 +219,30 @@ PRICING: Dict[str, Dict[str, Any]] = {
         "default": (0.0, 0.0),
         "models": {},
     },
+    "deepseek": {
+        "default": (0.14, 0.28),
+        "models": {
+            "deepseek-chat": (0.14, 0.28),
+            "deepseek-reasoner": (0.55, 2.19),
+        },
+    },
+    "qwen": {
+        "default": (0.30, 0.60),
+        "models": {
+            "qwen-plus": (0.30, 0.60),
+            "qwen-turbo": (0.05, 0.20),
+            "qwen-max": (1.60, 6.40),
+            "qwen-long": (0.05, 0.20),
+        },
+    },
+    "grok": {
+        "default": (3.00, 15.00),
+        "models": {
+            "grok-3-beta": (3.00, 15.00),
+            "grok-3-mini-beta": (0.30, 0.50),
+            "grok-2-1212": (2.00, 10.00),
+        },
+    },
 }
 
 
@@ -204,14 +264,29 @@ def estimate_cost(prompt_tokens: int, completion_tokens: int, provider_id: str, 
 
 
 def get_api_key(provider_id: str, settings_obj) -> str:
-    """Get the API key for a provider from settings."""
+    """Get the FIRST API key for a provider from settings. Backward compatible."""
+    keys = get_all_api_keys(provider_id, settings_obj)
+    return keys[0] if keys else ""
+
+
+def get_all_api_keys(provider_id: str, settings_obj) -> List[str]:
+    """Get ALL API keys for a provider (supports comma-separated).
+
+    Returns a list of keys in order. Each key is tried in sequence by the
+    retry logic, giving automatic failover when a key expires or rate-limits.
+    """
     cfg = PROVIDERS.get(provider_id)
     if not cfg:
-        return ""
-    val = getattr(settings_obj, cfg["env_key"], "")
-    if cfg.get("needs_nvapi_prefix") and val and not val.startswith("nvapi-"):
-        return f"nvapi-{val}"
-    return val
+        return []
+    raw = getattr(settings_obj, cfg["env_key"], "")
+    if not raw:
+        return []
+    # Split on comma, strip whitespace, filter empty strings
+    keys = [k.strip() for k in raw.split(",") if k.strip()]
+    # Apply nvapi prefix if needed
+    if cfg.get("needs_nvapi_prefix"):
+        keys = [k if k.startswith("nvapi-") else f"nvapi-{k}" for k in keys]
+    return keys
 
 
 def get_base_url(provider_id: str) -> str:
@@ -236,7 +311,28 @@ async def resolve_api_key(
     user_id: Optional[int] = None,
     db_session_factory=None,
 ) -> str:
-    """Check user's saved key (encrypted in DB) first, fall back to server .env key."""
+    """Check user's saved key (encrypted in DB) first, fall back to server .env key.
+    Returns the FIRST key only — backward compatible.
+    """
+    keys = await resolve_all_api_keys(provider, settings_obj, user_id, db_session_factory)
+    return keys[0] if keys else ""
+
+
+async def resolve_all_api_keys(
+    provider: str,
+    settings_obj,
+    user_id: Optional[int] = None,
+    db_session_factory=None,
+) -> List[str]:
+    """Check user's saved keys (encrypted in DB) first, fall back to server .env keys.
+
+    User DB keys take priority. If the user has saved keys for this provider,
+    those are returned (split by comma if multiple). Otherwise, returns all
+    comma-separated keys from the server .env.
+
+    Returns a list of keys in priority order for automatic fallback.
+    """
+    # 1. Try user's saved keys from DB
     if user_id and db_session_factory:
         from .encryption import decrypt_api_key
         from ..models.user import UserApiKey
@@ -248,8 +344,15 @@ async def resolve_api_key(
             )
             row = result.scalar_one_or_none()
             if row:
-                return decrypt_api_key(
+                decrypted = decrypt_api_key(
                     row.encrypted_key,
                     settings_obj.SECRET_KEY or settings_obj.effective_secret_key,
                 )
-    return get_api_key(provider, settings_obj)
+                if decrypted:
+                    # User may have stored comma-separated keys too
+                    user_keys = [k.strip() for k in decrypted.split(",") if k.strip()]
+                    if user_keys:
+                        return user_keys
+
+    # 2. Fall back to server .env keys
+    return get_all_api_keys(provider, settings_obj)
