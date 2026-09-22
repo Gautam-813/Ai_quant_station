@@ -1639,6 +1639,41 @@ async def _has_live_ticks(user_id: int, symbol: str, connector_url: str) -> bool
         return False
 
 
+async def _resolve_prompt_text(db, user_id: int, prompt_num: int) -> str:
+    """Resolve the actual prompt text for a given prompt_number.
+
+    Tries in order:
+      1. Default prompts from prompt_list.txt (numbered 1-N)
+      2. User's custom prompts from user_prompts table
+      3. Fallback placeholder
+    """
+    # 1. Try default prompts from prompt_list.txt
+    default_prompts = load_prompts()
+    for p in default_prompts:
+        # Format: "1. Analyze XAUUSD..."
+        try:
+            num_str = p.split(".")[0].strip()
+            if int(num_str) == prompt_num:
+                return p
+        except (ValueError, IndexError):
+            continue
+
+    # 2. Try user's custom prompts from DB
+    try:
+        from sqlalchemy import text as _txt
+        result = await db.execute(_txt(
+            "SELECT content FROM user_prompts WHERE user_id = :uid LIMIT 1 OFFSET :offset"
+        ), {"uid": user_id, "offset": prompt_num - 1})
+        row = result.fetchone()
+        if row and row[0]:
+            return row[0]
+    except Exception:
+        pass
+
+    # 3. Fallback
+    return f"(synced from MT5 - P#{prompt_num})"
+
+
 async def sync_all_trades_from_mt5(user_id: int, connector_url: str = None, hours: int = 720):
     """Full back-sync: fetch ALL MT5 history, match by comment, create missing local records."""
     try:
@@ -1732,13 +1767,16 @@ async def sync_all_trades_from_mt5(user_id: int, connector_url: str = None, hour
                             existing_trade.duration_minutes = int(diff.total_seconds() / 60)
                         updated += 1
                 else:
+                    # Resolve actual prompt text from prompt_number
+                    resolved_text = await _resolve_prompt_text(db, user_id, prompt_num)
+
                     executed_at = _parse_ts(entry_time_str)
                     closed_at = _parse_ts(closed_at_str)
                     duration = int((closed_at - executed_at).total_seconds() / 60) if executed_at and closed_at else None
                     new_trade = AutopilotTrade(
                         user_id=user_id,
                         prompt_number=prompt_num,
-                        prompt_text=f"(synced from MT5 - P#{prompt_num})",
+                        prompt_text=resolved_text,
                         symbol=symbol,
                         direction=direction,
                         entry_price=entry_price,
@@ -1923,6 +1961,12 @@ async def autopilot_loop(user_id: int):
                     continue
 
                 await sync_trade_results(user_id)
+                # Update strategy scoreboard after trade results are synced
+                try:
+                    from ..core.strategy_scorer import update_strategy_scores
+                    await update_strategy_scores()
+                except Exception:
+                    pass
                 if not hit_loss_limit:
                     try:
                         await run_autopilot_cycle(user_id)

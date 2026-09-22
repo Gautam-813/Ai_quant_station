@@ -174,7 +174,7 @@ class AutopilotTrade(Base):
     lot_size = Column(Float, nullable=False)
     order_type = Column(String, default="market")
 
-    mt5_ticket = Column(BigInteger, nullable=True)
+    mt5_ticket = Column(BigInteger, nullable=True, index=True)
     executed_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     execution_price = Column(Float, nullable=True)
     execution_status = Column(String, default="pending")
