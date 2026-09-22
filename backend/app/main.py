@@ -246,6 +246,10 @@ if frontend_dist_path.exists() and frontend_dist_path.is_dir():
         if full_path.startswith("api/"):
             raise HTTPException(status_code=404, detail="Not Found")
         
+        # Don't interfere with health endpoint
+        if full_path == "health":
+            raise HTTPException(status_code=404, detail="Not Found")
+        
         # Serve index.html for client-side routing (React Router)
         return FileResponse(frontend_dist_path / "index.html")
 else:
