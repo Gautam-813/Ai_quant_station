@@ -1054,6 +1054,16 @@ async def run_autopilot_cycle(user_id: int):
                             add_log(user_id, f"Provider {p} key {key_idx + 1} auth failed, trying next key...", "WARNING")
                             await _log_call("auth_failed", p, actual_model, stage, err=str(e)[:200])
                             continue
+                        elif "402" in err_str or "payment_required" in err_str or "payment required" in err_str:
+                            # Payment required — provider account has no credits, skip ENTIRE provider
+                            add_log(user_id, f"Provider {p} payment required (402), skipping provider...", "WARNING")
+                            await _log_call("payment_required", p, actual_model, stage, err=str(e)[:200])
+                            break  # Skip to next provider
+                        elif "403" in err_str or "forbidden" in err_str or "tier_not_allowed" in err_str or "subscription tier" in err_str:
+                            # Tier not allowed — provider account can't access model, skip ENTIRE provider
+                            add_log(user_id, f"Provider {p} tier/forbidden (403), skipping provider...", "WARNING")
+                            await _log_call("tier_not_allowed", p, actual_model, stage, err=str(e)[:200])
+                            break  # Skip to next provider
                         else:
                             # Other error — try next key for this provider
                             err_msg = str(e)[:200]
