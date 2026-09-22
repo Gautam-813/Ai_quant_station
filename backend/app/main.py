@@ -140,6 +140,7 @@ def _run_alembic_migrations():
 async def startup_event():
     # Fail fast if secrets are not configured for production
     settings.validate_secret_key()
+    settings.validate_connector_token()
 
     # Create all database tables directly (works with both SQLite and PostgreSQL)
     from .core.database import init_db
@@ -169,9 +170,12 @@ async def startup_event():
                 select(AutopilotSettings).where(AutopilotSettings.enabled == True)
             )
             for row in result.scalars().all():
-                from .api.autopilot import _start_autopilot_internal
-                await _start_autopilot_internal(row.user_id)
-                print(f"  Autopilot auto-restarted for user #{row.user_id}")
+                try:
+                    from .api.autopilot import _start_autopilot_internal
+                    await _start_autopilot_internal(row.user_id)
+                    print(f"  Autopilot auto-restarted for user #{row.user_id}")
+                except Exception as e:
+                    print(f"  Autopilot auto-restart FAILED for user #{row.user_id}: {e}")
     except Exception as e:
         print(f"  Autopilot auto-restart check: {e}")
 

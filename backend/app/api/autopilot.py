@@ -25,7 +25,7 @@ import numpy as np
 from ..core.config import settings
 from ..core.security import get_current_user
 from ..core.database import AsyncSessionLocal
-from ..core.providers import PROVIDERS, get_api_key as _get_api_key, get_base_url, resolve_api_key
+from ..core.providers import PROVIDERS, get_api_key as _get_api_key, get_base_url, resolve_api_key, resolve_all_api_keys
 from ..models.ai_memory import AutopilotTrade, AutopilotSettings, UserPrompt, AutopilotLog, ModelUsage, AiCallLog
 from ..models.strategy_score import StrategyScore
 from ..core.providers import estimate_cost
@@ -106,8 +106,8 @@ async def _rebuild_daily_state(user_id: int):
         state["stats"]["daily_trade_count"] = len(today_trades)
         state["stats"]["daily_pnl"] = round(sum(t.profit or 0 for t in today_trades), 2)
         state["stats"]["daily_reset_date"] = now.date().isoformat()
-    except Exception:
-        pass
+    except Exception as e:
+        add_log(user_id, f"Failed to rebuild daily state: {e}", "WARNING")
 
 
 async def _rebuild_stats(user_id: int):
@@ -178,8 +178,8 @@ async def _rebuild_stats(user_id: int):
                 state["stats"]["skipped_count"] +
                 state["stats"]["error_count"]
             )
-    except Exception:
-        pass
+    except Exception as e:
+        add_log(user_id, f"Failed to rebuild stats: {e}", "WARNING")
 
 
 PROMPT_FILE = str(Path(__file__).resolve().parent.parent.parent.parent / "backend" / "prompt_list.txt")
@@ -984,66 +984,88 @@ async def run_autopilot_cycle(user_id: int):
             _call_log_ids.append(log_id)
 
     async def _call_ai_with_retry(messages: list, provider: str, model: str, max_retries: int = 3, stage: str = "initial") -> tuple[str | None, dict | None]:
-        """Call AI with exponential backoff on 429, fallback to next provider.
+        """Call AI with multi-key fallback + provider fallback.
+
+        For each provider, resolves ALL available API keys (comma-separated).
+        If key #1 fails with auth/rate-limit, tries key #2, then #3, etc.
+        If all keys for a provider are exhausted, moves to the next provider.
+
         Returns (content, usage_dict) where usage_dict has prompt_tokens, completion_tokens, total_tokens.
         """
-        from ..core.providers import PROVIDERS, get_provider_names, get_base_url, resolve_api_key
-        
+        from ..core.providers import PROVIDERS, get_provider_names, get_base_url, resolve_all_api_keys
+
         providers = get_provider_names()
         provider_idx = providers.index(provider) if provider in providers else 0
-        
+
         for attempt in range(max_retries):
             for p_idx in range(provider_idx, len(providers)):
                 p = providers[p_idx]
-                api_key = await resolve_api_key(p, settings, user_id, AsyncSessionLocal)
-                if not api_key:
+                all_keys = await resolve_all_api_keys(p, settings, user_id, AsyncSessionLocal)
+                if not all_keys:
                     await _log_call("no_key", p, model if p == provider else PROVIDERS[p]["models"][0], stage)
                     continue
-                if p == "nvidia" and not api_key.startswith("nvapi-"):
-                    api_key = f"nvapi-{api_key}"
+
                 actual_model = model if p == provider else PROVIDERS[p]["models"][0]
-                
-                try:
-                    client = AsyncOpenAI(base_url=get_base_url(p), api_key=api_key)
-                    response = await client.chat.completions.create(
-                        model=actual_model,
-                        messages=messages,
-                        temperature=0.2,
-                        max_tokens=2500,
-                        timeout=60
-                    )
-                    content = response.choices[0].message.content or ""
-                    match = re.search(r'```(?:python)?\n?(.*?)```', content, re.DOTALL)
-                    result = match.group(1).strip() if match else content.strip()
-                    usage = None
-                    if hasattr(response, 'usage') and response.usage:
-                        usage = {
-                            "provider": p,
-                            "model": actual_model,
-                            "prompt_tokens": response.usage.prompt_tokens or 0,
-                            "completion_tokens": response.usage.completion_tokens or 0,
-                            "total_tokens": response.usage.total_tokens or 0,
-                        }
-                    if usage:
-                        asyncio.create_task(_update_model_usage(user_id, usage))
-                        await _log_call("success", p, actual_model, stage,
-                            usage["prompt_tokens"], usage["completion_tokens"], usage["total_tokens"])
-                    else:
-                        await _log_call("no_usage", p, actual_model, stage)
-                    return result, usage
-                except Exception as e:
-                    err_str = str(e).lower()
-                    if "429" in err_str or "too_many_requests" in err_str or "queue_exceeded" in err_str:
-                        wait = min(2 ** attempt * 10, 60)
-                        add_log(user_id, f"Provider {p} rate limited (429), waiting {wait}s...", "WARNING")
-                        await _log_call("rate_limited", p, actual_model, stage, err=str(e)[:200])
-                        await asyncio.sleep(wait)
-                        break
-                    else:
-                        err_msg = str(e)[:200]
-                        add_log(user_id, f"Provider {p} error: {err_msg}", "WARNING")
-                        await _log_call("error", p, actual_model, stage, err=err_msg)
-                        continue
+
+                # Try each key for this provider
+                for key_idx, api_key in enumerate(all_keys):
+                    if len(all_keys) > 1:
+                        add_log(user_id, f"Provider {p}: trying key {key_idx + 1}/{len(all_keys)}", "INFO")
+
+                    try:
+                        client = AsyncOpenAI(base_url=get_base_url(p), api_key=api_key)
+                        response = await client.chat.completions.create(
+                            model=actual_model,
+                            messages=messages,
+                            temperature=0.2,
+                            max_tokens=2500,
+                            timeout=60
+                        )
+                        content = response.choices[0].message.content or ""
+                        match = re.search(r'```(?:python)?\n?(.*?)```', content, re.DOTALL)
+                        result = match.group(1).strip() if match else content.strip()
+                        usage = None
+                        if hasattr(response, 'usage') and response.usage:
+                            usage = {
+                                "provider": p,
+                                "model": actual_model,
+                                "prompt_tokens": response.usage.prompt_tokens or 0,
+                                "completion_tokens": response.usage.completion_tokens or 0,
+                                "total_tokens": response.usage.total_tokens or 0,
+                            }
+                        if usage:
+                            asyncio.create_task(_update_model_usage(user_id, usage))
+                            await _log_call("success", p, actual_model, stage,
+                                usage["prompt_tokens"], usage["completion_tokens"], usage["total_tokens"])
+                        else:
+                            await _log_call("no_usage", p, actual_model, stage)
+                        if len(all_keys) > 1:
+                            add_log(user_id, f"Provider {p} key {key_idx + 1} succeeded")
+                        return result, usage
+                    except Exception as e:
+                        err_str = str(e).lower()
+                        if "429" in err_str or "too_many_requests" in err_str or "queue_exceeded" in err_str:
+                            # Rate limited — try next key for this provider
+                            add_log(user_id, f"Provider {p} key {key_idx + 1} rate limited (429), trying next key...", "WARNING")
+                            await _log_call("rate_limited", p, actual_model, stage, err=str(e)[:200])
+                            continue
+                        elif "expired" in err_str or "invalid" in err_str or "unauthorized" in err_str or "401" in err_str:
+                            # Auth failed — try next key for this provider
+                            add_log(user_id, f"Provider {p} key {key_idx + 1} auth failed, trying next key...", "WARNING")
+                            await _log_call("auth_failed", p, actual_model, stage, err=str(e)[:200])
+                            continue
+                        else:
+                            # Other error — try next key for this provider
+                            err_msg = str(e)[:200]
+                            add_log(user_id, f"Provider {p} key {key_idx + 1} error: {err_msg}", "WARNING")
+                            await _log_call("error", p, actual_model, stage, err=err_msg)
+                            continue
+
+                # All keys for this provider exhausted — wait before trying next provider
+                if attempt < max_retries - 1:
+                    wait = min(2 ** attempt * 10, 60)
+                    await asyncio.sleep(wait)
+
         return None, None
 
     # Detect required timeframe from prompt text and fetch from MT5 directly
@@ -1554,6 +1576,10 @@ Output ONLY one of the following (no code, no explanation outside the JSON):
         state["stats"]["trades_executed"] += 1
         state["stats"]["daily_trade_count"] += 1
 
+        # For market orders, use actual MT5 fill price as entry_price
+        if order_type == "market":
+            entry_price = exec_price
+
         async with AsyncSessionLocal() as db:
             trade = AutopilotTrade(
                 user_id=user_id, prompt_number=prompt_num, prompt_text=prompt_text,
@@ -1589,20 +1615,28 @@ Output ONLY one of the following (no code, no explanation outside the JSON):
         state["stats"]["error_count"] += 1
 
 
-async def _is_market_open() -> bool:
-    """Check if XAUUSD market is currently open.
-    XAUUSD: Sunday 23:00 UTC → Friday 22:00 UTC. Saturday fully closed.
+async def _has_live_ticks(user_id: int, symbol: str, connector_url: str) -> bool:
+    """Check if the market has live ticks by fetching the latest 1-minute candle.
+    Returns True if a fresh candle exists (< 3 minutes old), False otherwise.
     """
-    now = datetime.now(timezone.utc)
-    wd = now.weekday()
-    hour = now.hour
-    if wd == 5:  # Saturday
+    try:
+        data = await async_request(
+            "GET", f"{connector_url}/data/latest/{symbol}",
+            params={"timeframe": "1m", "count": 1},
+        )
+        if not data.get("success"):
+            return False
+        candles = data.get("data", [])
+        if not candles:
+            return False
+        last_time = candles[-1].get("time", 0)
+        if not last_time:
+            return False
+        last_dt = datetime.fromtimestamp(last_time, tz=timezone.utc)
+        age_seconds = (datetime.now(timezone.utc) - last_dt).total_seconds()
+        return age_seconds < 180  # less than 3 minutes old = live
+    except Exception:
         return False
-    if wd == 4 and hour >= 22:  # Friday after 22:00 UTC
-        return False
-    if wd == 6 and hour < 23:  # Sunday before 23:00 UTC
-        return False
-    return True
 
 
 async def sync_all_trades_from_mt5(user_id: int, connector_url: str = None, hours: int = 720):
@@ -1865,16 +1899,36 @@ async def autopilot_loop(user_id: int):
                     state["running"] = False
                     hit_loss_limit = True
 
-                # Market open check — skip if XAUUSD is closed (weekend)
-                if not await _is_market_open():
-                    add_log(user_id, "Market closed (Sat/Sun). Skipping until Sunday 23:00 UTC.", "INFO")
+                # Live tick check — skip if no fresh market data
+                _symbol = "XAUUSD"
+                _connector_url = None
+                try:
+                    async with AsyncSessionLocal() as db:
+                        _res = await db.execute(select(AutopilotSettings).where(AutopilotSettings.user_id == user_id))
+                        _s = _res.scalar_one_or_none()
+                        if _s:
+                            _symbol = _s.symbol or "XAUUSD"
+                            _connector_url = (_s.mt5_connector_url or settings.MT5_CONNECTOR_URL or "").strip() or None
+                except Exception:
+                    pass
+                if not _connector_url:
+                    add_log(user_id, "No MT5 connector URL configured. Skipping cycle.", "WARNING")
                     state["stats"]["skipped_count"] += 1
-                    await asyncio.sleep(3600)  # re-check every hour
+                    await asyncio.sleep(300)
+                    continue
+                if not await _has_live_ticks(user_id, _symbol, _connector_url):
+                    add_log(user_id, f"Market paused — no live ticks for {_symbol}. Waiting...", "INFO")
+                    state["stats"]["skipped_count"] += 1
+                    await asyncio.sleep(60)
                     continue
 
                 await sync_trade_results(user_id)
                 if not hit_loss_limit:
-                    await run_autopilot_cycle(user_id)
+                    try:
+                        await run_autopilot_cycle(user_id)
+                    except Exception as e:
+                        add_log(user_id, f"Cycle crashed (recovering): {type(e).__name__}: {e}", "ERROR")
+                        state["stats"]["error_count"] += 1
 
             async with AsyncSessionLocal() as db:
                 result = await db.execute(select(AutopilotSettings).where(AutopilotSettings.user_id == user_id))

@@ -30,6 +30,14 @@ class Settings(BaseSettings):
                 "Randomly generated keys are lost on restart and invalidate all active sessions."
             )
 
+    def validate_connector_token(self) -> None:
+        """Raise ValueError if external connector is enabled but MT5_API_TOKEN is not set."""
+        if self.MT5_USE_EXTERNAL_CONNECTOR and not self.MT5_API_TOKEN:
+            raise ValueError(
+                "MT5_API_TOKEN must be set in .env when MT5_USE_EXTERNAL_CONNECTOR=True. "
+                "Generate one: python -c \"import secrets; print(secrets.token_hex(32))\""
+            )
+
     # MT5 Settings
     MT5_SERVER_PORT: int = 5001
     MT5_API_TOKEN: str = ""
@@ -43,7 +51,7 @@ class Settings(BaseSettings):
     HF_REPO_ID: str = ""
     HUGGINGFACE_API_KEY: str = ""
 
-    # AI Providers
+    # AI Providers (supports comma-separated keys for automatic fallback)
     NVIDIA_API_KEY: str = ""
     GROQ_API_KEY: str = ""
     OPEN_ROUTER_API_KEY: str = ""
@@ -54,6 +62,9 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = ""
     TOKENLB_API_KEY: str = ""
     ZENMUX_API_KEY: str = ""
+    DEEPSEEK_API_KEY: str = ""
+    QWEN_API_KEY: str = ""
+    XAI_API_KEY: str = ""
 
     # CORS
     CORS_ORIGINS: str = "http://localhost:5173,http://localhost:3000"

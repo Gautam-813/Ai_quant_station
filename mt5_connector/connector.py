@@ -12,7 +12,10 @@ import MetaTrader5 as mt5
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from dotenv import load_dotenv
 import uvicorn
+
+load_dotenv()
 
 # Fix Windows console encoding for emoji support
 if sys.platform == 'win32':
@@ -21,14 +24,16 @@ if sys.platform == 'win32':
 
 app = FastAPI(title="MT5 Connector Service")
 
-CONNECTOR_API_TOKEN = os.getenv("MT5_API_TOKEN", "")
 
 def verify_auth(authorization: str = ""):
-    if CONNECTOR_API_TOKEN:
-        token = authorization.replace("Bearer ", "").strip()
-        if token != CONNECTOR_API_TOKEN:
-            raise HTTPException(status_code=401, detail="Invalid API token")
-    return True
+    if not CONNECTOR_API_TOKEN:
+        raise HTTPException(
+            status_code=500,
+            detail="Server misconfigured: MT5_API_TOKEN not set. Restart with a valid token."
+        )
+    token = authorization.replace("Bearer ", "").strip()
+    if token != CONNECTOR_API_TOKEN:
+        raise HTTPException(status_code=401, detail="Invalid API token")
 
 app.add_middleware(
     CORSMiddleware,
@@ -61,26 +66,40 @@ def get_startup_config():
     """Get configuration from env vars or interactive input."""
     port_env = os.getenv("MT5_CONNECTOR_PORT")
     terminal_env = os.getenv("MT5_TERMINAL_PATH")
-    
-    if port_env:
-        return int(port_env), terminal_env
-    
+    token_env = os.getenv("MT5_API_TOKEN")
+
+    if port_env and token_env:
+        return int(port_env), terminal_env, token_env
+
     print("\n" + "=" * 60)
     print("      MT5 Connector Service - Configuration Startup")
     print("=" * 60 + "\n")
-    
+
     default_port = os.getenv("MT5_CONNECTOR_PORT", "5001")
     port_input = input(f"Enter Port [Default {default_port}]: ").strip() or default_port
     port = int(port_input)
-    
+
     print("\nMultiple MT5 Instances Detected?")
     print("   (Leave empty to use your default/active MT5)")
     terminal_path = input("Enter MT5 Terminal Path (e.g. C:\\...\\terminal64.exe): ").strip() or None
-    
-    return port, terminal_path
+
+    if token_env:
+        api_token = token_env
+        print(f"\n  MT5_API_TOKEN loaded from environment.")
+    else:
+        print("\n  MT5_API_TOKEN is required for secure communication.")
+        print("  Generate a strong token: python -c \"import secrets; print(secrets.token_hex(32))\"")
+        api_token = input("  Enter MT5_API_TOKEN: ").strip()
+        if not api_token:
+            print("\n  ERROR: MT5_API_TOKEN cannot be empty!")
+            print("  The connector will REJECT all requests without a token.")
+            print("  Restart with a valid token.\n")
+            raise SystemExit(1)
+
+    return port, terminal_path, api_token
 
 
-PORT, STARTUP_PATH = get_startup_config()
+PORT, STARTUP_PATH, CONNECTOR_API_TOKEN = get_startup_config()
 SERVER_IP = get_network_ip()
 
 
@@ -370,9 +389,10 @@ async def place_order(order: OrderRequest, authorization: str = ""):
     return {
         "success": True,
         "ticket": result.order,
+        "deal": result.deal,
         "symbol": order.symbol,
         "volume": volume,
-        "price": price,
+        "price": result.price,
         "sl": sl,
         "tp": tp,
         "comment": result.comment,
