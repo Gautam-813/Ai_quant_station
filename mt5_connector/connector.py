@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 import MetaTrader5 as mt5
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -126,7 +126,7 @@ class ModifyRequest(BaseModel):
 
 
 @app.get("/")
-async def root(authorization: str = ""):
+async def root(authorization: str = Header("")):
     verify_auth(authorization)
     return {
         "service": "MT5 Connector",
@@ -139,7 +139,7 @@ async def root(authorization: str = ""):
 
 
 @app.get("/health")
-async def health(authorization: str = ""):
+async def health(authorization: str = Header("")):
     verify_auth(authorization)
     return {
         "status": "healthy" if mt5_initialized else "not_initialized",
@@ -149,7 +149,7 @@ async def health(authorization: str = ""):
 
 
 @app.post("/initialize")
-async def initialize_mt5(terminal_path_input: Optional[str] = None, authorization: str = ""):
+async def initialize_mt5(terminal_path_input: Optional[str] = None, authorization: str = Header("")):
     verify_auth(authorization)
     """Initialize MT5 connection."""
     global mt5_initialized, last_error, terminal_path
@@ -186,7 +186,7 @@ async def initialize_mt5(terminal_path_input: Optional[str] = None, authorizatio
 
 
 @app.post("/shutdown")
-async def shutdown_mt5(authorization: str = ""):
+async def shutdown_mt5(authorization: str = Header("")):
     verify_auth(authorization)
     """Shutdown MT5 connection."""
     global mt5_initialized
@@ -196,7 +196,7 @@ async def shutdown_mt5(authorization: str = ""):
 
 
 @app.get("/account")
-async def get_account(authorization: str = ""):
+async def get_account(authorization: str = Header("")):
     verify_auth(authorization)
     """Get account info."""
     if not mt5_initialized:
@@ -224,7 +224,7 @@ async def get_account(authorization: str = ""):
 
 
 @app.get("/symbols")
-async def get_symbols(authorization: str = ""):
+async def get_symbols(authorization: str = Header("")):
     verify_auth(authorization)
     """Get all available symbols."""
     if not mt5_initialized:
@@ -253,7 +253,7 @@ async def get_symbols(authorization: str = ""):
 
 
 @app.get("/symbol/{symbol}")
-async def get_symbol(symbol: str, authorization: str = ""):
+async def get_symbol(symbol: str, authorization: str = Header("")):
     verify_auth(authorization)
     """Get specific symbol info."""
     if not mt5_initialized:
@@ -279,7 +279,7 @@ async def get_symbol(symbol: str, authorization: str = ""):
 
 
 @app.post("/order")
-async def place_order(order: OrderRequest, authorization: str = ""):
+async def place_order(order: OrderRequest, authorization: str = Header("")):
     verify_auth(authorization)
     """Place an order."""
     if not mt5_initialized:
@@ -401,7 +401,7 @@ async def place_order(order: OrderRequest, authorization: str = ""):
 
 
 @app.post("/close")
-async def close_position(close_req: CloseRequest, authorization: str = ""):
+async def close_position(close_req: CloseRequest, authorization: str = Header("")):
     verify_auth(authorization)
     """Close a position."""
     if not mt5_initialized:
@@ -463,7 +463,7 @@ async def close_position(close_req: CloseRequest, authorization: str = ""):
 
 
 @app.post("/modify")
-async def modify_position(mod_req: ModifyRequest, authorization: str = ""):
+async def modify_position(mod_req: ModifyRequest, authorization: str = Header("")):
     verify_auth(authorization)
     """Modify SL/TP of a position."""
     if not mt5_initialized:
@@ -505,7 +505,7 @@ async def modify_position(mod_req: ModifyRequest, authorization: str = ""):
 
 
 @app.get("/positions")
-async def get_positions(authorization: str = ""):
+async def get_positions(authorization: str = Header("")):
     verify_auth(authorization)
     """Get all open positions."""
     if not mt5_initialized:
@@ -549,7 +549,7 @@ async def get_positions(authorization: str = ""):
 
 
 @app.get("/history")
-async def get_history(hours: int = 0, authorization: str = ""):
+async def get_history(hours: int = 0, authorization: str = Header("")):
     verify_auth(authorization)
     """Get trade history."""
     if not mt5_initialized:
@@ -591,7 +591,7 @@ async def get_history(hours: int = 0, authorization: str = ""):
 
 
 @app.get("/data/range/{symbol}")
-async def get_data_range(symbol: str, timeframe: str = "1h", start: str = "", end: str = "", authorization: str = ""):
+async def get_data_range(symbol: str, timeframe: str = "1h", start: str = "", end: str = "", authorization: str = Header("")):
     verify_auth(authorization)
     """Get OHLC data for a date range."""
     if not mt5_initialized:
@@ -639,7 +639,7 @@ async def get_data_range(symbol: str, timeframe: str = "1h", start: str = "", en
 
 
 @app.get("/data/latest/{symbol}")
-async def get_latest_data(symbol: str, timeframe: str = "1h", count: int = 500, authorization: str = ""):
+async def get_latest_data(symbol: str, timeframe: str = "1h", count: int = 500, authorization: str = Header("")):
     verify_auth(authorization)
     """Get latest OHLC data."""
     if not mt5_initialized:
