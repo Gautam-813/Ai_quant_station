@@ -45,6 +45,32 @@ def _capture_raw_response(response) -> dict | None:
 
 _http_client: httpx.AsyncClient | None = None
 
+async def _fetch_live_models(provider_id: str, api_key: str) -> Optional[List[str]]:
+    """Fetch available models from provider API. Returns None on failure."""
+    if not api_key:
+        return None
+    try:
+        cfg = PROVIDERS.get(provider_id)
+        if not cfg:
+            return None
+        headers = {"Authorization": f"Bearer {api_key}"}
+        if provider_id == "nvidia" and not api_key.startswith("nvapi-"):
+            headers["Authorization"] = f"Bearer nvapi-{api_key}"
+        base = cfg["base_url"].rstrip("/")
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(f"{base}/models", headers=headers)
+            if resp.status_code == 200:
+                data = resp.json()
+                models = [
+                    item["id"] for item in data.get("data", []) if item.get("id")
+                ]
+                if models:
+                    return sorted(models)
+    except Exception as e:
+        logger.warning(f"Could not fetch live models for {provider_id}: {e}")
+    return None
+
+
 def get_http_client() -> httpx.AsyncClient:
     global _http_client
     if _http_client is None:
@@ -997,6 +1023,29 @@ async def run_autopilot_cycle(user_id: int):
         providers = get_provider_names()
         provider_idx = providers.index(provider) if provider in providers else 0
 
+        # Cache for live models per provider (per autopilot cycle)
+        live_models_cache = {}
+
+        async def get_best_model(p: str, all_keys: List[str]) -> str:
+            """Get the best available model for provider p."""
+            if p == provider:
+                return model
+            # Check cache first
+            if p in live_models_cache:
+                models = live_models_cache[p]
+                if models:
+                    return models[0]
+            # Fetch live models using first available key
+            for api_key in all_keys:
+                models = await _fetch_live_models(p, api_key)
+                if models:
+                    live_models_cache[p] = models
+                    return models[0]
+            # Fallback to hardcoded
+            fallback = PROVIDERS[p]["models"][0] if PROVIDERS[p]["models"] else "unknown"
+            live_models_cache[p] = [fallback]
+            return fallback
+
         for attempt in range(max_retries):
             for p_idx in range(provider_idx, len(providers)):
                 p = providers[p_idx]
@@ -1005,7 +1054,7 @@ async def run_autopilot_cycle(user_id: int):
                     await _log_call("no_key", p, model if p == provider else PROVIDERS[p]["models"][0], stage)
                     continue
 
-                actual_model = model if p == provider else PROVIDERS[p]["models"][0]
+                actual_model = await get_best_model(p, all_keys)
 
                 # Try each key for this provider
                 for key_idx, api_key in enumerate(all_keys):
