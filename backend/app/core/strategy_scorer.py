@@ -47,7 +47,7 @@ async def update_strategy_scores():
                     FROM trade_records t
                     JOIN chat_memories c ON cast(c.id as text) = t.ai_message
                     WHERE t.profit_loss IS NOT NULL
-                )
+                ) AS trade_data
                 GROUP BY prompt_text, symbol, direction, source
             """))
 

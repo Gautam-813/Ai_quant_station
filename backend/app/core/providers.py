@@ -58,8 +58,8 @@ PROVIDERS: Dict[str, Dict[str, Any]] = {
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
         "needs_nvapi_prefix": False,
         "models": [
-            "gemini-2.0-flash",
-            "gemini-2.0-flash-lite",
+            "gemini-3.6-flash",
+            "gemini-3.6-pro",
             "gemini-2.5-flash",
             "gemini-2.5-pro",
             "gemini-1.5-flash",
