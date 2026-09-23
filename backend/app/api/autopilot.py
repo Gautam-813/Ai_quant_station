@@ -15,6 +15,7 @@ import random
 import os
 import json
 import re
+import time
 from sqlalchemy import select, func
 from openai import AsyncOpenAI
 import httpx
@@ -26,7 +27,7 @@ from ..core.config import settings
 from ..core.security import get_current_user
 from ..core.database import AsyncSessionLocal
 from ..core.providers import PROVIDERS, get_api_key as _get_api_key, get_base_url, resolve_api_key, resolve_all_api_keys
-from ..models.ai_memory import AutopilotTrade, AutopilotSettings, UserPrompt, AutopilotLog, ModelUsage, AiCallLog
+from ..models.ai_memory import AutopilotTrade, AutopilotSettings, UserPrompt, AutopilotLog, ModelUsage, AiCallLog, AutopilotExecutionAttempt
 from ..models.strategy_score import StrategyScore
 from ..core.providers import estimate_cost
 
@@ -483,6 +484,7 @@ async def _log_ai_call(
     outcome: str = "pending",
     prompt_tokens: int = 0, completion_tokens: int = 0, total_tokens: int = 0,
     error_message: str = None,
+    latency_ms: int = None,
 ) -> int | None:
     """Log every AI API call to AiCallLog. Returns the log ID or None on failure."""
     try:
@@ -501,6 +503,7 @@ async def _log_ai_call(
                 total_tokens=total_tokens,
                 stage=stage, outcome=outcome,
                 error_message=error_message, cost=cost,
+                latency_ms=latency_ms,
             )
             db.add(log)
             await db.commit()
@@ -995,7 +998,7 @@ async def run_autopilot_cycle(user_id: int):
     _call_tokens = 0
     _call_log_ids: list[int] = []
 
-    async def _log_call(outcome: str, p: str, m: str, st: str, pt: int = 0, ct: int = 0, tt: int = 0, err: str = None):
+    async def _log_call(outcome: str, p: str, m: str, st: str, pt: int = 0, ct: int = 0, tt: int = 0, err: str = None, lt: int = None):
         nonlocal _call_count, _call_tokens
         _call_count += 1
         if tt:
@@ -1004,12 +1007,12 @@ async def run_autopilot_cycle(user_id: int):
             user_id, prompt_num, state["stats"]["total_runs"],
             p, m, st, outcome=outcome,
             prompt_tokens=pt, completion_tokens=ct, total_tokens=tt,
-            error_message=err,
+            error_message=err, latency_ms=lt,
         )
         if log_id:
             _call_log_ids.append(log_id)
 
-    async def _call_ai_with_retry(messages: list, provider: str, model: str, max_retries: int = 3, stage: str = "initial") -> tuple[str | None, dict | None]:
+    async def _call_ai_with_retry(messages: list, provider: str, model: str, max_retries: int = 3, stage: str = "initial") -> tuple[str | None, dict | None, dict | None]:
         """Call AI with multi-key fallback + provider fallback.
 
         For each provider, resolves ALL available API keys (comma-separated).
@@ -1063,6 +1066,7 @@ async def run_autopilot_cycle(user_id: int):
 
                     try:
                         client = AsyncOpenAI(base_url=get_base_url(p), api_key=api_key)
+                        _t0 = time.time()
                         response = await client.chat.completions.create(
                             model=actual_model,
                             messages=messages,
@@ -1070,6 +1074,7 @@ async def run_autopilot_cycle(user_id: int):
                             max_tokens=2500,
                             timeout=60
                         )
+                        latency_ms = int((time.time() - _t0) * 1000)
                         content = response.choices[0].message.content or ""
                         match = re.search(r'```(?:python)?\n?(.*?)```', content, re.DOTALL)
                         result = match.group(1).strip() if match else content.strip()
@@ -1081,16 +1086,18 @@ async def run_autopilot_cycle(user_id: int):
                                 "prompt_tokens": response.usage.prompt_tokens or 0,
                                 "completion_tokens": response.usage.completion_tokens or 0,
                                 "total_tokens": response.usage.total_tokens or 0,
+                                "latency_ms": latency_ms,
                             }
                         if usage:
                             asyncio.create_task(_update_model_usage(user_id, usage))
                             await _log_call("success", p, actual_model, stage,
-                                usage["prompt_tokens"], usage["completion_tokens"], usage["total_tokens"])
+                                usage["prompt_tokens"], usage["completion_tokens"], usage["total_tokens"],
+                                lt=latency_ms)
                         else:
                             await _log_call("no_usage", p, actual_model, stage)
                         if len(all_keys) > 1:
                             add_log(user_id, f"Provider {p} key {key_idx + 1} succeeded")
-                        return result, usage
+                        return result, usage, _capture_raw_response(response)
                     except Exception as e:
                         err_str = str(e).lower()
                         if "429" in err_str or "too_many_requests" in err_str or "queue_exceeded" in err_str:
@@ -1125,7 +1132,7 @@ async def run_autopilot_cycle(user_id: int):
                     wait = min(2 ** attempt * 10, 60)
                     await asyncio.sleep(wait)
 
-        return None, None
+        return None, None, None
 
     # Detect required timeframe from prompt text and fetch from MT5 directly
     def _detect_timeframe(text: str) -> tuple:
@@ -1302,13 +1309,15 @@ Strategy:
     # Step 1: AI generates analysis code (with 429 retry + provider fallback)
     _last_usage = None
     _source = "sandbox"
-    generated_code, _last_usage = await _call_ai_with_retry(
+    generated_code, _last_usage, _raw_resp = await _call_ai_with_retry(
         messages=[{"role": "user", "content": code_prompt}],
         provider=provider,
         model=model,
         max_retries=3,
         stage="initial",
     )
+    if _raw_resp:
+        full_raw_response = _raw_resp
     if not generated_code:
         add_log(user_id, "AI code generation failed after retries", "ERROR")
         state["stats"]["error_count"] += 1
@@ -1337,13 +1346,15 @@ Strategy:
         # Subsequent iterations generate new code with the next provider.
         if p_idx > 0:
             add_log(user_id, f"Trying provider {retry_p} for code generation...", "INFO")
-            new_code, _last_usage = await _call_ai_with_retry(
+            new_code, _last_usage, _raw_resp = await _call_ai_with_retry(
                 messages=[{"role": "user", "content": code_prompt}],
                 provider=retry_p,
                 model=PROVIDERS[retry_p]["models"][0],
                 max_retries=2,
                 stage="failover",
             )
+            if _raw_resp:
+                full_raw_response = _raw_resp
             if not new_code:
                 add_log(user_id, f"{retry_p} code generation returned empty, skipping")
                 continue
@@ -1396,7 +1407,7 @@ Strategy:
 
             # Unclear output — try self-correction once with same provider
             add_log(user_id, f"{retry_p} output unclear, trying self-correction...", "WARNING")
-            corrected, _last_usage = await _call_ai_with_retry(
+            corrected, _last_usage, _raw_resp = await _call_ai_with_retry(
                 messages=[
                     {"role": "user", "content": code_prompt},
                     {"role": "assistant", "content": generated_code},
@@ -1407,6 +1418,8 @@ Strategy:
                 max_retries=2,
                 stage="self_correct",
             )
+            if _raw_resp:
+                full_raw_response = _raw_resp
             if corrected:
                 generated_code = corrected
                 ai_response = generated_code
@@ -1532,13 +1545,15 @@ Output ONLY one of the following (no code, no explanation outside the JSON):
         add_log(user_id, "Backup: sending 50 candles + indicators to providers...", "INFO")
 
         for p_idx, retry_p in enumerate(_retry_providers):
-            fallback_response, _last_usage = await _call_ai_with_retry(
+            fallback_response, _last_usage, _raw_resp = await _call_ai_with_retry(
                 messages=[{"role": "user", "content": backup_prompt}],
                 provider=retry_p,
                 model=PROVIDERS[retry_p]["models"][0],
                 max_retries=2,
                 stage="backup",
             )
+            if _raw_resp:
+                full_raw_response = _raw_resp
             if not fallback_response:
                 add_log(user_id, f"Backup {retry_p} returned empty, skipping")
                 continue
@@ -1577,6 +1592,22 @@ Output ONLY one of the following (no code, no explanation outside the JSON):
         if not setup:
             add_log(user_id, "All backup providers: NO_SETUP or failed", "WARNING")
             state["stats"]["skipped_count"] += 1
+            async with AsyncSessionLocal() as db:
+                no_setup_record = AutopilotTrade(
+                    user_id=user_id, prompt_number=prompt_num, prompt_text=prompt_text,
+                    symbol=symbol, direction="NONE", order_type="market", lot_size=lot_size,
+                    execution_status="skipped", decision_type="NO_SETUP",
+                    reasoning="All providers returned NO_SETUP or failed",
+                    market_regime=market_regime.get("regime") if market_regime else None,
+                    regime_details=market_regime,
+                    prompt_tags=decision_context.get("selected_tags"),
+                    decision_score=decision_context.get("selected_score"),
+                    decision_context=decision_context,
+                    source=_source,
+                    cycle_number=state["stats"]["total_runs"],
+                )
+                db.add(no_setup_record)
+                await db.commit()
             return
 
     direction = setup.get("direction", "BUY").upper()
@@ -1639,6 +1670,20 @@ Output ONLY one of the following (no code, no explanation outside the JSON):
         if order_type == "market":
             entry_price = exec_price
 
+        slippage = None
+        if order_type == "market" and entry_price and exec_price:
+            slippage = round(abs(exec_price - entry_price), 2)
+
+        market_snap = {
+            "regime": market_regime.get("regime") if market_regime else None,
+            "trend": market_regime.get("trend") if market_regime else None,
+            "volatility": market_regime.get("volatility") if market_regime else None,
+            "atr_14": market_regime.get("atr_14") if market_regime else None,
+            "entry_price": entry_price,
+            "sl": sl,
+            "tp": tp,
+        }
+
         async with AsyncSessionLocal() as db:
             trade = AutopilotTrade(
                 user_id=user_id, prompt_number=prompt_num, prompt_text=prompt_text,
@@ -1646,7 +1691,7 @@ Output ONLY one of the following (no code, no explanation outside the JSON):
                 stop_loss=sl, take_profit=tp, lot_size=lot,
                 mt5_ticket=ticket, execution_price=exec_price, execution_status="executed",
                 reasoning=reasoning, confidence=confidence, ai_response=ai_response,
-                raw_thinking=full_raw_response,
+                raw_thinking=full_raw_response if isinstance(full_raw_response, dict) else None,
                 market_regime=market_regime.get("regime"),
                 regime_details=market_regime,
                 prompt_tags=decision_context.get("selected_tags"),
@@ -1660,6 +1705,9 @@ Output ONLY one of the following (no code, no explanation outside the JSON):
                 source=_source,
                 call_count=_call_count if _call_count > 0 else None,
                 call_tokens=_call_tokens if _call_tokens > 0 else None,
+                decision_type="TRADE",
+                market_snapshot=market_snap,
+                slippage_pips=slippage,
                 cycle_number=state["stats"]["total_runs"],
             )
             db.add(trade)
@@ -1672,6 +1720,19 @@ Output ONLY one of the following (no code, no explanation outside the JSON):
             f"Error: {error_msg}"
         )
         state["stats"]["error_count"] += 1
+
+        async with AsyncSessionLocal() as db:
+            attempt = AutopilotExecutionAttempt(
+                user_id=user_id, cycle_number=state["stats"]["total_runs"],
+                symbol=symbol, direction=direction, order_type=order_type,
+                entry_price=entry_price, stop_loss=sl, take_profit=tp, lot_size=lot,
+                outcome="rejected", error_message=error_msg[:500],
+                market_regime=market_regime.get("regime") if market_regime else None,
+                provider=(_last_usage.get("provider") if _last_usage else None),
+                model=(_last_usage.get("model") if _last_usage else None),
+            )
+            db.add(attempt)
+            await db.commit()
 
 
 async def _has_live_ticks(user_id: int, symbol: str, connector_url: str) -> bool:

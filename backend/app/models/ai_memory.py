@@ -205,6 +205,10 @@ class AutopilotTrade(Base):
     call_count = Column(Integer, nullable=True)
     call_tokens = Column(Integer, nullable=True)
 
+    decision_type = Column(String, nullable=True, index=True)
+    market_snapshot = Column(JSON, nullable=True)
+    slippage_pips = Column(Float, nullable=True)
+
     cycle_number = Column(Integer, nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
@@ -332,8 +336,37 @@ class AiCallLog(Base):
     outcome = Column(String, nullable=True)
     error_message = Column(String, nullable=True)
     cost = Column(Float, default=0.0)
+    latency_ms = Column(Integer, nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
 
     __table_args__ = (
         Index("ix_ai_call_logs_user_cycle", "user_id", "cycle_number"),
+    )
+
+
+class AutopilotExecutionAttempt(Base):
+    """Track every trade execution attempt including failures (MT5 rejections, etc)."""
+    __tablename__ = "autopilot_execution_attempts"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    cycle_number = Column(Integer, nullable=True, index=True)
+    symbol = Column(String, nullable=False)
+    direction = Column(String, nullable=False)
+    order_type = Column(String, default="market")
+    entry_price = Column(Float, nullable=True)
+    stop_loss = Column(Float, nullable=True)
+    take_profit = Column(Float, nullable=True)
+    lot_size = Column(Float, nullable=False)
+    outcome = Column(String, nullable=False)
+    mt5_ticket = Column(BigInteger, nullable=True)
+    error_message = Column(String, nullable=True)
+    market_regime = Column(String, nullable=True)
+    provider = Column(String, nullable=True)
+    model = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+
+    __table_args__ = (
+        Index("ix_autopilot_exec_attempts_user_cycle", "user_id", "cycle_number"),
+        Index("ix_autopilot_exec_attempts_user_outcome", "user_id", "outcome"),
     )
