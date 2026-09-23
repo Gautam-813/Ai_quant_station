@@ -1092,6 +1092,13 @@ async def run_autopilot_cycle(user_id: int):
                             add_log(user_id, f"Provider {p} tier/forbidden (403), skipping provider...", "WARNING")
                             await _log_call("tier_not_allowed", p, actual_model, stage, err=str(e)[:200])
                             break  # Skip to next provider
+                        elif "404" in err_str or "model_not_supported" in err_str or "not found" in err_str:
+                            # Model not available — blacklist it, try next key (different model via live fetch)
+                            from ..core.models_cache import blacklist_model
+                            blacklist_model(p, actual_model)
+                            add_log(user_id, f"Provider {p} model {actual_model} not available (404), blacklisted, trying next key...", "WARNING")
+                            await _log_call("model_not_found", p, actual_model, stage, err=str(e)[:200])
+                            continue  # Try next key — get_best_model will pick a different model
                         else:
                             # Other error — try next key for this provider
                             err_msg = str(e)[:200]
