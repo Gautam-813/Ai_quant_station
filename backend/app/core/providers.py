@@ -23,10 +23,14 @@ PROVIDERS: Dict[str, Dict[str, Any]] = {
         "base_url": "https://integrate.api.nvidia.com/v1",
         "needs_nvapi_prefix": True,
         "models": [
-            "nvidia/llama-3.1-nemotron-ultra-253b-v1",
+            "nvidia/llama-3.3-nemotron-super-49b-v1",
+            "nvidia/llama-3.1-nemotron-nano-8b-v1",
+            "nvidia/llama-3.1-8b-instruct",
+            "nvidia/deepseek-r1",
+            "nvidia/mistral-nemotron",
+            "nvidia/nemotron-3.5-lightning-30b-a3b",
             "deepseek-ai/deepseek-v4-flash-0731",
             "mistralai/mistral-large-2-instruct",
-            "nvidia/llama-3.1-nemotron-70b-instruct",
         ],
     },
     "groq": {
@@ -164,11 +168,16 @@ PROVIDERS: Dict[str, Dict[str, Any]] = {
 # Update these as provider pricing changes.
 PRICING: Dict[str, Dict[str, Any]] = {
     "nvidia": {
-        "default": (1.50, 5.00),
+        "default": (0.50, 1.50),
         "models": {
-            "deepseek-ai/deepseek-v3.1": (0.50, 2.00),
-            "deepseek-ai/deepseek-r1-distill-qwen-32b": (0.50, 2.00),
-            "nvidia/llama-3.1-405b-instruct": (3.00, 10.00),
+            "nvidia/llama-3.3-nemotron-super-49b-v1": (0.80, 2.50),
+            "nvidia/llama-3.1-nemotron-nano-8b-v1": (0.20, 0.60),
+            "nvidia/llama-3.1-8b-instruct": (0.20, 0.60),
+            "nvidia/deepseek-r1": (0.55, 2.19),
+            "nvidia/mistral-nemotron": (0.50, 1.50),
+            "nvidia/nemotron-3.5-lightning-30b-a3b": (0.30, 0.90),
+            "deepseek-ai/deepseek-v4-flash-0731": (0.27, 1.10),
+            "mistralai/mistral-large-2-instruct": (2.00, 6.00),
         },
     },
     "groq": {
