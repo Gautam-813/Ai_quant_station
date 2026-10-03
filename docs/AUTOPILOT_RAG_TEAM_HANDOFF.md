@@ -8,7 +8,7 @@
 
 This release makes each new Autopilot analysis cycle easier to follow from prompt selection through AI analysis and, when an order is submitted, through MT5 order state, deal events, and final realized result. It also records what RAG retrieved for that cycle so the team can assess whether historical context was available and included.
 
-This is an observability and decision-support improvement. RAG supplies historical evidence to the model, and the prompt selector uses regime and historical performance to weight prompt selection. Neither mechanism guarantees profitable decisions. We must review closed-trade outcomes and data coverage before changing strategy prompts.
+This is an observability and decision-support improvement. RAG supplies historical evidence to the model. Prompt selection now rotates through the configured eligible pool in stable round-robin order so prompt exposure can be compared more fairly. Neither mechanism guarantees profitable decisions. We must review closed-trade outcomes and data coverage before changing strategy prompts.
 
 ## The full Autopilot cycle
 
@@ -26,9 +26,9 @@ If market data or MT5 initialization is unavailable, the cycle can finish with a
 
 ### 3. Choose a prompt
 
-The eligible prompt pool comes from configured default and personal prompts. The selector tags prompts by trading style, estimates fit with the current regime, and adds bounded historical-performance contributions where enough closed trades exist for that prompt in the same regime. It then samples using the resulting weights, rather than always choosing the top-scoring prompt.
+The eligible prompt pool comes from configured default and personal prompts. The selector uses a stable order (default prompts by number, then personal prompts by ID) and chooses the next prompt after the most recently selected round-robin prompt. The cursor is read from durable cycle history, so it survives process restarts. A check stopped by cooldown, risk, connector, or stale-market-data gates does not advance the rotation because it never selects a prompt. An empty configured selection retains the existing behavior of making all prompts eligible.
 
-The cycle stores the selected prompt number/text, a hash of the prompt text (to distinguish revisions), the market regime, the selection score/probability, and candidate/reason context. That lets the team later ask which prompt version was considered and why it was selected.
+The cycle stores the selected prompt number/text, a hash of the prompt text (to distinguish revisions), the market regime, rotation position, pool length, equal long-run rotation share, and complete rotation order. The AI receives only the selected prompt strategy, rather than competing prompt candidates, to avoid blending strategies during the analysis.
 
 ### 4. Build RAG context
 
@@ -140,7 +140,7 @@ Those are good deployment and connectivity checks. The shown connector output wa
 ## Caveats and interpretation
 
 - The stable UUID linkage is for new cycles recorded after deployment. Older logs/trades may lack it and can only be joined approximately using legacy cycle numbers, tickets, or comments.
-- Prompt selection is weighted sampling, so a high score raises selection probability but does not make a prompt deterministic.
+- Prompt selection rotates through the configured eligible pool in stable round-robin order; historical weighted-sampling records remain distinguishable in cycle telemetry.
 - Strategy scores and RAG context depend on closed trades being reconciled with realized P&L. Open and pending orders do not yet provide a final prompt outcome.
 - If MT5 history omits an order/deal, the connector is stale, or the broker strips comments, some correlations may be unavailable. Tickets and cycle IDs provide multiple ways to match, but reports must still expose unmatched coverage.
 - One successful cycle or a running service does not establish improved trading performance. Measure after sufficient closed-trade volume and compare like-for-like regimes.

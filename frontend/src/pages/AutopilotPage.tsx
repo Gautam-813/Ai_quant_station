@@ -802,6 +802,11 @@ export default function AutopilotPage() {
                     <summary className="cursor-pointer text-xs font-medium">Cycle #{cycle.cycle_number} · {cycle.outcome || cycle.status} · {cycle.prompt_text ? cycle.prompt_text.slice(0, 100) : 'No prompt selected'}</summary>
                     <div className="mt-3 space-y-2 text-xs">
                       <div className="font-mono break-all text-muted-foreground">Cycle ID: {cycle.cycle_id}</div>
+                      {cycle.selection_context && <div className="text-muted-foreground">
+                        Prompt selection: {cycle.selection_context.selection_mode || 'legacy'}
+                        {cycle.selection_context.rotation_position != null && ` · turn ${cycle.selection_context.rotation_position}/${cycle.selection_context.rotation_length}`}
+                        {cycle.selection_context.rotation_share != null && ` · equal rotation share ${(cycle.selection_context.rotation_share * 100).toFixed(1)}%`}
+                      </div>}
                       {cycle.setup && <pre className="whitespace-pre-wrap rounded bg-muted/40 p-2">Setup: {JSON.stringify(cycle.setup, null, 2)}</pre>}
                       <ol className="border-l border-border pl-4 space-y-2">
                         {(cycle.timeline || []).map((event: any, index: number) => (

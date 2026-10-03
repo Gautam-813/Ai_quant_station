@@ -1,8 +1,10 @@
 import pytest
 import asyncio
+from datetime import datetime, timedelta, timezone
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from app.api import autopilot
 from app.models.ai_memory import AutopilotCycle, AiCallLog
 from app.models.user import User
 
@@ -37,6 +39,52 @@ class TestAutopilot:
         assert matching["outcome_reason"] == "AI found no valid setup"
         assert any(event["stage"] == "ai:analysis" and event["outcome"] == "success"
                    for event in matching["timeline"])
+
+    async def test_prompt_rotation_is_sequential_persistent_and_skips_old_random_cursor(
+        self, db_session: AsyncSession
+    ):
+        user = (await db_session.execute(select(User).where(User.username == "admin"))).scalar_one()
+        start = datetime.now(timezone.utc)
+        db_session.add(AutopilotCycle(
+            cycle_id="20000000-0000-4000-8000-000000000001", user_id=user.id,
+            cycle_number=1, symbol="XAUUSD", status="completed", outcome="trade_executed",
+            prompt_number=64, selection_context={"selection_mode": "regime_score_weighted"},
+            started_at=start,
+        ))
+        await db_session.commit()
+
+        pool = [
+            {"id": 2, "text": "trend continuation", "is_custom": False},
+            {"id": "custom_3", "text": "custom momentum", "is_custom": True},
+            {"id": 1, "text": "support reversal", "is_custom": False},
+        ]
+        regime = {"regime": "range", "trend": "range", "volatility": "normal"}
+        expected = [(1, 1), (2, 2), ("custom_3", 3), (1, 1)]
+
+        for index, (expected_id, expected_position) in enumerate(expected, start=2):
+            selected, context = await autopilot._choose_prompt_with_context(
+                user_id=user.id, prompt_pool=pool, symbol="XAUUSD", market_regime=regime
+            )
+            assert selected["id"] == expected_id
+            assert context["selection_mode"] == "round_robin"
+            assert context["rotation_position"] == expected_position
+            assert context["rotation_length"] == 3
+            assert context["rotation_share"] == pytest.approx(1 / 3)
+
+            db_session.add(AutopilotCycle(
+                cycle_id=f"20000000-0000-4000-8000-{index:012d}", user_id=user.id,
+                cycle_number=index, symbol="XAUUSD", status="completed", outcome="no_setup",
+                prompt_number=(int(expected_id) if isinstance(expected_id, int) else -3),
+                selection_context=context, started_at=start + timedelta(seconds=index),
+            ))
+            # A gate-skipped cycle has no selected prompt and must not move the cursor.
+            if index == 2:
+                db_session.add(AutopilotCycle(
+                    cycle_id="20000000-0000-4000-8000-000000000099", user_id=user.id,
+                    cycle_number=99, symbol="XAUUSD", status="completed",
+                    outcome="skipped_stale_market_data", started_at=start + timedelta(seconds=2, microseconds=1),
+                ))
+            await db_session.commit()
 
     async def test_autopilot_status_endpoint(self, client: AsyncClient, auth_headers: dict):
         resp = await client.get("/api/autopilot/status", headers=auth_headers)

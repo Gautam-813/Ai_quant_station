@@ -13,7 +13,6 @@ from typing import Optional, List, Dict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import asyncio
-import random
 import os
 import json
 import re
@@ -904,112 +903,86 @@ async def _choose_prompt_with_context(
     symbol: str,
     market_regime: dict,
 ) -> tuple[dict, dict]:
-    """Choose prompts using regime fit and this user's outcomes in this regime."""
-    from ..core.strategy_scorer import MIN_TRADES_FOR_BEST
+    """Select the next eligible prompt in a persistent per-user round-robin."""
+    if not prompt_pool:
+        raise ValueError("Cannot select a prompt from an empty pool")
 
-    history_by_prompt: dict[str, dict] = {}
-    current_regime = market_regime.get("regime") or "unknown"
+    def prompt_number(prompt: dict) -> int:
+        if prompt["is_custom"]:
+            return -int(str(prompt["id"]).split("_")[-1])
+        return int(prompt["id"])
 
-    try:
-        async with AsyncSessionLocal() as db:
-            recent_result = await db.execute(
-                select(AutopilotTrade)
-                .where(
-                    AutopilotTrade.user_id == user_id,
-                    AutopilotTrade.symbol == symbol,
-                    AutopilotTrade.profit.isnot(None),
-                    AutopilotTrade.market_regime == current_regime,
-                )
-                .order_by(AutopilotTrade.executed_at.desc())
-                .limit(500)
+    # Stable ordering means restarts and repeated runs use the same sequence.
+    ordered_prompts = sorted(
+        prompt_pool,
+        key=lambda prompt: (bool(prompt["is_custom"]), abs(prompt_number(prompt))),
+    )
+
+    # The rotation cursor is stored in the most recent cycle that actually
+    # reached prompt selection. Pre-round-robin random selections are ignored
+    # so the first cycle after deployment begins at the first eligible prompt.
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(AutopilotCycle.prompt_number, AutopilotCycle.selection_context)
+            .where(
+                AutopilotCycle.user_id == user_id,
+                AutopilotCycle.prompt_number.is_not(None),
             )
-            for trade in recent_result.scalars().all():
-                bucket = history_by_prompt.setdefault(
-                    trade.prompt_text,
-                    {"trades": 0, "wins": 0, "pnl": 0.0, "gross_profit": 0.0, "gross_loss": 0.0},
-                )
-                bucket["trades"] += 1
-                bucket["pnl"] += trade.profit or 0.0
-                if (trade.profit or 0.0) > 0:
-                    bucket["wins"] += 1
-                    bucket["gross_profit"] += trade.profit
-                elif (trade.profit or 0.0) < 0:
-                    bucket["gross_loss"] += abs(trade.profit)
-    except Exception:
-        pass
+            .order_by(AutopilotCycle.started_at.desc())
+            .limit(1)
+        )
+        last_selection = result.first()
 
-    ranked = []
-    for prompt in prompt_pool:
+    previous_prompt_number = None
+    if last_selection:
+        prior_number, prior_context = last_selection
+        if (prior_context or {}).get("selection_mode") == "round_robin":
+            previous_prompt_number = prior_number
+
+    previous_index = next(
+        (i for i, prompt in enumerate(ordered_prompts)
+         if prompt_number(prompt) == previous_prompt_number),
+        -1,
+    )
+    selected_index = (previous_index + 1) % len(ordered_prompts)
+    selected_prompt = ordered_prompts[selected_index]
+    rotation_share = round(1 / len(ordered_prompts), 8)
+
+    candidates = []
+    selected_fit = (0.0, [])
+    for index, prompt in enumerate(ordered_prompts):
         tags = _infer_prompt_tags(prompt["text"])
         regime_score, fit_reasons = _score_prompt_regime_fit(tags, market_regime)
         score = 50.0 + regime_score
-        history_reasons = []
-
-        recent = history_by_prompt.get(prompt["text"])
-        if recent and recent["trades"] >= MIN_TRADES_FOR_BEST:
-            recent_wr = recent["wins"] / recent["trades"] * 100
-            profit_factor = (recent["gross_profit"] / recent["gross_loss"]
-                             if recent["gross_loss"] else (float("inf") if recent["gross_profit"] else 0.0))
-            # Bounded contributions keep lot size/P&L scale from overwhelming regime fit.
-            score += min(18, max(-18, (recent_wr - 50) * 0.4))
-            if profit_factor != float("inf"):
-                score += min(8, max(-8, (profit_factor - 1.0) * 5))
-            elif recent["gross_profit"]:
-                score += 8
-            score += min(6, max(-6, recent["pnl"] / 50))
-            history_reasons.append(
-                f"same-regime {recent['trades']} trades, win {recent_wr:.1f}%, "
-                f"pf {'inf' if profit_factor == float('inf') else f'{profit_factor:.2f}'}, pnl {recent['pnl']:+.2f}"
-            )
-        elif recent:
-            history_reasons.append(f"same-regime sample too small ({recent['trades']}/{MIN_TRADES_FOR_BEST}); neutral performance weight")
-
-        score = max(5.0, min(score, 95.0))
-        weight = max(1, int(score))
-        ranked.append({
-            "prompt": prompt,
-            "score": round(score, 2),
-            "weight": weight,
+        candidate = {
+            "id": prompt["id"],
+            "is_custom": prompt["is_custom"],
+            "prompt_number": prompt_number(prompt),
+            "rotation_position": index + 1,
+            "rotation_share": rotation_share,
+            "regime_fit_score": round(max(5.0, min(score, 95.0)), 2),
             "tags": tags,
-            "reasons": fit_reasons + history_reasons,
-        })
+            "regime_fit_reasons": fit_reasons[:3],
+        }
+        candidates.append(candidate)
+        if index == selected_index:
+            selected_fit = (candidate["regime_fit_score"], fit_reasons)
 
-    ranked.sort(key=lambda item: item["score"], reverse=True)
-    weighted = []
-    for item in ranked:
-        weighted.extend([item] * item["weight"])
-
-    total_weight = sum(item["weight"] for item in ranked)
-    for item in ranked:
-        item["selection_probability"] = round(item["weight"] / total_weight, 8) if total_weight else 0.0
-    selected = random.choice(weighted) if weighted else random.choice(ranked)
     context = {
-        "selection_mode": "regime_score_weighted",
-        "selected_score": selected["score"],
-        "selected_tags": selected["tags"],
-        "selected_reasons": selected["reasons"],
-        "selected_probability": selected["selection_probability"],
+        "selection_mode": "round_robin",
+        "rotation_position": selected_index + 1,
+        "rotation_length": len(ordered_prompts),
+        "rotation_share": rotation_share,
+        "previous_prompt_number": previous_prompt_number,
+        "selected_score": selected_fit[0],
+        "selected_tags": _infer_prompt_tags(selected_prompt["text"]),
+        "selected_reasons": ["next prompt in configured round-robin order"] + selected_fit[1][:3],
         "market_regime": market_regime,
-        "candidate_count": len(ranked),
-        "candidates": [
-            {"id": item["prompt"]["id"], "is_custom": item["prompt"]["is_custom"],
-             "score": item["score"], "weight": item["weight"],
-             "selection_probability": item["selection_probability"], "tags": item["tags"],
-             "reasons": item["reasons"][:3]}
-            for item in ranked
-        ],
-        "top_candidates": [
-            {
-                "id": item["prompt"]["id"],
-                "is_custom": item["prompt"]["is_custom"],
-                "score": item["score"],
-                "tags": item["tags"],
-                "reasons": item["reasons"][:3],
-            }
-            for item in ranked[:5]
-        ],
+        "candidate_count": len(ordered_prompts),
+        "candidates": candidates,
+        "rotation_order": [candidate["id"] for candidate in candidates],
     }
-    return selected["prompt"], context
+    return selected_prompt, context
 
 
 async def run_autopilot_cycle(user_id: int, cycle_id: str | None = None):
@@ -1163,12 +1136,13 @@ async def run_autopilot_cycle(user_id: int, cycle_id: str | None = None):
     else:
         prompt_num = prompt_id_val
         display_id = f"#{prompt_num}"
-    selected_score = decision_context.get("selected_score")
     selected_tags = decision_context.get("selected_tags", {})
     selected_styles = ",".join(selected_tags.get("styles") or ["general"])
     add_log(
         user_id,
-        f"Using Strategy {display_id} | score={selected_score} | styles={selected_styles}: {prompt_text[:50]}...",
+        f"Using Strategy {display_id} | round-robin turn "
+        f"{decision_context['rotation_position']}/{decision_context['rotation_length']} "
+        f"| styles={selected_styles}: {prompt_text[:50]}...",
     )
     prompt_version = hashlib.sha256(prompt_text.encode("utf-8")).hexdigest()
     await _update_autopilot_cycle(
@@ -1434,23 +1408,14 @@ async def run_autopilot_cycle(user_id: int, cycle_id: str | None = None):
     if error_feedback:
         error_section = f"\nPREVIOUS TRADE ERROR FEEDBACK (learn from this):\n{error_feedback}\n- Adjust stop loss / take profit to be further from entry.\n- Do NOT repeat the same mistake.\n"
 
-    top_candidates = decision_context.get("top_candidates", [])
-    top_candidate_lines = []
-    for item in top_candidates[:3]:
-        styles = ",".join((item.get("tags") or {}).get("styles") or [])
-        top_candidate_lines.append(
-            f"- {item.get('id')}: score={item.get('score')} styles={styles}"
-        )
     decision_section = f"""
 AUTOPILOT DECISION CONTEXT:
 - Market regime: {market_regime.get('regime')} (trend={market_regime.get('trend')}, volatility={market_regime.get('volatility')}, directional_bias={market_regime.get('direction_bias')})
 - Regime confidence: {market_regime.get('confidence')}%
-- Selected prompt score: {decision_context.get('selected_score')}
+- Prompt selection mode: sequential round-robin
+- Selected prompt rotation position: {decision_context.get('rotation_position')} of {decision_context.get('rotation_length')}
 - Selected prompt tags: {json.dumps(decision_context.get('selected_tags', {}))}
-- Selection reasons: {"; ".join(decision_context.get('selected_reasons') or []) or "No historical reasons yet"}
-- Top prompt candidates:
-{chr(10).join(top_candidate_lines) if top_candidate_lines else "- No ranked candidates available"}
-Use this context as guidance.
+Analyze only the selected strategy prompt below. Do not blend it with other prompt strategies.
 """
 
     # ── RAG: inject the track record (similar past analyses + best/losing
