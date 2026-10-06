@@ -214,11 +214,13 @@ async def shutdown_event():
     from .api.autopilot import shutdown_http_client
     from .core.email_reports import shutdown_report_scheduler
     from .core.trade_reconcile import shutdown_reconciler
+    from .api.execute import shutdown_warm_workers
     await shutdown_connector()
     shutdown_scheduler()
     shutdown_report_scheduler()
     shutdown_reconciler()
     await shutdown_http_client()
+    shutdown_warm_workers()
 
 # Middleware chain: UserIdentity (innermost) → CORS → SlowAPI (outermost)
 app.add_middleware(UserIdentityMiddleware)

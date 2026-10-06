@@ -43,10 +43,46 @@ def main():
     _respond(result)
 
 
+def serve():
+    """Persistent mode (--serve): one JSON request per stdin line, one JSON
+    response per stdout line. Libraries stay imported across requests so
+    repeated sandbox executions skip the ~1-2s interpreter/import startup.
+    State still cannot leak between requests: user variables travel in the
+    request's session_state, never in worker globals."""
+    from app.api.execute import _execute_sandbox_sync
+
+    for raw_line in sys.stdin:
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            request = json.loads(line)
+        except Exception as e:
+            _respond_line({"success": False, "error": f"Invalid input JSON: {e}"})
+            continue
+        if request.get("command") == "exit":
+            break
+        result = _execute_sandbox_sync(
+            code=request.get("code", ""),
+            market_data=request.get("market_data"),
+            symbol=request.get("symbol"),
+            session_state=request.get("session_state"),
+        )
+        _respond_line(result)
+
+
 def _respond(data: dict):
     sys.stdout.write(json.dumps(data))
     sys.stdout.flush()
 
 
+def _respond_line(data: dict):
+    sys.stdout.write(json.dumps(data) + "\n")
+    sys.stdout.flush()
+
+
 if __name__ == "__main__":
-    main()
+    if "--serve" in sys.argv:
+        serve()
+    else:
+        main()

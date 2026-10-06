@@ -139,15 +139,19 @@ export default function AutopilotPage() {
     fetchPromptStats()
     fetchPrompts()
     fetchCycleHistory(0)
-    // Poll only for status/running state, not settings
+    // Poll only for status/running state, not settings; skip while tab hidden
     const intervalId: ReturnType<typeof setInterval> = setInterval(() => {
+      if (document.hidden) return
       axios.get('/api/autopilot/status').then(res => {
         const data = res.data
         setStatus(data)
         setMt5Connected(data.settings?.mt5_connected || false)
       }).catch(console.error)
     }, 5000)
-    const cycleIntervalId: ReturnType<typeof setInterval> = setInterval(() => fetchCycleHistory(), 30000)
+    const cycleIntervalId: ReturnType<typeof setInterval> = setInterval(() => {
+      if (document.hidden) return
+      fetchCycleHistory()
+    }, 30000)
     return () => { clearInterval(intervalId); clearInterval(cycleIntervalId) }
   }, [])
 

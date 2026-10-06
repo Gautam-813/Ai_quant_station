@@ -198,6 +198,11 @@ async def _rebuild_stats(user_id: int):
 
 PROMPT_FILE = str(Path(__file__).resolve().parent.parent.parent.parent / "backend" / "prompt_list.txt")
 
+# Re-read prompt_list.txt only when its mtime changes; every cycle used to
+# parse the file from disk.
+_prompt_cache: dict = {"mtime": None, "prompts": []}
+
+
 def load_prompts():
     """Load prompts from file.
 
@@ -206,6 +211,13 @@ def load_prompts():
       - New: "PROMPT #1:\\nAnalyze XAUUSD price structure..."
     Returns list of "N. <full prompt text>" for backward compatibility.
     """
+    try:
+        mtime = os.path.getmtime(PROMPT_FILE)
+    except Exception:
+        return []
+    if _prompt_cache["mtime"] == mtime:
+        return _prompt_cache["prompts"]
+
     try:
         with open(PROMPT_FILE, "r", encoding="utf-8") as f:
             lines = f.readlines()
@@ -255,6 +267,8 @@ def load_prompts():
         text = " ".join(current_lines).strip()
         prompts.append(f"{current_num}. {text}")
 
+    _prompt_cache["mtime"] = mtime
+    _prompt_cache["prompts"] = prompts
     return prompts
 
 
@@ -543,9 +557,21 @@ async def execute_trade(user_id: int, symbol: str, direction: str, volume: float
                     tp = adjusted
 
         risk_ref_price = (entry_price if is_pending else submitted_quote) or ref_price
+        relaxed_geometry = False
         if sl and max_sl_distance is not None and risk_ref_price is not None:
             if abs(risk_ref_price - sl) > max_sl_distance + 10 ** (-(digits or 5)):
-                return {"success": False, "error": "Broker stop-distance requirement exceeds the configured ATR risk cap"}
+                # Broker's minimum stop distance exceeds the ATR risk cap —
+                # place at the broker-required stop instead of rejecting so the
+                # trade is never missed (SL/TP levels are final, owner decision).
+                relaxed_geometry = True
+                max_sl_distance = None
+                min_reward_risk = None
+                add_log(
+                    user_id,
+                    f"Broker min stop distance ({abs(risk_ref_price - sl):.2f} pts) exceeds ATR cap; "
+                    f"placing with broker-required SL {sl}",
+                    "WARNING",
+                )
         if sl and tp and min_reward_risk is not None and risk_ref_price is not None:
             risk_distance = abs(risk_ref_price - sl)
             reward_distance = abs(tp - risk_ref_price)
@@ -564,7 +590,20 @@ async def execute_trade(user_id: int, symbol: str, direction: str, volume: float
         if min_reward_risk is not None:
             payload["min_reward_risk"] = min_reward_risk
 
-        data = await async_request("POST", f"{connector_url}/order", json=payload)
+        try:
+            data = await async_request("POST", f"{connector_url}/order", json=payload)
+        except Exception as exc:
+            msg = str(exc)
+            caps_sent = "max_sl_distance" in payload or "min_reward_risk" in payload
+            if caps_sent and ("risk cap" in msg or "reward/risk" in msg):
+                # Broker geometry drifted between the quote fetch and the order
+                # send — place at broker-required levels rather than missing it.
+                payload.pop("max_sl_distance", None)
+                payload.pop("min_reward_risk", None)
+                add_log(user_id, "Connector rejected geometry caps; retrying with broker-required SL/TP", "WARNING")
+                data = await async_request("POST", f"{connector_url}/order", json=payload)
+            else:
+                raise
         if data.get("success"):
             return {
                 "success": True,
@@ -948,25 +987,21 @@ async def _choose_prompt_with_context(
     selected_prompt = ordered_prompts[selected_index]
     rotation_share = round(1 / len(ordered_prompts), 8)
 
-    candidates = []
-    selected_fit = (0.0, [])
-    for index, prompt in enumerate(ordered_prompts):
-        tags = _infer_prompt_tags(prompt["text"])
-        regime_score, fit_reasons = _score_prompt_regime_fit(tags, market_regime)
-        score = 50.0 + regime_score
-        candidate = {
+    # Selection is strict round-robin, so tags/regime-fit are only computed
+    # for the prompt that actually runs; candidates carry rotation metadata.
+    candidates = [
+        {
             "id": prompt["id"],
             "is_custom": prompt["is_custom"],
             "prompt_number": prompt_number(prompt),
             "rotation_position": index + 1,
             "rotation_share": rotation_share,
-            "regime_fit_score": round(max(5.0, min(score, 95.0)), 2),
-            "tags": tags,
-            "regime_fit_reasons": fit_reasons[:3],
         }
-        candidates.append(candidate)
-        if index == selected_index:
-            selected_fit = (candidate["regime_fit_score"], fit_reasons)
+        for index, prompt in enumerate(ordered_prompts)
+    ]
+    selected_tags = _infer_prompt_tags(selected_prompt["text"])
+    regime_score, fit_reasons = _score_prompt_regime_fit(selected_tags, market_regime)
+    selected_score = round(max(5.0, min(50.0 + regime_score, 95.0)), 2)
 
     context = {
         "selection_mode": "round_robin",
@@ -974,9 +1009,9 @@ async def _choose_prompt_with_context(
         "rotation_length": len(ordered_prompts),
         "rotation_share": rotation_share,
         "previous_prompt_number": previous_prompt_number,
-        "selected_score": selected_fit[0],
-        "selected_tags": _infer_prompt_tags(selected_prompt["text"]),
-        "selected_reasons": ["next prompt in configured round-robin order"] + selected_fit[1][:3],
+        "selected_score": selected_score,
+        "selected_tags": selected_tags,
+        "selected_reasons": ["next prompt in configured round-robin order"] + fit_reasons[:3],
         "market_regime": market_regime,
         "candidate_count": len(ordered_prompts),
         "candidates": candidates,
@@ -1368,11 +1403,15 @@ async def run_autopilot_cycle(user_id: int, cycle_id: str | None = None):
             market_timeframe=tf, candles_loaded=0,
         )
         return
-    await _update_autopilot_cycle(cycle_id, market_timeframe=tf, candles_loaded=len(market_data))
     market_data_hash = hashlib.sha256(
         json.dumps(market_data, sort_keys=True, default=str, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
-    await _update_autopilot_cycle(cycle_id, market_data_hash=market_data_hash)
+    await _update_autopilot_cycle(
+        cycle_id,
+        market_timeframe=tf,
+        candles_loaded=len(market_data),
+        market_data_hash=market_data_hash,
+    )
     add_log(user_id, f"Loaded {len(market_data)} {tf} candles for {symbol}")
 
     # ── Compute ATR for SL/TP sizing ──
@@ -1394,7 +1433,6 @@ async def run_autopilot_cycle(user_id: int, cycle_id: str | None = None):
     except Exception:
         pass
     add_log(user_id, f"ATR(14): {atr_value:.2f} | Avg(20): {avg_atr_20:.2f}")
-    await _update_autopilot_cycle(cycle_id, atr_14=atr_value, avg_atr_20=avg_atr_20)
 
     # ── SANDBOX APPROACH ──────────────────────────────────────────────
     # Instead of dumping raw candle text into the AI prompt, we:
@@ -1523,6 +1561,8 @@ Strategy:
     analysis_prompt_hash = hashlib.sha256(code_prompt.encode("utf-8")).hexdigest()
     await _update_autopilot_cycle(
         cycle_id,
+        atr_14=atr_value,
+        avg_atr_20=avg_atr_20,
         analysis_prompt_hash=analysis_prompt_hash,
         rag_context_included=bool(rag_section),
         rag_context_chars=len(rag_section),
@@ -2845,6 +2885,7 @@ async def autopilot_loop(user_id: int):
         pass
     try:
         while state["enabled"]:
+            interval = 300
             if state["running"]:
                 # Treat every scheduled check as an attempt, including checks
                 # rejected by cooldown, risk, connector, or freshness gates.
@@ -2900,10 +2941,6 @@ async def autopilot_loop(user_id: int):
                             user_id, cycle_id, "skipped_cooldown",
                             f"Cooldown active ({elapsed_mins:.0f}/{cooldown_mins} minutes)",
                         )
-                        async with AsyncSessionLocal() as db:
-                            result = await db.execute(select(AutopilotSettings).where(AutopilotSettings.user_id == user_id))
-                            s = result.scalar_one_or_none()
-                            interval = s.interval_seconds if s else 300
                         if not state["enabled"]:
                             break
                         await asyncio.sleep(interval)
@@ -2943,13 +2980,15 @@ async def autopilot_loop(user_id: int):
                     await asyncio.sleep(60)
                     continue
 
-                await sync_trade_results(user_id)
-                # Update strategy scoreboard after trade results are synced
-                try:
-                    from ..core.strategy_scorer import update_strategy_scores
-                    await update_strategy_scores()
-                except Exception:
-                    pass
+                synced = await sync_trade_results(user_id)
+                # Refresh the strategy scoreboard only when a trade outcome
+                # actually changed; the hourly scheduler covers the steady state.
+                if synced:
+                    try:
+                        from ..core.strategy_scorer import update_strategy_scores
+                        await update_strategy_scores()
+                    except Exception:
+                        pass
                 if not hit_loss_limit:
                     try:
                         await run_autopilot_cycle(user_id, cycle_id=cycle_id)
@@ -2964,10 +3003,6 @@ async def autopilot_loop(user_id: int):
                                 type(e).__name__,
                             )
 
-            async with AsyncSessionLocal() as db:
-                result = await db.execute(select(AutopilotSettings).where(AutopilotSettings.user_id == user_id))
-                s = result.scalar_one_or_none()
-                interval = s.interval_seconds if s else 300
             # Only sleep if we're still enabled — skip sleep if stop was requested mid-cycle
             if not state["enabled"]:
                 break

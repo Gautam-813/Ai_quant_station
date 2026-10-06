@@ -127,6 +127,7 @@ def _strip_docstrings(code: str) -> str:
 _DANGEROUS_DUNDERS = [
     '__class__', '__bases__', '__mro__', '__subclasses__',
     '__globals__', '__builtins__', '__code__', '__closure__',
+    '__dict__', '__init__', '__init_subclass__',
 ]
 
 def _code_has_dunder_access(code: str) -> bool:
@@ -182,6 +183,10 @@ def _execute_sandbox_sync(
             for col in ['open', 'high', 'low', 'close', 'volume']:
                 if col in df.columns:
                     df[col] = _pd.to_numeric(df[col], errors='coerce')
+            # MT5 connector candles carry tick_volume — map it so AI code sees
+            # real volume instead of an all-zero column.
+            if 'volume' not in df.columns and 'tick_volume' in df.columns:
+                df['volume'] = _pd.to_numeric(df['tick_volume'], errors='coerce').fillna(0)
             if 'volume' not in df.columns:
                 df['volume'] = 0  # MT5 may not include volume — prevent AI code from crashing
             # Restore datetime index from 'datetime' column when available
@@ -223,6 +228,22 @@ def _execute_sandbox_sync(
             raise ImportError(f"Module '{name}' is not allowed in sandbox")
         return _real_builtins.__import__(name, *args, **kwargs)
 
+    # getattr/setattr accept runtime-built names, so the dunder text/AST scan
+    # can be bypassed via e.g. getattr(obj, "__" "class__"). Restrict both to
+    # public attribute names (no leading underscore) to close that escape.
+    def _safe_attr_allowed(name) -> bool:
+        return isinstance(name, str) and not name.startswith("_")
+
+    def _safe_getattr(obj, name, *args):
+        if not _safe_attr_allowed(name):
+            raise AttributeError(f"Attribute '{name}' is not allowed in sandbox")
+        return _real_builtins.getattr(obj, name, *args)
+
+    def _safe_setattr(obj, name, value):
+        if not _safe_attr_allowed(name):
+            raise AttributeError(f"Attribute '{name}' is not allowed in sandbox")
+        return _real_builtins.setattr(obj, name, value)
+
     safe_builtins = {
         'abs': abs, 'all': all, 'any': any, 'bool': bool, 'dict': dict,
         'enumerate': enumerate, 'float': float, 'int': int, 'len': len,
@@ -230,8 +251,8 @@ def _execute_sandbox_sync(
         'round': round, 'sorted': sorted, 'str': str, 'sum': sum,
         'tuple': tuple, 'type': type, 'zip': zip, 'map': map, 'filter': filter,
         'True': True, 'False': False, 'None': None,
-        'isinstance': isinstance, 'hasattr': hasattr, 'getattr': getattr,
-        'setattr': setattr, 'reversed': reversed, 'slice': slice,
+        'isinstance': isinstance, 'hasattr': hasattr, 'getattr': _safe_getattr,
+        'setattr': _safe_setattr, 'reversed': reversed, 'slice': slice,
         'iter': iter, 'next': next, 'print': print, 'Exception': Exception,
         'ValueError': ValueError, 'TypeError': TypeError, 'KeyError': KeyError,
         'IndexError': IndexError, 'ZeroDivisionError': ZeroDivisionError,
@@ -451,6 +472,153 @@ def _get_worker_path() -> str:
     return os.path.join(base, "sandbox_worker.py")
 
 
+# ── Warm sandbox worker pool ───────────────────────────────────────────────
+# Reuses persistent sandbox_worker.py --serve processes so repeated
+# executions skip interpreter/import startup. Pool stays small because each
+# idle worker holds pandas/matplotlib in memory; overflow falls back to a
+# cold subprocess, so behavior can only get faster, never unavailable.
+_WARM_POOL_MAX = 2
+_WARM_WORKER_TTL_SECONDS = 900
+_warm_pool: list["_WarmSandboxWorker"] = []
+
+
+class _WarmSandboxWorker:
+    def __init__(self):
+        self.proc: subprocess.Popen | None = None
+        self.busy = False
+        self.last_used = time.monotonic()
+
+    def _ensure_proc(self) -> None:
+        if self.proc is not None and self.proc.poll() is None:
+            return
+        self.proc = subprocess.Popen(
+            [sys.executable, _get_worker_path(), "--serve"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+        )
+
+    async def run(self, request_data: dict) -> dict:
+        loop = asyncio.get_running_loop()
+        self._ensure_proc()
+        payload = json.dumps(request_data)
+
+        def _send():
+            self.proc.stdin.write(payload + "\n")
+            self.proc.stdin.flush()
+
+        try:
+            await loop.run_in_executor(None, _send)
+            line = await asyncio.wait_for(
+                loop.run_in_executor(None, self.proc.stdout.readline),
+                timeout=60,
+            )
+        except asyncio.TimeoutError:
+            self.kill()
+            return {
+                "success": False,
+                "error": "Execution timed out (60s limit). Simplify your code or reduce loop iterations.",
+                "output": "",
+            }
+        except Exception:
+            self.kill()
+            raise
+        if not line:
+            # Worker process died; respawn on next use.
+            self.kill()
+            raise RuntimeError("warm sandbox worker died")
+        self.last_used = time.monotonic()
+        return json.loads(line)
+
+    def kill(self) -> None:
+        if self.proc is not None:
+            try:
+                self.proc.kill()
+            except Exception:
+                pass
+            self.proc = None
+
+
+def _reap_warm_workers() -> None:
+    now = time.monotonic()
+    for worker in list(_warm_pool):
+        if not worker.busy and now - worker.last_used > _WARM_WORKER_TTL_SECONDS:
+            worker.kill()
+            _warm_pool.remove(worker)
+
+
+async def _run_in_warm_worker(request_data: dict) -> dict:
+    """Execute in a warm worker. Raises when the pool is exhausted so the
+    caller can fall back to a cold subprocess. Checkout is lock-free: marking
+    a worker busy happens without an await, so no other coroutine can take it."""
+    _reap_warm_workers()
+    worker = next((w for w in _warm_pool if not w.busy), None)
+    if worker is None:
+        if len(_warm_pool) < _WARM_POOL_MAX:
+            worker = _WarmSandboxWorker()
+            _warm_pool.append(worker)
+        else:
+            raise RuntimeError("warm sandbox pool exhausted")
+    worker.busy = True
+    try:
+        return await worker.run(request_data)
+    finally:
+        worker.busy = False
+
+
+async def _run_cold_worker(worker_path: str, request_data: dict) -> dict:
+    """One-shot subprocess execution, run in an executor so the event loop
+    is never blocked for the duration of the sandbox run."""
+    loop = asyncio.get_running_loop()
+
+    def _execute():
+        return subprocess.run(
+            [sys.executable, worker_path],
+            input=json.dumps(request_data),
+            capture_output=True,
+            text=True,
+            timeout=60,
+            encoding="utf-8",
+        )
+
+    try:
+        proc = await loop.run_in_executor(None, _execute)
+        if proc.returncode != 0:
+            stderr = proc.stderr or ""
+            return {
+                "success": False,
+                "error": f"Sandbox worker crashed (exit {proc.returncode}): {stderr[:500]}",
+                "output": "",
+            }
+        return json.loads(proc.stdout)
+    except subprocess.TimeoutExpired:
+        return {
+            "success": False,
+            "error": "Execution timed out (60s limit). Simplify your code or reduce loop iterations.",
+            "output": "",
+        }
+    except json.JSONDecodeError as e:
+        return {
+            "success": False,
+            "error": f"Sandbox response parse error: {e}",
+            "output": proc.stdout[:500] if proc.stdout else "",
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Subprocess error: {str(e)}",
+            "output": "",
+        }
+
+
+def shutdown_warm_workers() -> None:
+    for worker in list(_warm_pool):
+        worker.kill()
+        _warm_pool.remove(worker)
+
+
 async def run_python_code(
     code: str,
     market_data: Optional[List[Dict[str, Any]]] = None,
@@ -515,41 +683,13 @@ async def run_python_code(
             "session_state": session_state,
         }
 
+        result = None
         try:
-            proc = subprocess.run(
-                [sys.executable, worker_path],
-                input=json.dumps(request_data),
-                capture_output=True,
-                text=True,
-                timeout=60,
-                encoding='utf-8',
-            )
-            if proc.returncode != 0:
-                stderr = proc.stderr or ""
-                return {
-                    "success": False,
-                    "error": f"Sandbox worker crashed (exit {proc.returncode}): {stderr[:500]}",
-                    "output": "",
-                }
-            result = json.loads(proc.stdout)
-        except subprocess.TimeoutExpired:
-            result = {
-                "success": False,
-                "error": "Execution timed out (25s limit). Simplify your code or reduce loop iterations.",
-                "output": "",
-            }
-        except json.JSONDecodeError as e:
-            result = {
-                "success": False,
-                "error": f"Sandbox response parse error: {e}",
-                "output": proc.stdout[:500] if proc.stdout else "",
-            }
-        except Exception as e:
-            result = {
-                "success": False,
-                "error": f"Subprocess error: {str(e)}",
-                "output": "",
-            }
+            result = await _run_in_warm_worker(request_data)
+        except Exception:
+            result = None  # pool exhausted or worker died — cold fallback below
+        if result is None:
+            result = await _run_cold_worker(worker_path, request_data)
     else:
         # Inline mode (same process) — backward compat for anonymous calls
         result = _execute_sandbox_sync(code, md, symbol, session_state)

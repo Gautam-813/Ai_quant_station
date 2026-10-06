@@ -21,6 +21,11 @@ LOSERS_COUNT = 3
 STRIP_CODE_BLOCKS = True
 _CODE_BLOCK_RE = re.compile(r"```.*?```", re.DOTALL)
 
+# Prompt texts repeat every rotation cycle; memoize their embeddings so the
+# sentence-transformers inference runs once per distinct text, not per cycle.
+_EMBEDDING_CACHE_MAX = 256
+_embedding_cache: dict[str, list[float]] = {}
+
 
 def _clean_for_embedding(text: str) -> str:
     if not text:
@@ -151,8 +156,14 @@ async def get_underperforming_strategies(symbol: str, source: str = "autopilot",
 
 async def build_rag_context(symbol: str, user_question: str, user_id: int | None = None,
                             source: str = "autopilot", cycle_id: str | None = None) -> str:
-    loop = asyncio.get_running_loop()
-    query_emb = await loop.run_in_executor(None, embed_text, user_question)
+    cache_key = hashlib.sha256((user_question or "").encode("utf-8")).hexdigest()
+    query_emb = _embedding_cache.get(cache_key)
+    if query_emb is None:
+        loop = asyncio.get_running_loop()
+        query_emb = await loop.run_in_executor(None, embed_text, user_question)
+        if len(_embedding_cache) >= _EMBEDDING_CACHE_MAX:
+            _embedding_cache.pop(next(iter(_embedding_cache)))
+        _embedding_cache[cache_key] = query_emb
     similar = await find_similar_analyses(query_emb, symbol, user_id)
     scores = await get_strategy_scores(symbol, source)
     losers = await get_underperforming_strategies(symbol, source)
