@@ -109,11 +109,20 @@ async def _fetch_models_from_api(provider_id: str, api_key: str, base_url: str, 
 
 
 def blacklist_model(provider_id: str, model_id: str) -> None:
-    """Blacklist a model that returned 404. Won't be used for 24 hours."""
+    """Blacklist a model that returned 404/410. Won't be used for 24 hours."""
     if provider_id not in _blacklist:
         _blacklist[provider_id] = {}
     _blacklist[provider_id][model_id] = time.time()
     logger.info(f"[models_cache] blacklisted {provider_id}/{model_id} for 24h")
+
+
+def is_model_blacklisted(provider_id: str, model_id: str) -> bool:
+    """True when the model was blacklisted (404/410) and the 24h TTL is live."""
+    bl = _blacklist.get(provider_id, {})
+    blacklisted_at = bl.get(model_id)
+    if blacklisted_at is None:
+        return False
+    return time.time() - blacklisted_at < BLACKLIST_TTL
 
 
 def get_stale_models(provider_id: str) -> list[str]:

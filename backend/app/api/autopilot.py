@@ -402,6 +402,18 @@ def _classify_execution_error(message: str) -> str:
     return "EXECUTION_ERROR"
 
 
+def _is_model_unavailable_error(err_str: str) -> bool:
+    """404/410-style model errors: missing, unsupported, or retired models.
+
+    Covers NVIDIA's 410 Gone 'has reached its end of life' responses — these
+    must blacklist the model and pick a replacement, never blind-retry."""
+    return (
+        "404" in err_str or "410" in err_str or "model_not_supported" in err_str
+        or "not found" in err_str or "end of life" in err_str
+        or "no longer available" in err_str
+    )
+
+
 async def _finish_autopilot_cycle(user_id: int, cycle_id: str, outcome: str, reason: str = None, **values):
     values.update(
         status="completed",
@@ -1020,6 +1032,44 @@ async def _choose_prompt_with_context(
     return selected_prompt, context
 
 
+async def _validate_model_routing(user_id: int, routing: dict | None) -> dict | None:
+    """Verify a model-routing pick is still offered before trusting it.
+
+    Routing learns provider/model pairs from trade history, so a retired
+    model (NVIDIA 410 Gone 'end of life') keeps winning the lookup forever.
+    Cross-check the pick against the provider's live catalog (24h cache) and
+    the blacklist; drop routing when the model is gone so the live catalog
+    chooses a current model instead. An unverifiable catalog keeps routing —
+    the in-call 404/410 handling is the second line of defense."""
+    if not routing:
+        return None
+    cfg = PROVIDERS.get(routing.get("provider") or "", {})
+    if not cfg:
+        return None
+    from ..core.models_cache import get_live_models, is_model_blacklisted
+    try:
+        if is_model_blacklisted(routing["provider"], routing["model"]):
+            add_log(user_id, f"Model routing skipped: {routing['model']} is blacklisted", "INFO")
+            return None
+        keys = await resolve_all_api_keys(routing["provider"], settings, user_id, AsyncSessionLocal)
+        if not keys:
+            return None
+        live = await get_live_models(
+            routing["provider"], keys[0], cfg["base_url"],
+            cfg.get("needs_nvapi_prefix", False),
+        )
+        if live and routing["model"] not in live:
+            add_log(
+                user_id,
+                f"Model routing skipped: {routing['model']} is no longer in {routing['provider']}'s catalog",
+                "INFO",
+            )
+            return None
+        return routing
+    except Exception:
+        return None
+
+
 async def run_autopilot_cycle(user_id: int, cycle_id: str | None = None):
     state = _get_state(user_id)
     # The loop creates the durable cycle before its cooldown/health gates. Keep
@@ -1200,6 +1250,8 @@ async def run_autopilot_cycle(user_id: int, cycle_id: str | None = None):
     except Exception:
         model_routing = None
     if model_routing:
+        model_routing = await _validate_model_routing(user_id, model_routing)
+    if model_routing:
         await _update_autopilot_cycle(
             cycle_id,
             provider=model_routing["provider"],
@@ -1241,6 +1293,7 @@ async def run_autopilot_cycle(user_id: int, cycle_id: str | None = None):
 
         Returns (content, usage_dict) where usage_dict has prompt_tokens, completion_tokens, total_tokens.
         """
+        nonlocal model_routing
         from ..core.providers import PROVIDERS, get_provider_names, get_base_url, resolve_all_api_keys
 
         providers = get_provider_names()
@@ -1345,13 +1398,19 @@ async def run_autopilot_cycle(user_id: int, cycle_id: str | None = None):
                             add_log(user_id, f"Provider {p} tier/forbidden (403), skipping provider...", "WARNING")
                             await _log_call("tier_not_allowed", p, actual_model, stage, err=str(e)[:200])
                             break  # Skip to next provider
-                        elif "404" in err_str or "model_not_supported" in err_str or "not found" in err_str:
-                            # Model not available — blacklist it, try next key (different model via live fetch)
+                        elif _is_model_unavailable_error(err_str):
+                            # Model missing or retired (404/410 end-of-life) —
+                            # blacklist it and pick a live replacement for the
+                            # next key instead of retrying the same dead model.
                             from ..core.models_cache import blacklist_model
-                            blacklist_model(p, actual_model)
-                            add_log(user_id, f"Provider {p} model {actual_model} not available (404), blacklisted, trying next key...", "WARNING")
-                            await _log_call("model_not_found", p, actual_model, stage, err=str(e)[:200])
-                            continue  # Try next key — get_best_model will pick a different model
+                            dead_model = actual_model
+                            blacklist_model(p, dead_model)
+                            if model_routing and p == model_routing["provider"]:
+                                model_routing = None  # routed pick is gone; live catalog takes over
+                            actual_model = await get_best_model(p, all_keys)
+                            add_log(user_id, f"Provider {p} model {dead_model} unavailable (404/410) — blacklisted, retrying with {actual_model}", "WARNING")
+                            await _log_call("model_not_found", p, dead_model, stage, err=str(e)[:200])
+                            continue
                         else:
                             # Other error — try next key for this provider
                             err_msg = str(e)[:200]
